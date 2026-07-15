@@ -22,9 +22,9 @@ VALUES (%(gonggu_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(cand
 
 INSERT_POST = """
 INSERT INTO gonggu_post
-    (post_id, user_id, url, publish_date, gonggu_start_date, gonggu_end_date, caption_preview, classification_note)
+    (post_id, user_id, url, publish_date, gonggu_start_date, gonggu_end_date, classification_note)
 VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(caption_preview)s, %(classification_note)s)
+        %(gonggu_start_date)s, %(gonggu_end_date)s, %(classification_note)s)
 """
 CHECK_POST_EXISTS = "SELECT id FROM gonggu_post WHERE post_id = %s"
 INSERT_POST_PRODUCT = """

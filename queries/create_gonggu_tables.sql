@@ -30,9 +30,13 @@
 -- 참고: MySQL은 인접한 문자열 리터럴을 자동으로 이어붙이지 않으므로, 모든 COMMENT는
 -- 하나의 문자열 리터럴로 작성한다.
 
--- 기존 2-테이블 버전(platform 컬럼으로 통합했던 gonggu_post/gonggu_product)을 대체한다.
+-- 이전 버전(2-테이블 통합형 + caption_preview 있던 4-테이블형)을 전부 대체한다.
 -- 이미 넣은 데이터가 없다는 전제 — 데이터가 있다면 DROP 전에 반드시 백업할 것.
+-- 자식(FK 있는 쪽) 먼저 DROP.
 DROP TABLE IF EXISTS gonggu_product;
+DROP TABLE IF EXISTS gonggu_video_product;
+DROP TABLE IF EXISTS gonggu_post_product;
+DROP TABLE IF EXISTS gonggu_video;
 DROP TABLE IF EXISTS gonggu_post;
 
 -- ============================================================
@@ -55,7 +59,7 @@ CREATE TABLE gonggu_video (
     gonggu_end_date     DATE NULL
                         COMMENT '공구 종료일(마감일). 계산 기준은 gonggu_start_date와 동일',
     classification_note VARCHAR(500) NULL
-                        COMMENT 'LLM 분류 단계에서 남긴 특이사항 자유서술(예: "본문엔 상담용 채널톡만 있고 실제 구매는 프로필 링크트리 경유")',
+                        COMMENT 'LLM 분류 단계에서 남긴 특이사항 자유서술(500자 이내, 예: "본문엔 상담용 채널톡만 있고 실제 구매는 프로필 링크트리 경유")',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -112,10 +116,8 @@ CREATE TABLE gonggu_post (
                         COMMENT '공구 시작일. 캡션에 명시적 날짜가 있거나 게시일 기준 상대표현이 명확할 때만 채움 — 특정 불가능하면 NULL(추측/환각 금지)',
     gonggu_end_date     DATE NULL
                         COMMENT '공구 종료일(마감일). 계산 기준은 gonggu_start_date와 동일',
-    caption_preview     VARCHAR(300) NULL
-                        COMMENT '캡션 앞부분 미리보기(사람이 훑어볼 때용) — 전문은 instagram_post_description.description을 post_id로 조인해서 볼 것',
     classification_note VARCHAR(500) NULL
-                        COMMENT 'LLM 분류 단계에서 남긴 특이사항 자유서술(예: "본문엔 상담용 채널톡만 있고 실제 구매는 프로필 링크트리 경유")',
+                        COMMENT 'LLM 분류 단계에서 남긴 특이사항 자유서술(500자 이내, 예: "본문엔 상담용 채널톡만 있고 실제 구매는 프로필 링크트리 경유") — 캡션 원문은 instagram_post_description.description을 post_id로 조인해서 볼 것',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),

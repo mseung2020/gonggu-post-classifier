@@ -74,7 +74,6 @@ def transform_one(post):
             'publish_date': post['publish_date'],
             'gonggu_start_date': gonggu_start,
             'gonggu_end_date': gonggu_end,
-            'caption_preview': (post.get('description') or '').strip().replace('\n', ' ')[:300],
             'classification_note': note,
         }
     else:

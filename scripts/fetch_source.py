@@ -21,7 +21,7 @@ SELECT p.post_id AS post_id, p.user_id AS user_id, p.url AS url,
        GROUP_CONCAT(DISTINCT u.external_url SEPARATOR ';') AS creator_bio_urls
 FROM instagram_post p
 JOIN instagram_post_description d ON d.post_id = p.post_id
-LEFT JOIN instagram_user_external_url u ON u.user_id = p.user_id
+LEFT JOIN instagram_user_external_url u ON u.user_id = p.user_id COLLATE utf8mb4_unicode_ci
 WHERE p.publish_date >= %s
   AND (d.description LIKE '%%공구%%' OR d.description LIKE '%%공동구매%%')
 GROUP BY p.post_id, p.user_id, p.url, p.publish_date, d.description
