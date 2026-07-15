@@ -1,0 +1,244 @@
+app:
+  description: ''
+  icon: shopping_bags
+  icon_background: '#FFE4E8'
+  icon_type: emoji
+  mode: workflow
+  name: 공구왕 링크방식 분류
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.4.3@84d4aae2c55724f6cdaecfadceed061d7e6b6693ae8945ea2dcd155f280743ef
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: 1782973185624-source-1782973200001-target
+      source: '1782973185624'
+      sourceHandle: source
+      target: '1782973200001'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: 1782973200001-source-1782973197378-target
+      source: '1782973200001'
+      sourceHandle: source
+      target: '1782973197378'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 1782973197378-source-1782973223073-target
+      source: '1782973197378'
+      sourceHandle: source
+      target: '1782973223073'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 시작
+        type: start
+        variables:
+        - default: ''
+          hint: ''
+          label: input
+          options: []
+          placeholder: sample_100_enriched.json 의 포스트 객체 하나(description, publish_date, creator_description 포함)
+          required: true
+          type: json_object
+          variable: input
+      height: 109
+      id: '1782973185624'
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "def main(input: dict) -> dict:\n    return {\n        \"description\": str(input.get(\"description\") or \"\"),\n        \"publish_date\": str(input.get(\"publish_date\") or \"\"),\n        \"creator_description\": str(input.get(\"creator_description\") or \"\"),\n    }\n"
+        code_language: python3
+        outputs:
+          creator_description:
+            children: null
+            type: string
+          description:
+            children: null
+            type: string
+          publish_date:
+            children: null
+            type: string
+        selected: false
+        title: 변수 추출
+        type: code
+        variables:
+        - value_selector:
+          - '1782973185624'
+          - input
+          variable: input
+      height: 52
+      id: '1782973200001'
+      position:
+        x: 382
+        y: 282
+      positionAbsolute:
+        x: 382
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params: {}
+          mode: chat
+          name: gpt-5-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: b59dd783-85eb-481b-a5b6-0e4b23ec2bb9
+          role: system
+          text: "너는 인스타그램/유튜브 공동구매(공구) 게시글에서 \"구매 링크가 어떤 방식으로 제공되는지\"를 분류하는 분석기다.\n입력: (1) 포스트 캡션/영상 설명 (유튜브는 첫 줄이 [제목]) (2) 크리에이터 프로필 소개글(bio).\n아래 스키마의 JSON \"하나만\" 출력한다. 설명·마크다운·코드블록 금지. 순수 JSON.\n\n[분류 목적] 이 글의 실제 구매 링크가 어디에/어떤 형태로 있는지 파악해 크롤링 전략을 세우기 위함.\n\n[필드 규칙]\n- is_gonggu: 실제 '상품 공동구매(그룹 특가/공구) 판매 홍보글'이면 true. \"공구\"라는 글자가 있어도 문맥상 손공구·전동공구 같은 \"도구(tool, 工具)\"를 가리키면 공동구매가 아니다 — 해시태그에 #충전공구·#전동공구·#공구추천 등이 있어도 그것만으로 true로 판단하지 말 것(예: 예초기·드릴 등 도구 제품 리뷰). 공동구매로 판단하려면 단순 구매 링크 제공을 넘어 \"공구가/공구오픈/공동구매/한정특가/사전예약/오늘마감\" 같은 그룹구매 특유의 신호가 있어야 한다. 그런 신호 없이 개인 리뷰+일반 구매링크(스마트스토어/쿠팡 등)만 있으면 공동구매 홍보글이 아니라 일반 제품 리뷰/광고이므로 false. 일상글/후기/工區(건설)·인터뷰·레시피 등 판매 무관이면 당연히 false.\n- products: 이 포스트가 홍보하는 상품을 배열로. **원칙적으로 한 포스트=한 공구로 최대한 합치려고 시도할 것** — 같은 공구 안에 딸려오는 여러 품목(예: \"장수천 장어 + 엔에프락 밀폐용기 + 알텐바흐 저압냄비\", 사은품·구성품 포함 세트)은 대표 상품명 하나로 합쳐서 배열에 항목 1개만 넣는다. 정말로 캡션 안에 서로 무관한 공구가 병렬로 나열되어 있고(예: \"①공구 사과 [링크A] ②공구 원피스 [링크B] ③공구 마스크팩 [링크C]\" 처럼 상품도 다르고 구매 경로도 각각 명시된 경우) 그걸 하나로 합치면 정보 손실이 되는 경우에만 어쩔 수 없이 여러 항목으로 나눈다 — 이런 경우가 아니면 절대 쪼개지 말 것.\n  각 배열 항목은 다음 필드를 가진 객체:\n  · name: 브랜드명을 포함한 한국어 상품명 한 줄(예: \"미쁨곰탕 아기곰탕\"). 사은품/증정품처럼 부수적인 것은 이름에 넣지 말 것.\n  · link_location: 이 상품의 구매 링크가 어디 있는지.\n    - \"설명_직접링크\": 캡션/설명 본문에 이 상품의 구매 URL이 직접 있음(본문에 http URL이 하나라도 있으면 기본적으로 이 값)\n    - \"설명_프로필안내\": 본문에 URL은 없고 \"프로필 링크/프로필 확인/프로필 참고/프사 링크\"로 유도\n    - \"댓글참여_DM\": \"댓글 달면/좋아요·팔로우하면 DM으로 링크·정보 보내드림\" 식으로 참여를 요구\n    - \"고정댓글_더보기\": (주로 유튜브) \"고정댓글 확인/더보기 👇/아래 링크\"로 유도하나 본문엔 URL이 안 보임\n    - \"링크없음_불명\": 위 어디에도 해당 없음\n  · url_type: 발견된 이 상품의 대표 구매 URL 종류(도메인 기준). URL이 전혀 없으면 \"없음\".\n    [\"네이버_스마트스토어\",\"네이버_기타\",\"링크모음\",\"자사몰_독립몰\",\"카카오채널\",\"쿠팡_오픈마켓\",\"결제플랫폼\",\"단축링크\",\"구글폼\",\"기타\",\"없음\"]\n    - \"링크모음\" = inpock(link.inpock.co.kr)·litt.ly·lit.link·linktr.ee·taplink·링크트리 등 여러 링크를 모아둔 페이지\n    - \"단축링크\" = naver.me·bit.ly·srok.kr·me2.do 등 목적지가 가려진 단축 URL\n    - \"네이버_기타\" = 네이버 블로그·폼·booking·place 등 스마트스토어가 아닌 네이버\n    - \"결제플랫폼\" = srookpay·shop.srookpay 등 결제/주문 플랫폼\n  · urls: 이 상품의 구매 링크로 보이는 URL을 그대로 배열로(본문 URL 또는 link_location=설명_프로필안내면 프로필 URL). 없으면 [].\n  ⚠ 상품이 1개뿐이면(대부분의 경우) 이 4개 필드를 캡션 전체 기준으로 판단해서 그 상품 객체 하나에 채우면 됨 — 상품별로 억지로 다르게 만들려 하지 말 것. 여러 상품으로 쪼갠 경우에만 각 상품에 실제로 대응하는 링크 정보를 따로 채운다. 구분이 안 되면 캡션 전체에서 판단한 대표값을 모든 상품에 동일하게 채운다.\n  상품이 하나도 특정 안 되면 안 됨(빈 배열 금지) — is_gonggu=true인데 상품을 하나도 특정 못하면 is_gonggu를 false로 재검토할 것.\n- period_start, period_end: 다음 두 경우에만 YYYY-MM-DD로 채운다(포스트 전체 기준, 상품별로 나누지 않음).\n  (1) 캡션에 명시적으로 적힌 날짜(발행연도 기준 보정)\n  (2) 게시일 기준 상대 표현이 명확한 경우 — 게시일을 기준점으로 계산한 날짜.\n      예: 게시일 2026-07-06 + \"오늘마감\" → period_end=2026-07-06 / 게시일 2026-07-06 + \"내일까지\" → period_end=2026-07-07\n  특정 날짜로 계산할 수 없는 모호한 상대 표현(\"이번 주말\",\"곧\",\"조금만 더\")이나 날짜 정보가 전혀 없으면 null.\n  계산 근거(명시된 날짜 또는 게시일+명확한 상대표현)가 없으면 절대 추측/환각하지 말 것.\n- gonggu_stage: 이 공구가 지금 어떤 진행 단계인지 시제/문구로 판단.\n  · \"예고\" : 아직 시작 안 함. \"공구예고\",\"오픈예정\",\"알람신청\",\"오픈후 링크 발송드릴게요\",\"~일에 오픈\" 등 미래 시제\n  · \"진행중\": 지금 구매 가능한 상태. \"구매하기\",\"공구중\",\"오늘마감\",\"지금 주문하면\" 등 현재 진행 신호\n  · \"마감\": 이미 종료/품절. \"마감되었습니다\",\"종료\",\"품절\",\"완판\" 등\n  · \"불명\": 위 셋 다 판단하기 애매함\n  ⚠ gonggu_stage는 캡션 문구만 보고 판단하는 \"힌트\"다. 캡션 속 \"오늘\"은 포스트 작성 시점의 오늘일 수 있고 실제 지금 날짜와 다를 수 있으니, 최종 진행상태 판정은 이 필드가 아니라 period_start/period_end와 실제 오늘 날짜를 비교해 별도로 계산한다(이 워크플로우 밖에서 처리).\n- comment_gated: 링크나 가격 정보를 얻으려면 댓글/좋아요/팔로우 등 참여를 요구하면 true, 아니면 false.\n- pattern_note: 이 글이 \"구매 링크를 제공하는 방식\"의 특이점을 한국어 한 문장으로 자유서술. 예: \"본문엔 상담용 채널톡만 있고 실제 구매는 프로필 링크트리 경유\", \"댓글에 특정 단어 남겨야 DM으로 스마트스토어 링크\". 특이점이 없으면 \"\".\n\n반드시 아래 JSON 하나만 출력한다.\n{\n  \"is_gonggu\": boolean,\n  \"gonggu_stage\": \"예고\"|\"진행중\"|\"마감\"|\"불명\",\n  \"products\": [{\"name\": string, \"link_location\": \"설명_직접링크\"|\"설명_프로필안내\"|\"댓글참여_DM\"|\"고정댓글_더보기\"|\"링크없음_불명\", \"url_type\": string, \"urls\": [string]}],\n  \"period_start\": string|null,\n  \"period_end\": string|null,\n  \"comment_gated\": boolean,\n  \"pattern_note\": string\n}"
+        - id: 19c96fc8-544a-4eae-bd0b-eaa851c0606f
+          role: user
+          text: '게시일: {{#1782973200001.publish_date#}}
+
+
+            [포스트 캡션]
+
+            """
+
+            {{#1782973200001.description#}}
+
+            """
+
+
+            [크리에이터 프로필 소개글 (보조)]
+
+            """
+
+            {{#1782973200001.creator_description#}}
+
+            """'
+        selected: false
+        title: LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '1782973197378'
+      position:
+        x: 684
+        y: 282
+      positionAbsolute:
+        x: 684
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        outputs:
+        - value_selector:
+          - '1782973197378'
+          - text
+          variable: result
+        selected: false
+        title: 출력
+        type: end
+      height: 88
+      id: '1782973223073'
+      position:
+        x: 986
+        y: 282
+      positionAbsolute:
+        x: 986
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: 108.52999899470115
+      y: -40.07178021283204
+      zoom: 1.0909101075512877
+  rag_pipeline_variables: []

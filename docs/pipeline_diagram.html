@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>공구왕 포스트 분류 파이프라인</title>
+<style>
+  body { font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; background:#fff; color:#000; margin:0; padding:40px 20px 80px; }
+  h1 { text-align:center; font-size:19px; margin-bottom:6px; font-weight:700; }
+  .subtitle { text-align:center; font-size:12.5px; color:#333; margin-bottom:36px; }
+  .flow { display:flex; flex-direction:column; align-items:center; gap:0; max-width:640px; margin:0 auto; }
+  .box { border:1.5px solid #000; border-radius:10px; padding:14px 20px; font-size:13.5px; text-align:center; min-width:280px; line-height:1.55; background:#fff; }
+  .box .tag { display:block; font-size:10.5px; font-weight:700; letter-spacing:.05em; margin-bottom:5px; }
+  .box small { display:block; font-size:11.5px; margin-top:3px; color:#111; }
+  .gate { border-style:dashed; }
+  .end { border-width:2.5px; }
+  .arrow { font-size:20px; line-height:1; margin:4px 0; }
+  .label { font-size:11.5px; margin:5px 0 8px; text-align:center; max-width:520px; color:#333; }
+  .reject-row { display:flex; gap:10px; justify-content:center; margin:6px 0 10px; flex-wrap:wrap; }
+  .reject { border:1px dotted #666; border-radius:6px; padding:4px 10px; font-size:10.5px; color:#444; }
+  .split-row { display:flex; gap:24px; justify-content:center; margin:6px 0; flex-wrap:wrap; }
+  .split-col { display:flex; flex-direction:column; align-items:center; gap:0; }
+  .split-col .box { min-width:230px; font-size:12.5px; }
+  .scope-box { border:2.5px dashed #000; border-radius:14px; padding:18px 22px; margin-top:34px; max-width:560px; text-align:center; font-size:12px; line-height:1.6; }
+  .scope-box .tag { font-weight:700; font-size:12.5px; display:block; margin-bottom:6px; }
+</style>
+</head>
+<body>
+<h1>공구왕 포스트 분류 파이프라인</h1>
+<div class="subtitle">인스타그램/유튜브 원본 포스트에서 "확실한 공구"만 보수적으로 걸러 gonggu_post·gonggu_video(+ product) 테이블에 저장하기까지</div>
+
+<div class="flow">
+
+  <div class="box"><span class="tag">SOURCE</span>hifen DB (읽기 전용)
+    <small>최근 N일 · 캡션/영상설명에 "공구" 또는 "공동구매" 포함</small>
+    <small>instagram_post + instagram_post_description / YT_video_lists + YT_video_lists_detail</small>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="label">fetch_source.py</div>
+
+  <div class="box"><span class="tag">LLM #1 — 판별</span>이 포스트가 진짜 공구인지, 무슨 상품을 파는지, 상품마다 구매 링크는 어디 있는지를 읽어서 판단
+    <small>원칙: 한 포스트 = 한 공구로 최대한 합쳐서 판단</small>
+    <small>정말 서로 다른 공구가 병렬로 나열된 경우에만 상품별로 쪼개서, 상품마다 link_location/url_type/urls를 따로 채움</small>
+    <small>is_gonggu / products[{name, link_location, url_type, urls}] / period_start·end</small>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="label">classify.py</div>
+
+  <div class="box gate"><span class="tag">게이트 (코드, 보수적으로)</span>확실하지 않으면 무조건 제외</div>
+  <div class="reject-row">
+    <span class="reject">is_gonggu = false</span>
+    <span class="reject">상품 특정 실패</span>
+    <span class="reject">제휴 광고성 다중 링크</span>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="label">transform.py — 플랫폼별로 부모 1행 + 상품 N행으로 정리</div>
+
+  <div class="split-row">
+    <div class="split-col">
+      <div class="box end"><span class="tag">TARGET (유튜브)</span>gonggu_video
+        <small>video_id · channel_id · publishDate</small>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="box"><span class="tag">gonggu_video_product</span>product_name · link_location · url_type · candidate_url</div>
+    </div>
+    <div class="split-col">
+      <div class="box end"><span class="tag">TARGET (인스타그램)</span>gonggu_post
+        <small>post_id · user_id · publish_date</small>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="box"><span class="tag">gonggu_post_product</span>product_name · link_location · url_type · candidate_url</div>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="label">load.py — 이미 있는 (video_id) / (post_id)는 재삽입 안 함. 넷 다 이어서 실행하면 run_pipeline.py</div>
+
+</div>
+
+<div class="scope-box" style="margin-left:auto;margin-right:auto;">
+  <span class="tag">여기까지가 이 파이프라인의 범위</span>
+  gonggu_video·gonggu_post(+product) 테이블에 "확실한 공구" 목록을 채워넣는 것까지만 담당한다.<br>
+  실제 구매 링크를 프로필·인포크까지 따라가서 최종 상품/가격/이미지를 확정하는 것은
+  이 테이블을 읽어가는 <b>별도 개발자</b>의 담당 영역이며 이 저장소에는 포함되지 않는다.
+</div>
+
+</body>
+</html>
