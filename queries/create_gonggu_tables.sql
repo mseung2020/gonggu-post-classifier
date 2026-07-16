@@ -76,8 +76,8 @@ CREATE TABLE gonggu_video (
 -- ============================================================
 CREATE TABLE gonggu_video_product (
     id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    gonggu_id      BIGINT UNSIGNED NOT NULL
-                   COMMENT 'gonggu_video.id FK. gonggu_post_product.gonggu_id와 동일한 이름으로 통일',
+    gonggu_id      VARCHAR(50) NOT NULL
+                   COMMENT 'gonggu_video.video_id FK(자연키). gonggu_post_product.gonggu_id(→gonggu_post.post_id)와 동일한 이름·타입으로 통일',
     product_name   VARCHAR(300) NOT NULL
                    COMMENT '상품명(캡션/설명에서 추출한 그대로, 브랜드명 포함 권장)',
     link_location   ENUM('설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명') NOT NULL
@@ -94,7 +94,7 @@ CREATE TABLE gonggu_video_product (
     KEY idx_gonggu_video_product_gonggu (gonggu_id),
     KEY idx_gonggu_video_product_name (product_name),
     CONSTRAINT fk_gonggu_video_product_video
-        FOREIGN KEY (gonggu_id) REFERENCES gonggu_video (id)
+        FOREIGN KEY (gonggu_id) REFERENCES gonggu_video (video_id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='gonggu_video 1건이 홍보하는 상품(1:N) — 가격/옵션/배송비 등 상세 커머스 정보는 별도 테이블(다운스트림 링크 크롤링 결과 저장용)에서 이 테이블을 참조해 관리할 예정';
@@ -134,8 +134,8 @@ CREATE TABLE gonggu_post (
 -- ============================================================
 CREATE TABLE gonggu_post_product (
     id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    gonggu_id      BIGINT UNSIGNED NOT NULL
-                   COMMENT 'gonggu_post.id FK. gonggu_video_product.gonggu_id와 동일한 이름으로 통일',
+    gonggu_id      VARCHAR(50) NOT NULL
+                   COMMENT 'gonggu_post.post_id FK(자연키). gonggu_video_product.gonggu_id(→gonggu_video.video_id)와 동일한 이름·타입으로 통일',
     product_name   VARCHAR(300) NOT NULL
                    COMMENT '상품명(캡션에서 추출한 그대로, 브랜드명 포함 권장)',
     link_location   ENUM('설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명') NOT NULL
@@ -152,7 +152,7 @@ CREATE TABLE gonggu_post_product (
     KEY idx_gonggu_post_product_gonggu (gonggu_id),
     KEY idx_gonggu_post_product_name (product_name),
     CONSTRAINT fk_gonggu_post_product_post
-        FOREIGN KEY (gonggu_id) REFERENCES gonggu_post (id)
+        FOREIGN KEY (gonggu_id) REFERENCES gonggu_post (post_id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='gonggu_post 1건이 홍보하는 상품(1:N) — 가격/옵션/배송비 등 상세 커머스 정보는 별도 테이블(다운스트림 링크 크롤링 결과 저장용)에서 이 테이블을 참조해 관리할 예정';

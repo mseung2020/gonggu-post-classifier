@@ -38,7 +38,7 @@ def load_video(cur, parent, products):
     if cur.fetchone():
         return False
     cur.execute(INSERT_VIDEO, parent)
-    gonggu_id = cur.lastrowid
+    gonggu_id = parent['video_id']  # 자연키(video_id)를 그대로 FK 값으로 씀 — 서로게이트 id 대신
     for p in products:
         cur.execute(INSERT_VIDEO_PRODUCT, {**p, 'gonggu_id': gonggu_id})
     return True
@@ -49,7 +49,7 @@ def load_post(cur, parent, products):
     if cur.fetchone():
         return False
     cur.execute(INSERT_POST, parent)
-    gonggu_id = cur.lastrowid
+    gonggu_id = parent['post_id']  # 자연키(post_id)를 그대로 FK 값으로 씀 — 서로게이트 id 대신
     for p in products:
         cur.execute(INSERT_POST_PRODUCT, {**p, 'gonggu_id': gonggu_id})
     return True
