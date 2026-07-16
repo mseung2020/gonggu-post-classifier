@@ -1,0 +1,238 @@
+app:
+  description: ''
+  icon: shopping_bags
+  icon_background: '#FFE4E8'
+  icon_type: emoji
+  mode: workflow
+  name: 공구왕 페이지판별
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.4.3@84d4aae2c55724f6cdaecfadceed061d7e6b6693ae8945ea2dcd155f280743ef
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: 3001-source-3002-target
+      source: '3001'
+      sourceHandle: source
+      target: '3002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: 3002-source-3003-target
+      source: '3002'
+      sourceHandle: source
+      target: '3003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 3003-source-3004-target
+      source: '3003'
+      sourceHandle: source
+      target: '3004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 시작
+        type: start
+        variables:
+        - default: ''
+          hint: ''
+          label: input
+          options: []
+          placeholder: '{post_context: 포스트 설명/상품 맥락, page: {url, host, title, jsonld_name, jsonld_price, has_og_image}}'
+          required: true
+          type: json_object
+          variable: input
+      height: 109
+      id: '3001'
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "def main(input: dict) -> dict:\n    p = input.get(\"page\") or {}\n    summary = (\n        f\"URL: {p.get('url','')}\\n\"\n        f\"호스트: {p.get('host','')}\\n\"\n        f\"페이지 제목(og:title): {p.get('title','')}\\n\"\n        f\"JSON-LD 상품명: {p.get('jsonld_name','')}\\n\"\n        f\"JSON-LD 가격: {p.get('jsonld_price','')}\\n\"\n        f\"og:image 존재: {p.get('has_og_image')}\\n\"\n        f\"페이지 본문 텍스트(앞부분): {p.get('body_text_snippet','')}\\n\"\n    )\n    return {\n        \"post_context\": str(input.get(\"post_context\") or \"\"),\n        \"page_summary\": summary,\n    }\n"
+        code_language: python3
+        outputs:
+          post_context:
+            children: null
+            type: string
+          page_summary:
+            children: null
+            type: string
+        selected: false
+        title: 변수 추출
+        type: code
+        variables:
+        - value_selector:
+          - '3001'
+          - input
+          variable: input
+      height: 54
+      id: '3002'
+      position:
+        x: 382
+        y: 282
+      positionAbsolute:
+        x: 382
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params: {}
+          mode: chat
+          name: gpt-5-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: c2b2b002-0000-0000-0000-000000000001
+          role: system
+          text: "너는 크롤링으로 도착한 웹페이지가 \"공구/공동구매 포스트가 홍보하는 상품의 구매 페이지\"인지 판별하는 분석기다.\n입력: (1) 원본 포스트 설명/맥락 (2) 도착한 페이지의 메타정보(제목/도메인/JSON-LD/이미지 존재 여부/본문 텍스트 일부).\nog:title·JSON-LD가 비어 있어도 \"페이지 본문 텍스트\"에 상품명·가격 등 단서가 있으면 그걸로 판단해라 (메타태그가 없다고 무조건 불일치나 불명으로 처리하지 말 것).\nURL 경로 패턴(예: /article/, /post/, /blog/ 등)만 보고 \"기사·블로그라서 상품페이지가 아니다\"라고 단정하지 마라 — 자체 쇼핑몰(SaaS 빌더 등)은 상품 상세 URL이 /article/, /post/ 형태여도 실제로는 결제 가능한 상품 페이지인 경우가 흔하다. 본문 텍스트에 구체적인 가격(예: \"31,900원\")과 구매 옵션/주문서/장바구니 관련 문구가 함께 있으면 JSON-LD가 없어도 \"상품페이지\"로 판단해라.\n아래 스키마의 JSON \"하나만\" 출력한다. 설명·마크다운·코드블록 금지. 순수 JSON.\n\n[page_type 분류]\n- \"상품페이지\": 특정 상품 하나의 상세 정보(이름/가격/이미지)가 있는 페이지\n- \"스토어메인\": 특정 상품이 아니라 쇼핑몰/스토어의 메인·카테고리·검색결과 목록 페이지\n- \"로그인월_차단\": 로그인 요구, 접근 차단(403 등), 오류 페이지\n- \"링크모음\": 여러 외부 링크를 모아둔 목록 페이지(아직 최종 도착 아님, 추가 홉 필요)\n- \"무관\": 상품/구매와 관련 없는 페이지\n\n[is_final_product_page 규칙]\n- page_type이 \"상품페이지\"이고, 그 상품이 원본 포스트가 홍보하는 상품과 실제로 일치할 때만 true.\n- 도메인/제목이 상품페이지처럼 보여도 원본 포스트의 상품과 무관하면(다른 브랜드/카테고리) false로 판단하고 reason에 왜 다른지 적어라.\n- \"스토어메인\",\"로그인월_차단\",\"링크모음\",\"무관\"은 항상 false.\n\n반드시 아래 JSON 하나만 출력한다.\n{\n  \"page_type\": \"상품페이지\"|\"스토어메인\"|\"로그인월_차단\"|\"링크모음\"|\"무관\",\n  \"is_final_product_page\": boolean,\n  \"product_name_guess\": string|null,\n  \"reason\": string\n}"
+        - id: c2b2b002-0000-0000-0000-000000000002
+          role: user
+          text: '[원본 포스트 설명/맥락]
+
+            """
+
+            {{#3002.post_context#}}
+
+            """
+
+
+            [도착 페이지 정보]
+
+            """
+
+            {{#3002.page_summary#}}
+
+            """'
+        selected: false
+        title: LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '3003'
+      position:
+        x: 684
+        y: 282
+      positionAbsolute:
+        x: 684
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        outputs:
+        - value_selector:
+          - '3003'
+          - text
+          variable: result
+        selected: false
+        title: 출력
+        type: end
+      height: 88
+      id: '3004'
+      position:
+        x: 986
+        y: 282
+      positionAbsolute:
+        x: 986
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: 0
+      y: 0
+      zoom: 1
+  rag_pipeline_variables: []

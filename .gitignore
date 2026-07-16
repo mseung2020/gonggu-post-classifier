@@ -4,5 +4,7 @@ __pycache__/
 .DS_Store
 data/raw/*
 data/output/*
+data/auth/*
 !data/raw/.gitkeep
 !data/output/.gitkeep
+!data/auth/.gitkeep

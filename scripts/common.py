@@ -13,6 +13,7 @@ load_dotenv(ROOT / '.env')
 RAW_FILE = ROOT / 'data/raw/posts_raw.json'
 CLASSIFIED_FILE = ROOT / 'data/output/classified.json'
 LOAD_READY_FILE = ROOT / 'data/output/load_ready.json'
+RESOLVED_FILE = ROOT / 'data/output/load_ready_resolved.json'
 
 DIFY_URL = os.environ.get('DIFY_URL', 'https://api.dify.ai/v1').rstrip('/')
 DIFY_KEY = os.environ.get('DIFY_KEY', '')
@@ -45,8 +46,8 @@ def connect_dst():
     return _connect('DST')
 
 
-def call_dify(input_obj, timeout=60):
-    headers = {'Authorization': f'Bearer {DIFY_KEY}', 'Content-Type': 'application/json'}
+def call_dify(input_obj, api_key=None, timeout=60):
+    headers = {'Authorization': f'Bearer {api_key or DIFY_KEY}', 'Content-Type': 'application/json'}
     payload = {'inputs': {'input': input_obj}, 'response_mode': 'blocking', 'user': 'gonggu-post-classifier'}
     r = requests.post(f'{DIFY_URL}/workflows/run', headers=headers, data=json.dumps(payload), timeout=timeout)
     r.raise_for_status()

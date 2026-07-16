@@ -1,3 +1,5 @@
 pymysql
 python-dotenv
 requests
+playwright
+playwright-stealth

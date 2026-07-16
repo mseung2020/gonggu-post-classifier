@@ -1,0 +1,238 @@
+app:
+  description: ''
+  icon: shopping_bags
+  icon_background: '#FFE4E8'
+  icon_type: emoji
+  mode: workflow
+  name: 공구왕 링크선택
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.4.3@84d4aae2c55724f6cdaecfadceed061d7e6b6693ae8945ea2dcd155f280743ef
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: 2001-source-2002-target
+      source: '2001'
+      sourceHandle: source
+      target: '2002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: 2002-source-2003-target
+      source: '2002'
+      sourceHandle: source
+      target: '2003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 2003-source-2004-target
+      source: '2003'
+      sourceHandle: source
+      target: '2004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 시작
+        type: start
+        variables:
+        - default: ''
+          hint: ''
+          label: input
+          options: []
+          placeholder: '{post_context: 포스트 설명/상품 맥락, candidates: [{href, text}] 후보 링크 목록}'
+          required: true
+          type: json_object
+          variable: input
+      height: 109
+      id: '2001'
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "def main(input: dict) -> dict:\n    cands = input.get(\"candidates\") or []\n    lines = []\n    for i, c in enumerate(cands):\n        lines.append(f\"{i}. 텍스트: {c.get('text','')}  |  URL: {c.get('href','')}\")\n    return {\n        \"post_context\": str(input.get(\"post_context\") or \"\"),\n        \"candidates_text\": \"\\n\".join(lines) or \"(후믴 없음)\",\n    }\n"
+        code_language: python3
+        outputs:
+          post_context:
+            children: null
+            type: string
+          candidates_text:
+            children: null
+            type: string
+        selected: false
+        title: 변수 추출
+        type: code
+        variables:
+        - value_selector:
+          - '2001'
+          - input
+          variable: input
+      height: 54
+      id: '2002'
+      position:
+        x: 382
+        y: 282
+      positionAbsolute:
+        x: 382
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params: {}
+          mode: chat
+          name: gpt-5-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: c1a1a001-0000-0000-0000-000000000001
+          role: system
+          text: "너는 크리에이터의 '링크모음(link-in-bio)' 페이지에서, 특정 공구/공동구매 포스트가 홍보하는 상품의 구매 링크를 찾아주는 분석기다.\n입력: (1) 포스트 설명/맥락 (2) 그 페이지에서 추출한 후보 링크 목록(번호. 텍스트 | URL).\n아래 스키마의 JSON \"하나만\" 출력한다. 설명·마크다운·코드블록 금지. 순수 JSON.\n\n[규칙]\n- 후보 중 포스트가 홍보하는 상품/브랜드명과 가장 관련 있는 항목을 고른다. 텍스트가 짧거나 이모지뿐이어도 URL 슬러그나 맥락으로 추론해본다.\n- \"문의\",\"상담\",\"블로그\",\"유튜브\",\"인스타그램\",\"후기 이벤트\",\"카카오채널\",\"공식 홈페이지\" 등 상품 구매와 무관한 항목은 제외한다.\n- 여러 후보가 비슷하게 그럴듯하면 가장 위/최근에 있을 것으로 보이는(리스트 앞쪽) 항목을 우선한다.\n- 확신이 없어도 그래도 가장 가능성 높은 index를 고르고 confidence를 낮게 표시한다. 후보가 전혀 없거나 전부 명백히 무관하면 chosen_index를 -1로.\n\n반드시 아래 JSON 하나만 출력한다.\n{\n  \"chosen_index\": int,\n  \"reason\": string,\n  \"confidence\": \"high\"|\"medium\"|\"low\"\n}"
+        - id: c1a1a001-0000-0000-0000-000000000002
+          role: user
+          text: '[포스트 설명/맥락]
+
+            """
+
+            {{#2002.post_context#}}
+
+            """
+
+
+            [후보 링크 목록]
+
+            """
+
+            {{#2002.candidates_text#}}
+
+            """'
+        selected: false
+        title: LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '2003'
+      position:
+        x: 684
+        y: 282
+      positionAbsolute:
+        x: 684
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        outputs:
+        - value_selector:
+          - '2003'
+          - text
+          variable: result
+        selected: false
+        title: 출력
+        type: end
+      height: 88
+      id: '2004'
+      position:
+        x: 986
+        y: 282
+      positionAbsolute:
+        x: 986
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: 0
+      y: 0
+      zoom: 1
+  rag_pipeline_variables: []
