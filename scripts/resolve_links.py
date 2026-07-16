@@ -62,6 +62,14 @@ UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 BAD_DOMAINS = ('nid.naver.com', 'accounts.kakao.com', 'account.kakao.com', 'mkt.shopping.naver',
                'pf.kakao.com', 'forms.gle', 'docs.google', 'canva.site', 'band.us',
                'instagram.com', 'youtube.com', 'youtu.be')
+# 버튼 텍스트에 이런 말이 있으면 애초에 상품 구매 링크가 아니니 LLM#2한테 보여주지도 않고
+# 후보에서 뺀다 — LLM#2 프롬프트에도 같은 취지의 지침이 있지만, 다른 후보가 다 별로면 그중
+# "제일 나은" 걸로 고객센터/문의 링크를 골라버리는 경우가 실제로 있어서(확신도 낮게라도)
+# 코드 레벨에서 원천적으로 제외한다.
+NON_PRODUCT_TEXT = ('고객센터', '고객센타', '고객상담', 'cs', '문의', '상담', '채널톡', '카카오톡',
+                     '카카오채널', '공지사항', '이용안내', '배송안내', '교환/환불', '환불정책',
+                     '이용약관', '개인정보', '블로그', '유튜브', '인스타그램', '페이스북', '후기',
+                     '이벤트', '공식홈페이지')
 MAX_CANDIDATES = 80  # cafe.naver.com류 커뮤니티 페이지는 게시판 네비게이션까지 다 잡혀서 넘칠 수 있음
 ITEM_DELAY = float(os.environ.get('ITEM_DELAY', '3'))  # 상품 사이 대기(초) — 안티봇/레이트리밋 완화
 BLOCKED_STATUS_CODES = (403, 429, 490)  # 490=네이버 캡차/보안확인
@@ -226,6 +234,9 @@ def extract_collection_links(page):
         if re.match(r'^(javascript|mailto|tel):', href, re.I):
             continue
         if href.split('#')[0] == current_no_frag:
+            continue
+        text_norm = re.sub(r'\s+', '', text or '').lower()
+        if text_norm and any(kw in text_norm for kw in NON_PRODUCT_TEXT):
             continue
         seen.add(href)
         out.append({'href': href, 'text': text})
