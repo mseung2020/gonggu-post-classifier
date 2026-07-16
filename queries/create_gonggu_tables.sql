@@ -18,11 +18,12 @@
 --     - gonggu_post.publish_date   ↔ instagram_post.publish_date   DATETIME
 --     (공구 시작일/종료일·분류 특이사항처럼 원본에 대응 컬럼이 없는 건 새로 이름 지음)
 --     channel_id/user_id는 원본에서는 nullable이지만, 여기서는 "유저 필수" 요건이 있어 NOT NULL로 둠.
---  3) 부모→자식(상품) 연결 컬럼명은 두 쌍(video/video_product, post/post_product) 모두 동일하게
---     gonggu_id로 통일한다.
+--  3) 부모→자식(상품) 연결 컬럼은 자연키(post_id/video_id) 그대로 FK로 쓴다 — 처음엔 두 쌍 모두
+--     gonggu_id라는 공통 이름으로 통일했었는데, 그보다는 각 자식 테이블에서 "그 부모의 자연키와
+--     같은 이름"(post_id/video_id)을 쓰는 게 더 직관적이라 판단해 이후에 이렇게 바꿈.
 --  4) 중복되면 안 되는 값(video_id, post_id)에는 UNIQUE. product_name은 걸지 않음
 --     (다른 크리에이터가 같은 상품을 공구하는 경우가 있을 수 있고, 같은 포스트 안에서도
---     굳이 강제할 이유가 없음 — id/gonggu_id만으로 관리).
+--     굳이 강제할 이유가 없음 — id/post_id/video_id만으로 관리).
 --  5) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci.
 --  6) link_location/url_type/candidate_url은 "한 포스트에 상품이 여러 개면 상품마다 구매 경로가
 --     다를 수 있다"는 이유로 부모가 아니라 상품(product) 테이블 쪽에 둔다.
@@ -76,8 +77,8 @@ CREATE TABLE gonggu_video (
 -- ============================================================
 CREATE TABLE gonggu_video_product (
     id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    gonggu_id      VARCHAR(50) NOT NULL
-                   COMMENT 'gonggu_video.video_id FK(자연키). gonggu_post_product.gonggu_id(→gonggu_post.post_id)와 동일한 이름·타입으로 통일',
+    video_id       VARCHAR(50) NOT NULL
+                   COMMENT 'gonggu_video.video_id FK(자연키)',
     product_name   VARCHAR(300) NOT NULL
                    COMMENT '상품명(캡션/설명에서 추출한 그대로, 브랜드명 포함 권장)',
     link_location   ENUM('설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명') NOT NULL
@@ -91,10 +92,10 @@ CREATE TABLE gonggu_video_product (
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    KEY idx_gonggu_video_product_gonggu (gonggu_id),
+    KEY idx_gonggu_video_product_video (video_id),
     KEY idx_gonggu_video_product_name (product_name),
     CONSTRAINT fk_gonggu_video_product_video
-        FOREIGN KEY (gonggu_id) REFERENCES gonggu_video (video_id)
+        FOREIGN KEY (video_id) REFERENCES gonggu_video (video_id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='gonggu_video 1건이 홍보하는 상품(1:N) — 가격/옵션/배송비 등 상세 커머스 정보는 별도 테이블(다운스트림 링크 크롤링 결과 저장용)에서 이 테이블을 참조해 관리할 예정';
@@ -134,8 +135,8 @@ CREATE TABLE gonggu_post (
 -- ============================================================
 CREATE TABLE gonggu_post_product (
     id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    gonggu_id      VARCHAR(50) NOT NULL
-                   COMMENT 'gonggu_post.post_id FK(자연키). gonggu_video_product.gonggu_id(→gonggu_video.video_id)와 동일한 이름·타입으로 통일',
+    post_id        VARCHAR(50) NOT NULL
+                   COMMENT 'gonggu_post.post_id FK(자연키)',
     product_name   VARCHAR(300) NOT NULL
                    COMMENT '상품명(캡션에서 추출한 그대로, 브랜드명 포함 권장)',
     link_location   ENUM('설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명') NOT NULL
@@ -149,10 +150,10 @@ CREATE TABLE gonggu_post_product (
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    KEY idx_gonggu_post_product_gonggu (gonggu_id),
+    KEY idx_gonggu_post_product_post (post_id),
     KEY idx_gonggu_post_product_name (product_name),
     CONSTRAINT fk_gonggu_post_product_post
-        FOREIGN KEY (gonggu_id) REFERENCES gonggu_post (post_id)
+        FOREIGN KEY (post_id) REFERENCES gonggu_post (post_id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='gonggu_post 1건이 홍보하는 상품(1:N) — 가격/옵션/배송비 등 상세 커머스 정보는 별도 테이블(다운스트림 링크 크롤링 결과 저장용)에서 이 테이블을 참조해 관리할 예정';

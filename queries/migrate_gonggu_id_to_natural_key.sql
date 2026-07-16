@@ -57,3 +57,25 @@ ALTER TABLE gonggu_video_product
 SELECT pp.gonggu_id, p.post_id, pp.product_name
 FROM gonggu_post_product pp JOIN gonggu_post p ON p.post_id = pp.gonggu_id
 LIMIT 5;
+
+-- ============================================================
+-- 3) 후속 변경(직접 실행됨, 참고용) — 컬럼명을 공통 이름 gonggu_id에서 각 부모의 자연키와
+--    똑같은 이름(post_id/video_id)으로 한 번 더 변경. 위 1)/2) 마이그레이션 실행 후에 적용됨.
+--    create_gonggu_tables.sql은 이미 이 최종 상태로 갱신돼 있음. 참고로 남겨두는 것뿐이라
+--    이 파일을 처음부터 실행하는 경우라면 아래도 순서대로 같이 실행하면 최종 상태가 됨.
+-- ============================================================
+-- ALTER TABLE gonggu_post_product DROP FOREIGN KEY fk_gonggu_post_product_post;
+-- ALTER TABLE gonggu_post_product CHANGE COLUMN gonggu_id post_id VARCHAR(50) NOT NULL
+--     COMMENT 'gonggu_post.post_id FK(자연키)';
+-- ALTER TABLE gonggu_post_product
+--     ADD CONSTRAINT fk_gonggu_post_product_post
+--         FOREIGN KEY (post_id) REFERENCES gonggu_post (post_id)
+--         ON DELETE CASCADE ON UPDATE CASCADE;
+--
+-- ALTER TABLE gonggu_video_product DROP FOREIGN KEY fk_gonggu_video_product_video;
+-- ALTER TABLE gonggu_video_product CHANGE COLUMN gonggu_id video_id VARCHAR(50) NOT NULL
+--     COMMENT 'gonggu_video.video_id FK(자연키)';
+-- ALTER TABLE gonggu_video_product
+--     ADD CONSTRAINT fk_gonggu_video_product_video
+--         FOREIGN KEY (video_id) REFERENCES gonggu_video (video_id)
+--         ON DELETE CASCADE ON UPDATE CASCADE;

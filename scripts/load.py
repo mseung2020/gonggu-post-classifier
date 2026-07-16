@@ -16,8 +16,8 @@ VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(publishDate)s,
 """
 CHECK_VIDEO_EXISTS = "SELECT id FROM gonggu_video WHERE video_id = %s"
 INSERT_VIDEO_PRODUCT = """
-INSERT INTO gonggu_video_product (gonggu_id, product_name, link_location, url_type, candidate_url, sort_order)
-VALUES (%(gonggu_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s, %(sort_order)s)
+INSERT INTO gonggu_video_product (video_id, product_name, link_location, url_type, candidate_url, sort_order)
+VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s, %(sort_order)s)
 """
 
 INSERT_POST = """
@@ -28,8 +28,8 @@ VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
 """
 CHECK_POST_EXISTS = "SELECT id FROM gonggu_post WHERE post_id = %s"
 INSERT_POST_PRODUCT = """
-INSERT INTO gonggu_post_product (gonggu_id, product_name, link_location, url_type, candidate_url, sort_order)
-VALUES (%(gonggu_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s, %(sort_order)s)
+INSERT INTO gonggu_post_product (post_id, product_name, link_location, url_type, candidate_url, sort_order)
+VALUES (%(post_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s, %(sort_order)s)
 """
 
 
@@ -38,9 +38,9 @@ def load_video(cur, parent, products):
     if cur.fetchone():
         return False
     cur.execute(INSERT_VIDEO, parent)
-    gonggu_id = parent['video_id']  # 자연키(video_id)를 그대로 FK 값으로 씀 — 서로게이트 id 대신
+    video_id = parent['video_id']  # FK 컬럼명이 gonggu_video_product.video_id로 되어있음(자연키)
     for p in products:
-        cur.execute(INSERT_VIDEO_PRODUCT, {**p, 'gonggu_id': gonggu_id})
+        cur.execute(INSERT_VIDEO_PRODUCT, {**p, 'video_id': video_id})
     return True
 
 
@@ -49,9 +49,9 @@ def load_post(cur, parent, products):
     if cur.fetchone():
         return False
     cur.execute(INSERT_POST, parent)
-    gonggu_id = parent['post_id']  # 자연키(post_id)를 그대로 FK 값으로 씀 — 서로게이트 id 대신
+    post_id = parent['post_id']  # FK 컬럼명이 gonggu_post_product.post_id로 되어있음(자연키)
     for p in products:
-        cur.execute(INSERT_POST_PRODUCT, {**p, 'gonggu_id': gonggu_id})
+        cur.execute(INSERT_POST_PRODUCT, {**p, 'post_id': post_id})
     return True
 
 
