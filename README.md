@@ -18,8 +18,9 @@ LLM #1 — 공구 여부 판별 + 상품 배열(상품마다 link_location/url_t
    ↓ classify.py
 게이트(코드, 보수적) — is_gonggu=false / 상품 특정 실패 / 제휴 광고성 다중 링크 → 제외
    ↓ transform.py                                          [candidate_url = LLM 원본 후보 목록]
-크롤링(Playwright) → LLM#3(페이지판별) → 링크모음/스토어메인이면 LLM#2(링크선택) → 다음 홉
-(최대 3홉, post→프로필/인포크→상품)                         [candidate_url = 해석된 최종 링크 1개]
+크롤링(Playwright, 1회) → LLM#3(페이지판별) → 링크모음/스토어메인이면 LLM#2(링크선택)로
+하나 고름 → 그 링크를 실제로 열어서 재검증하지 않고 즉시 최종 확정(안티봇 차단 회피,
+마감/예정 등 진행 단계와 무관하게 항상 시도)      [candidate_url = 해석된 최종 링크 1개]
    ↓ resolve_links.py
 dev_gongguking DB
   - 유튜브: gonggu_video(영상 1건) + gonggu_video_product(상품, 1:N)
