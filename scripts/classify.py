@@ -3,9 +3,12 @@
 날짜/링크위치를 뽑는다. 체크포인트 저장이라 중간에 죽어도 이어서 실행 가능.
 
 사용법:
-    CONCURRENCY=4 python3 scripts/classify.py
+    CONCURRENCY=4 python3 scripts/classify.py            # 남은 것 전부
+    LIMIT=500 python3 scripts/classify.py                # 이번 실행에 500건만 (체크포인트 이어서)
+    PLATFORM=yt LIMIT=500 python3 scripts/classify.py    # ig/yt 중 하나만 골라서 500건
 결과: data/output/classified.json (원본 포스트 + classification 필드 추가)
 """
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,8 +51,16 @@ def main():
     done_keys = {_key(r) for r in prior}
     todo = [p for p in posts if _key(p) not in done_keys]
 
-    concurrency = 4
-    print(f'전체 {len(posts)} | 완료 {len(prior)} | 이번 실행 {len(todo)}건 (동시 {concurrency})')
+    platform = os.environ.get('PLATFORM')  # 'ig' 또는 'yt'만 지정하면 그 플랫폼만 골라서 처리
+    if platform:
+        todo = [p for p in todo if p['platform'] == platform]
+
+    limit = int(os.environ.get('LIMIT', '0')) or len(todo)
+    todo = todo[:limit]
+
+    concurrency = int(os.environ.get('CONCURRENCY', '4'))
+    scope = f'platform={platform} ' if platform else ''
+    print(f'전체 {len(posts)} | 완료 {len(prior)} | 이번 실행 {scope}{len(todo)}건 (동시 {concurrency})')
 
     results = list(prior)
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
