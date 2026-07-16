@@ -115,6 +115,17 @@ python3 scripts/load.py                               # dev_gongguking에 실제
 
 `scripts/check_db.py` — 소스/타겟 DB 연결과 타겟 테이블 스키마를 확인하는 점검 스크립트.
 
+`scripts/_diag_sample.py` — 링크 해석 품질을 점검하고 싶을 때 쓰는 진단용 스크립트. 실제
+파이프라인 체크포인트(classified.json/load_ready.json 등)는 건드리지 않고, `posts_raw.json`에서
+랜덤 샘플을 뽑아 classify→transform→resolve_links를 돌려서 `data/output/_diag_result.json`에
+남긴다(포스트 원문·프로필 소개글·LLM들의 판단 근거까지 다 같이 저장되어 있어서 결과를 사람이
+직접 하나씩 읽고 판단하기 좋음).
+
+```bash
+python3 scripts/_diag_sample.py            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
+python3 scripts/_diag_sample.py 500 80     # 포스트 500개, 상품 80개
+```
+
 ## 보수적 필터링 기준
 
 - **is_gonggu**: "공구"라는 글자가 있어도 도구(전동공구 등) 리뷰거나, 그룹구매 특유의 신호
