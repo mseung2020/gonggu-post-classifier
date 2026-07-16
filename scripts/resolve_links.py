@@ -193,6 +193,22 @@ def fetch(page, url, wait_extra=1.5):
     return rec
 
 
+def _follow_redirect(page, url, referer):
+    """판단(LLM) 없이 그냥 한 번 더 열어서 진짜 목적지 URL만 얻는다 — "이 상품이 맞는지"는 안
+    보고 "이 링크가 실제로 어딘가로 연결되는지"만 확인. referer를 원래 있던 페이지로 지정해야
+    하는 이유는 위 호출부 주석 참고. 리다이렉트가 전혀 안 일어나면(그대로 같은 URL) None."""
+    try:
+        page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
+        try:
+            page.wait_for_load_state('networkidle', timeout=6000)
+        except Exception:
+            pass
+        final_url = page.url
+    except Exception:
+        return None
+    return final_url if final_url.split('#')[0] != url.split('#')[0] else None
+
+
 def extract_collection_links(page):
     try:
         raw = page.eval_on_selector_all(
@@ -357,11 +373,20 @@ def _resolve_one_candidate(page, current_url, product, ctx):
         if confidence not in LINK_PICK_OK_CONF:
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type} 후보 중 확신도 낮음(conf={confidence}) — 검증 홉이 없어서 오탐 방지로 채택 안 함'}
-        chosen_url = normalize_url(links[idx]['href'])
-        # ⚠ 여기서 이 링크를 실제로 열어서 재검증하지 않고 즉시 최종으로 확정한다 — 검증 홉을
-        # 없애서 네이버 등 최종 목적지의 안티봇 차단을 원천적으로 피한다. 그 대신 hint_is_vague는
-        # 그대로 적용해서, 상품명이 너무 일반적인 경우(스토어메인 카탈로그에서 뽑은 임의의 상품일
-        # 위험)는 자동 확정하지 않고 사람 검토로 돌린다.
+        chosen_href = normalize_url(links[idx]['href'])
+        # ⚠ "이 링크가 맞는 상품인지" 재검증(LLM#3)은 안 하지만, "이 링크가 실제로 열리는지"는
+        # 확인해야 한다 — inpock 등 링크모음 서비스의 버튼 href가 자기네 내부 리다이렉트 API
+        # (예: link.inpock.co.kr/api/r/<토큰>)를 가리키는 경우가 많은데, 이 URL을 referer 없이
+        # 단독으로 열면 400이 나서 아예 안 열리는 죽은 링크가 된다(실측 확인, 2026-07-16) — 지금
+        # 있던 페이지에서 온 것처럼 referer를 붙여서 한 번 더 열면(판단 없는 단순 리다이렉트
+        # 추적) 정상적으로 진짜 목적지로 넘어간다.
+        chosen_url = _follow_redirect(page, chosen_href, referer=r['final_url'] or current_url)
+        if not chosen_url:
+            return {'status': 'unresolved', 'final_url': None,
+                    'note': f'{page_type} 후보(conf={confidence})를 선택했지만 실제 목적지로 리다이렉트되지 않음'
+                            f' — {chosen_href[:150]}'}
+        # hint_is_vague는 그대로 적용해서, 상품명이 너무 일반적인 경우(스토어메인 카탈로그에서
+        # 뽑은 임의의 상품일 위험)는 자동 확정하지 않고 사람 검토로 돌린다.
         if hint_is_vague(product.get('product_name')):
             return {'status': 'hold', 'final_url': chosen_url,
                     'note': f"상품명(\"{product.get('product_name')}\")이 너무 일반적이라 LLM#2 선택을"
