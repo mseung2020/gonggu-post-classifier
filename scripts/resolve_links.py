@@ -60,7 +60,7 @@ UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36')
 
 BAD_DOMAINS = ('nid.naver.com', 'accounts.kakao.com', 'account.kakao.com', 'mkt.shopping.naver',
-               'pf.kakao.com', 'forms.gle', 'docs.google', 'canva.site', 'band.us',
+               'pf.kakao.com', 'open.kakao.com', 'forms.gle', 'docs.google', 'canva.site', 'band.us',
                'instagram.com', 'youtube.com', 'youtu.be')
 # 버튼 텍스트에 이런 말이 있으면 애초에 상품 구매 링크가 아니니 LLM#2한테 보여주지도 않고
 # 후보에서 뺀다 — LLM#2 프롬프트에도 같은 취지의 지침이 있지만, 다른 후보가 다 별로면 그중
@@ -218,7 +218,13 @@ def _follow_redirect(page, url, referer):
         return None
     if resp is not None and resp.status >= 400:
         return None
-    return page.url
+    final_url = page.url
+    # 상태코드는 200이어도 도중에 로그인월(nid.naver.com/nidlogin.login?url=...) 등으로
+    # 튕겨나가는 경우가 실제로 있었음(2026-07-16) — 이건 성공이 아니라 그 목적지가 로그인을
+    # 요구해서 못 들어간 것이므로 BAD_DOMAINS와 동일하게 실패로 본다.
+    if any(d in final_url for d in BAD_DOMAINS):
+        return None
+    return final_url
 
 
 def extract_collection_links(page):
