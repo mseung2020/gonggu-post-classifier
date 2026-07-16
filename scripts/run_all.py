@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """posts_raw.json에 있는 전체 포스트를 CHUNK_SIZE(기본 100)씩 끊어서 인스타/유튜브를
-번갈아 classify → transform → load까지 자동으로 반복한다. 한쪽 플랫폼이 다 끝나면
-자동으로 감지해서 남은 플랫폼만 계속 진행하고, 둘 다 끝나면 자동 종료한다.
+번갈아 classify → transform → resolve_links → load까지 자동으로 반복한다. 한쪽 플랫폼이
+다 끝나면 자동으로 감지해서 남은 플랫폼만 계속 진행하고, 둘 다 끝나면 자동 종료한다.
 
-Ctrl+C로 언제든 중단해도 안전하다 — classify.py가 10건마다 체크포인트를 저장하고,
-transform.py/load.py는 이미 처리·삽입된 건 자동으로 건너뛰기 때문에 다시 실행하면
-그대로 이어서 진행된다.
+resolve_links.py(링크 해석, Playwright 크롤링)는 상품당 몇 초씩 걸리는 느린 단계라
+전체 라운드가 예전보다 훨씬 오래 걸린다 — 대신 candidate_url이 처음부터 해석된 최종
+링크로 들어간다(load.py는 이미 DB에 있는 post_id/video_id를 건너뛰기만 하고 UPDATE는
+안 하므로, 링크 해석은 load 전에 끝나 있어야만 DB에 반영됨).
+
+Ctrl+C로 언제든 중단해도 안전하다 — classify.py가 10건마다, resolve_links.py가 상품
+10건마다 체크포인트를 저장하고, transform.py/load.py는 이미 처리·삽입된 건 자동으로
+건너뛰기 때문에 다시 실행하면 그대로 이어서 진행된다.
 
 사용법:
     python3 scripts/run_all.py                    # fetch는 이미 했다는 전제, 100개씩 반복
@@ -87,8 +92,9 @@ def main():
             n = min(CHUNK_SIZE, remaining[platform])
             print(f'\n--- {platform.upper()} {n}건 분류 ---')
             run('classify.py', {'PLATFORM': platform, 'LIMIT': str(CHUNK_SIZE), 'CONCURRENCY': CONCURRENCY})
-            print(f'--- {platform.upper()} 배치 → DB 반영 ---')
+            print(f'--- {platform.upper()} 배치 → 링크 해석 → DB 반영 ---')
             run('transform.py')
+            run('resolve_links.py')
             run('load.py')
 
     print_db_summary()
