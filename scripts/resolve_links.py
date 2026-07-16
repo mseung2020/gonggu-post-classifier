@@ -203,18 +203,22 @@ def fetch(page, url, wait_extra=1.5):
 
 def _follow_redirect(page, url, referer):
     """판단(LLM) 없이 그냥 한 번 더 열어서 진짜 목적지 URL만 얻는다 — "이 상품이 맞는지"는 안
-    보고 "이 링크가 실제로 어딘가로 연결되는지"만 확인. referer를 원래 있던 페이지로 지정해야
-    하는 이유는 위 호출부 주석 참고. 리다이렉트가 전혀 안 일어나면(그대로 같은 URL) None."""
+    보고 "이 링크가 실제로 열리는지"만 확인. referer를 원래 있던 페이지로 지정해야 하는 이유는
+    위 호출부 주석 참고. ⚠ "URL이 바뀌었는지"로 성공/실패를 판단하면 안 된다 — 애초에 리다이렉트가
+    필요 없는(이미 최종 목적지인) 링크를 전부 실패로 오판하게 된다(실측으로 발견, 2026-07-16).
+    올바른 기준은 HTTP 상태: 정상 응답(<400)이면 page.url을 그대로 최종 URL로 쓰고, 4xx/5xx면
+    (referer 없이 열었을 때 inpock api/r/ 엔드포인트가 400을 내는 것처럼) 실패로 본다."""
     try:
-        page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
+        resp = page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
         try:
             page.wait_for_load_state('networkidle', timeout=6000)
         except Exception:
             pass
-        final_url = page.url
     except Exception:
         return None
-    return final_url if final_url.split('#')[0] != url.split('#')[0] else None
+    if resp is not None and resp.status >= 400:
+        return None
+    return page.url
 
 
 def extract_collection_links(page):
