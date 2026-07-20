@@ -488,17 +488,18 @@ def resolve_product(page, platform, parent, product):
     전부 실패하면 그중 가장 나은 상태를 반환. 반환: {status, final_url, note, tried_urls}
     (tried_urls는 실제로 시도한 URL 목록 — 나중에 "어떤 링크를 열어봤는지" 진단용)."""
     raw_urls = [u for u in (product.get('candidate_url') or '').split(';') if u]
-    if not raw_urls and platform == 'yt' and parent.get('channel_id'):
-        # 캡션/프로필에 링크가 전혀 없으면(인스타의 프로필 external_url처럼) 유튜브 채널
-        # 정보란의 링크를 대신 시도한다 — 성공/실패 여부와 무관하게 parent에 남겨서
-        # gonggu_video.external_url로도 저장되게 한다(이왕 긁은 거 DB에도 남기자는 결정).
+    candidates = ordered_candidates(raw_urls, product.get('url_type'))
+    if not candidates and platform == 'yt' and parent.get('channel_id'):
+        # candidate_url이 원래 없었든, 있었는데 전부 잘려서(...) 못 쓰게 됐든 — 어차피 지금
+        # 시도할 후보가 0개인 상황은 똑같으니 유튜브 채널 정보란의 링크를 마지막 수단으로
+        # 시도한다(인스타의 프로필 external_url과 같은 역할). 성공/실패 여부와 무관하게
+        # parent에 남겨서 gonggu_video.external_url로도 저장되게 한다.
         parent['external_url'] = _youtube_channel_link(parent['channel_id'])
         if parent['external_url']:
-            raw_urls = [parent['external_url']]
-    if not raw_urls:
-        return {'status': 'unresolved', 'final_url': None, 'note': '크롤링할 후보 링크 없음', 'tried_urls': []}
+            candidates = ordered_candidates([parent['external_url']], product.get('url_type'))
 
-    candidates = ordered_candidates(raw_urls, product.get('url_type'))
+    if not raw_urls and not candidates:
+        return {'status': 'unresolved', 'final_url': None, 'note': '크롤링할 후보 링크 없음', 'tried_urls': []}
     if not candidates:
         return {'status': 'unresolved', 'final_url': None,
                 'note': f"실제 구매 링크(url_type={product.get('url_type')})가 원본부터 잘려서 확인 불가",
