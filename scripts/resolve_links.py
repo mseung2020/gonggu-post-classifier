@@ -404,7 +404,11 @@ def _resolve_one_candidate(page, current_url, product, ctx):
             return {'status': 'error', 'final_url': None, 'note': f'LLM#2 호출 실패: {str(e)[:120]}'}
         idx, confidence = pick.get('chosen_index', -1), pick.get('confidence')
         if idx is None or idx < 0 or idx >= len(links):
-            return {'status': 'unresolved', 'final_url': None, 'note': 'LLM#2가 적합한 링크를 못 찾음'}
+            # pick.get('reason')에 LLM#2가 왜 못 골랐는지(예: "아직 오픈 전이라 후보 링크 자체가
+            # 없음")가 있는데 이걸 버리고 뭉뚱그려 쓰고 있었음 — 그대로 살려서 진단에 쓴다.
+            reason = (pick.get('reason') or '').strip()
+            note = f'LLM#2가 적합한 링크를 못 찾음: {reason[:150]}' if reason else 'LLM#2가 적합한 링크를 못 찾음'
+            return {'status': 'unresolved', 'final_url': None, 'note': note}
         # 검증 홉이 없어진 뒤로는 여기서 확정하면 그대로 DB에 들어간다 — 예전엔 링크모음은
         # 확신도 무관하게 최선의 후보를 채택해도 LLM#3 재검증이 저확신 오판을 걸러줬지만, 이제는
         # 그 안전망이 없으므로 링크모음/스토어메인 둘 다 확신도가 낮으면(low) 자동 확정하지 않는다.
