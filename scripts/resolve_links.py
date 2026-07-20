@@ -64,6 +64,15 @@ UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 BAD_DOMAINS = ('nid.naver.com', 'accounts.kakao.com', 'account.kakao.com', 'mkt.shopping.naver',
                'pf.kakao.com', 'open.kakao.com', 'forms.gle', 'docs.google', 'canva.site', 'band.us',
                'instagram.com', 'youtube.com', 'youtu.be')
+# 네이버 블로그는 콘텐츠 페이지일 뿐 실제 구매를 완결할 수 있는 몰이 아니다 — LLM#1이
+# url_type을 "네이버_기타" 등으로 잘못 분류했거나 LLM#3가 상품명/가격이 그대로 보인다고
+# 상품페이지로 오판해도, 이 도메인이면 최종 구매 링크로 확정하지 않는다(실제 라이브 실행
+# 중 발견, 2026-07-20 — 블로그 글이 그대로 done 확정됨).
+NON_MALL_DOMAINS = ('blog.naver.com', 'm.blog.naver.com')
+
+
+def _is_non_mall(url):
+    return host_of(url) in NON_MALL_DOMAINS
 # 버튼 텍스트에 이런 말이 있으면 애초에 상품 구매 링크가 아니니 LLM#2한테 보여주지도 않고
 # 후보에서 뺀다 — LLM#2 프롬프트에도 같은 취지의 지침이 있지만, 다른 후보가 다 별로면 그중
 # "제일 나은" 걸로 고객센터/문의 링크를 골라버리는 경우가 실제로 있어서(확신도 낮게라도)
@@ -229,14 +238,14 @@ def _follow_redirect(page, url, referer):
     status = resp.status if resp is not None else None
     is_bad_domain = any(d in final_url for d in BAD_DOMAINS)
     if status is not None and status < 400 and not is_bad_domain:
-        if _looks_discontinued(final_url):
+        if _looks_discontinued(final_url) or _is_non_mall(final_url):
             return None, False
         return final_url, True
     if is_bad_domain:
         # 로그인월/카카오 오픈채팅 등 그 자체는 못 쓰는 목적지 — URL에서 원래 목적지를 복구할
         # 수 있을 때만(예: nid.naver.com의 url= 파라미터) 살리고, 안 되면 완전히 실패.
         recovered = _recover_from_block(final_url)
-        if recovered and _looks_discontinued(recovered):
+        if recovered and (_looks_discontinued(recovered) or _is_non_mall(recovered)):
             return None, False
         return recovered, False
     # BAD_DOMAINS는 아닌데 상태코드가 4xx/5xx인 경우(Cloudflare 등 안티봇). 원래 요청한 URL과
@@ -247,7 +256,7 @@ def _follow_redirect(page, url, referer):
     if final_url.split('#')[0] == url.split('#')[0]:
         return None, False
     recovered = _recover_from_block(final_url) or final_url
-    if _looks_discontinued(recovered):
+    if _looks_discontinued(recovered) or _is_non_mall(recovered):
         return None, False
     return recovered, False
 
@@ -335,14 +344,19 @@ def normalize_url(u):
 def ordered_candidates(urls, url_type=None):
     """후보 URL들을 시도할 순서대로 정렬한다 — url_type과 도메인이 일치하는 후보를 먼저,
     나머지는 원래 순서 그대로 뒤에 붙인다. "..."로 잘린 링크(캡션 원본부터 잘려서 우리가
-    고칠 방법이 없는 것)는 애초에 열어볼 수 없으니 제외한다."""
+    고칠 방법이 없는 것)는 애초에 열어볼 수 없으니 제외한다. 네이버 블로그는 몰이 아니므로
+    url_type 힌트가 우연히 걸리더라도(예: LLM#1이 "네이버_기타"로 잘못 분류) 맨 뒤로 미룬다 —
+    그래도 결국 시도는 되지만(다른 후보가 없을 때의 최후 수단), _resolve_one_candidate에서
+    최종 확정은 못 하게 막아둔다."""
     urls = [u for u in (urls or []) if u and '...' not in u]
+    non_mall = [u for u in urls if _is_non_mall(u)]
+    urls = [u for u in urls if u not in non_mall]
     hints = URL_TYPE_DOMAIN_HINTS.get(url_type)
     if not hints:
-        return urls
+        return urls + non_mall
     matching = [u for u in urls if any(h in u for h in hints)]
     rest = [u for u in urls if u not in matching]
-    return matching + rest
+    return matching + rest + non_mall
 
 
 def hint_is_vague(name):
@@ -431,6 +445,10 @@ def _resolve_one_candidate(page, current_url, product, ctx):
         return {'status': 'error', 'final_url': None, 'note': f'LLM#3 호출 실패: {str(e)[:120]}'}
 
     if verdict.get('page_type') == '상품페이지' and verdict.get('is_final_product_page'):
+        if _is_non_mall(r['final_url']):
+            return {'status': 'hold', 'final_url': r['final_url'],
+                    'note': f"네이버 블로그({r['final_url']})는 몰이 아니라 상품/가격이 보여도 자동 확정하지"
+                            f" 않음 — 사람 검토 필요"}
         if hint_is_vague(product.get('product_name')):
             return {'status': 'hold', 'final_url': r['final_url'],
                     'note': f"상품명(\"{product.get('product_name')}\")이 너무 일반적이라 이 상품페이지"
@@ -493,6 +511,9 @@ def _resolve_one_candidate(page, current_url, product, ctx):
             if _looks_discontinued(r2['final_url'] or chosen_href):
                 return {'status': 'unresolved', 'final_url': None,
                         'note': f'{page_type} 후보(conf=medium) — 재검증한 페이지가 판매종료로 보임'}
+            if _is_non_mall(r2['final_url'] or chosen_href):
+                return {'status': 'unresolved', 'final_url': None,
+                        'note': f'{page_type} 후보(conf=medium) — 재검증한 페이지가 네이버 블로그(몰 아님)라 채택 안 함'}
             chosen_url, verify_note = r2['final_url'], (
                 f"LLM#2 선택(conf=medium) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:150]}")
         else:
