@@ -206,10 +206,8 @@ def _follow_redirect(page, url, referer):
     보고 "이 링크가 실제로 열리는지"만 확인. referer를 원래 있던 페이지로 지정해야 하는 이유는
     위 호출부 주석 참고. ⚠ "URL이 바뀌었는지"로 성공/실패를 판단하면 안 된다 — 애초에 리다이렉트가
     필요 없는(이미 최종 목적지인) 링크를 전부 실패로 오판하게 된다(실측으로 발견, 2026-07-16).
-    올바른 기준은 HTTP 상태: 정상 응답(<400)이면 page.url을 그대로 최종 URL로 쓰고, 4xx/5xx면
-    (referer 없이 열었을 때 inpock api/r/ 엔드포인트가 400을 내는 것처럼) 실패로 본다.
     반환: (최종 url 또는 None, verified) — verified=False면 우리가 직접 그 페이지 내용을
-    확인하지는 못했지만(로그인월 등) URL 자체는 복구한 경우."""
+    확인하지는 못했지만(로그인월/캡차 등) URL 자체는 복구한 경우."""
     try:
         resp = page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
         try:
@@ -218,30 +216,41 @@ def _follow_redirect(page, url, referer):
             pass
     except Exception:
         return None, False
-    if resp is not None and resp.status >= 400:
-        return None, False
     final_url = page.url
-    # 상태코드는 200이어도 도중에 로그인월(nid.naver.com/nidlogin.login?url=...) 등으로
-    # 튕겨나가는 경우가 실제로 있었음(2026-07-16) — 이건 성공이 아니라 그 목적지가 로그인을
-    # 요구해서 못 들어간 것이므로 BAD_DOMAINS와 동일하게 실패로 본다. 다만 네이버 로그인월은
-    # 리다이렉트 URL 자체에 원래 가려던 목적지가 그대로(url= 파라미터) 노출돼있는 경우가 많아서
-    # (실측 확인, 2026-07-20) — 우리가 지금 캡차/로그인 때문에 못 들어가더라도 그 목적지 URL은
-    # 신뢰도 높게 복구할 수 있으니 완전히 버리지 않고 꺼내 쓴다(다만 내용은 못 봤으니 verified=False).
-    if any(d in final_url for d in BAD_DOMAINS):
-        return _extract_naver_login_target(final_url), False
-    return final_url, True
+    status = resp.status if resp is not None else None
+    is_bad_domain = any(d in final_url for d in BAD_DOMAINS)
+    if status is not None and status < 400 and not is_bad_domain:
+        return final_url, True
+    if is_bad_domain:
+        # 로그인월/카카오 오픈채팅 등 그 자체는 못 쓰는 목적지 — URL에서 원래 목적지를 복구할
+        # 수 있을 때만(예: nid.naver.com의 url= 파라미터) 살리고, 안 되면 완전히 실패.
+        return _recover_from_block(final_url), False
+    # BAD_DOMAINS는 아닌데 상태코드가 4xx/5xx인 경우(Cloudflare 등 안티봇). 원래 요청한 URL과
+    # 아예 같으면(예: referer 없는 inpock api/r/ 400처럼 이동 자체가 안 된 경우) 진짜 실패.
+    # 달라졌다면 어딘가로는 이동은 했다는 뜻이라 그 목적지 URL 자체를 신뢰한다 — Cloudflare
+    # 챌린지는 URL에 흔적(__cf_chl_rt_tk)을 남기기도 하고 안 남기기도 해서(실측 확인,
+    # 2026-07-20) 패턴 매칭만으로는 못 잡고, "이동했는지"가 더 안정적인 신호였음.
+    if final_url.split('#')[0] == url.split('#')[0]:
+        return None, False
+    return _recover_from_block(final_url) or final_url, False
 
 
-def _extract_naver_login_target(url):
-    """nid.naver.com/nidlogin.login?url=<인코딩된 목적지> 형태면 그 안의 실제 목적지 URL을
-    꺼낸다. 우리가 로그인/캡차 때문에 직접 열어서 확인은 못 해도, 네이버가 로그인 리다이렉트에
-    원래 목적지를 그대로 노출해주므로 URL 자체는 신뢰도 높게 복구 가능. 그 외(카카오 오픈채팅
-    등)는 복구할 게 없으니 None."""
+def _recover_from_block(url):
+    """차단/로그인월 리다이렉트 URL에서 원래 목적지를 복구할 수 있으면 복구한다. 실측으로
+    확인된 두 패턴(2026-07-20):
+    - 네이버 로그인월: nid.naver.com/nidlogin.login?url=<인코딩된 목적지> — 네이버가 로그인
+      리다이렉트에 원래 목적지를 그대로 노출해줌.
+    - Cloudflare 챌린지(예: item.gmarket.co.kr): 원래 요청 URL 뒤에 &__cf_chl_rt_tk=<토큰>만
+      추가로 붙는 방식이라, 그 파라미터만 떼면 원래 요청한 URL 그대로임.
+    둘 다 우리가 직접 그 페이지 내용을 본 건 아니라 신뢰도는 100%는 아니지만, 어차피 카카오
+    오픈채팅 같은 진짜 복구 불가능한 경우와는 구분해서 살릴 가치가 있음. 복구 불가능하면 None."""
     parsed = urlparse(url)
-    if 'nid.naver.com' not in parsed.netloc:
-        return None
-    target = parse_qs(parsed.query).get('url', [None])[0]
-    return target or None
+    if 'nid.naver.com' in parsed.netloc:
+        target = parse_qs(parsed.query).get('url', [None])[0]
+        return target or None
+    if '__cf_chl_rt_tk' in url:
+        return re.sub(r'[?&]__cf_chl_rt_tk=[^&]*', '', url)
+    return None
 
 
 def extract_collection_links(page):
