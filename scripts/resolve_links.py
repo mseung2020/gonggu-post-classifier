@@ -352,19 +352,26 @@ def _linkbio_candidates(url):
     except Exception:
         return None
 
+    def _absolute(href):
+        # resolved_url이 없으면(리다이렉트 추적 실패) url 원본으로 대체하는데, 인포크
+        # 등에선 이 원본이 도메인 없는 상대경로(예: "/api/r/<토큰>")라 normalize_url이
+        # "https://"만 앞에 붙이면 "https:///api/r/..."처럼 깨진 URL이 되어 그대로 done
+        # 확정되는 사고가 났었다(실측 확인, 2026-07-20) — 절대 URL이 아니면 버린다.
+        return href if href and re.match(r'^https?://', href) else None
+
     pairs = []
     for l in data.get('links') or []:
-        href = l.get('resolved_url') or l.get('url')
+        href = _absolute(l.get('resolved_url') or l.get('url'))
         pairs.append((href, l.get('title') or ''))
     for s in data.get('smart_stores') or []:
         for p in s.get('products') or []:
-            href = p.get('resolved_url') or p.get('url')
+            href = _absolute(p.get('resolved_url') or p.get('url'))
             price = p.get('sale_price') or p.get('discount_price')
             text = f"{p.get('name') or ''} {price}원".strip() if price else (p.get('name') or '')
             pairs.append((href, text))
     for c in data.get('collections') or []:
         for p in c.get('products') or []:
-            href = p.get('resolved_url') or p.get('url')
+            href = _absolute(p.get('resolved_url') or p.get('url'))
             price = p.get('price')
             text = f"{p.get('name') or ''} {price}원".strip() if price else (p.get('name') or '')
             pairs.append((href, text))
@@ -585,6 +592,13 @@ def _finalize_pick(page, links, product, ctx, referer, page_type_label, prefetch
         # linkbio_parser가 이미 최종 목적지까지 리다이렉트를 추적해줬으니(예: inpock
         # /api/r/<토큰> -> 실제 스마트스토어 상품 URL) 다시 열어볼 필요 없다 — URL 문자열
         # 기반 검증(판매종료/블로그)만 하고 끝낸다.
+        # ⚠ 방어선: 도메인이 없는 깨진 URL(예: 리다이렉트 추적 실패로 상대경로가 그대로
+        # 넘어온 경우, 실측 확인 2026-07-20 — "https:///api/r/..."가 그대로 done 확정됨)은
+        # 여기서 한 번 더 걸러낸다. _linkbio_candidates에서 이미 막았지만 이중 안전장치.
+        if not urlparse(chosen_href).netloc:
+            return {'status': 'unresolved', 'final_url': None,
+                    'note': f'{page_type_label} 후보(conf={confidence})가 도메인 없는 깨진 URL이라 채택 안 함'
+                            f' — {chosen_href[:150]}'}
         if _looks_discontinued(chosen_href) or _is_non_mall(chosen_href):
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence})가 판매종료/블로그 URL로 보여 채택 안 함'}
