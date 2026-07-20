@@ -47,6 +47,7 @@ import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
+import requests
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
@@ -433,11 +434,67 @@ def product_key(platform, parent, sort_order):
 _STATUS_RANK = {'error': 0, 'unresolved': 1, 'hold': 2}
 
 
+def _find_channel_links(obj):
+    """유튜브 채널 '정보' 탭 페이지의 ytInitialData 안에서 channelExternalLinkViewModel을
+    깊이 상관없이 재귀적으로 찾는다 — 정확한 중첩 경로에 의존하면 유튜브가 내부 구조를
+    바꿀 때마다 깨지기 쉬워서, 키 이름만 보고 어디에 있든 찾아낸다."""
+    found = []
+    if isinstance(obj, dict):
+        v = obj.get('channelExternalLinkViewModel')
+        if isinstance(v, dict):
+            link = ((v.get('link') or {}).get('content') or '').strip()
+            if link:
+                found.append(link)
+        for val in obj.values():
+            found += _find_channel_links(val)
+    elif isinstance(obj, list):
+        for item in obj:
+            found += _find_channel_links(item)
+    return found
+
+
+_CHANNEL_LINK_CACHE = {}
+_CHANNEL_LINK_LOCK = threading.Lock()
+
+
+def _youtube_channel_link(channel_id):
+    """유튜브 채널 '정보' 탭엔 캡션과 별개로 채널 전용 링크 필드가 있다(hifen SRC_DB의
+    YT_channel* 테이블엔 URL 컬럼 자체가 없어서 DB에서는 못 가져옴 — 실측 확인 2026-07-20,
+    goodday_000 채널 스크린샷 참고). 채널당 한 번만 긁어서 캐싱한다 — 같은 채널의 영상이
+    여러 개 걸릴 수 있고, 유튜브는 인포크보다 크롤링 감시가 엄격해서 요청 수를 최소화해야
+    한다."""
+    with _CHANNEL_LINK_LOCK:
+        if channel_id in _CHANNEL_LINK_CACHE:
+            return _CHANNEL_LINK_CACHE[channel_id]
+    url = None
+    try:
+        resp = requests.get(f'https://www.youtube.com/channel/{channel_id}/about',
+                             headers={'User-Agent': UA}, timeout=15)
+        m = re.search(r'var ytInitialData = (\{.*?\});</script>', resp.text, re.S)
+        if m:
+            links = _find_channel_links(json.loads(m.group(1)))
+            if links:
+                raw = links[0]
+                url = raw if raw.startswith('http') else f'https://{raw}'
+    except Exception:
+        url = None
+    with _CHANNEL_LINK_LOCK:
+        _CHANNEL_LINK_CACHE[channel_id] = url
+    return url
+
+
 def resolve_product(page, platform, parent, product):
     """candidate_url의 후보들을 순서대로 하나씩 시도하다가 처음 done이 나오면 즉시 반환한다.
     전부 실패하면 그중 가장 나은 상태를 반환. 반환: {status, final_url, note, tried_urls}
     (tried_urls는 실제로 시도한 URL 목록 — 나중에 "어떤 링크를 열어봤는지" 진단용)."""
     raw_urls = [u for u in (product.get('candidate_url') or '').split(';') if u]
+    if not raw_urls and platform == 'yt' and parent.get('channel_id'):
+        # 캡션/프로필에 링크가 전혀 없으면(인스타의 프로필 external_url처럼) 유튜브 채널
+        # 정보란의 링크를 대신 시도한다 — 성공/실패 여부와 무관하게 parent에 남겨서
+        # gonggu_video.external_url로도 저장되게 한다(이왕 긁은 거 DB에도 남기자는 결정).
+        parent['external_url'] = _youtube_channel_link(parent['channel_id'])
+        if parent['external_url']:
+            raw_urls = [parent['external_url']]
     if not raw_urls:
         return {'status': 'unresolved', 'final_url': None, 'note': '크롤링할 후보 링크 없음', 'tried_urls': []}
 

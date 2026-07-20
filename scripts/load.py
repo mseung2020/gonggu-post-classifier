@@ -15,8 +15,9 @@ INPUT_FILE = RESOLVED_FILE if RESOLVED_FILE.exists() else LOAD_READY_FILE
 
 INSERT_VIDEO = """
 INSERT INTO gonggu_video
-    (video_id, channel_id, title, video_url, publishDate, gonggu_start_date, gonggu_end_date, classification_note)
-VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(publishDate)s,
+    (video_id, channel_id, title, video_url, external_url, publishDate, gonggu_start_date,
+     gonggu_end_date, classification_note)
+VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(external_url)s, %(publishDate)s,
         %(gonggu_start_date)s, %(gonggu_end_date)s, %(classification_note)s)
 """
 CHECK_VIDEO_EXISTS = "SELECT id FROM gonggu_video WHERE video_id = %s"
@@ -46,7 +47,9 @@ def load_video(cur, parent, products):
     cur.execute(CHECK_VIDEO_EXISTS, (parent['video_id'],))
     if cur.fetchone():
         return False
-    cur.execute(INSERT_VIDEO, parent)
+    # 캡션에 링크가 있던 영상은 채널 정보란까지 긁어볼 필요가 없어서 external_url이 없을 수
+    # 있어 기본값 None을 깔아준다.
+    cur.execute(INSERT_VIDEO, {'external_url': None, **parent})
     video_id = parent['video_id']  # FK 컬럼명이 gonggu_video_product.video_id로 되어있음(자연키)
     for p in products:
         # resolve_links.py를 안 거친 load_ready.json으로 돌아가는 경우 link_status 키가 없을
