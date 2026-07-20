@@ -43,7 +43,7 @@ import os
 import re
 import sys
 import time
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
@@ -207,7 +207,9 @@ def _follow_redirect(page, url, referer):
     위 호출부 주석 참고. ⚠ "URL이 바뀌었는지"로 성공/실패를 판단하면 안 된다 — 애초에 리다이렉트가
     필요 없는(이미 최종 목적지인) 링크를 전부 실패로 오판하게 된다(실측으로 발견, 2026-07-16).
     올바른 기준은 HTTP 상태: 정상 응답(<400)이면 page.url을 그대로 최종 URL로 쓰고, 4xx/5xx면
-    (referer 없이 열었을 때 inpock api/r/ 엔드포인트가 400을 내는 것처럼) 실패로 본다."""
+    (referer 없이 열었을 때 inpock api/r/ 엔드포인트가 400을 내는 것처럼) 실패로 본다.
+    반환: (최종 url 또는 None, verified) — verified=False면 우리가 직접 그 페이지 내용을
+    확인하지는 못했지만(로그인월 등) URL 자체는 복구한 경우."""
     try:
         resp = page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
         try:
@@ -215,16 +217,31 @@ def _follow_redirect(page, url, referer):
         except Exception:
             pass
     except Exception:
-        return None
+        return None, False
     if resp is not None and resp.status >= 400:
-        return None
+        return None, False
     final_url = page.url
     # 상태코드는 200이어도 도중에 로그인월(nid.naver.com/nidlogin.login?url=...) 등으로
     # 튕겨나가는 경우가 실제로 있었음(2026-07-16) — 이건 성공이 아니라 그 목적지가 로그인을
-    # 요구해서 못 들어간 것이므로 BAD_DOMAINS와 동일하게 실패로 본다.
+    # 요구해서 못 들어간 것이므로 BAD_DOMAINS와 동일하게 실패로 본다. 다만 네이버 로그인월은
+    # 리다이렉트 URL 자체에 원래 가려던 목적지가 그대로(url= 파라미터) 노출돼있는 경우가 많아서
+    # (실측 확인, 2026-07-20) — 우리가 지금 캡차/로그인 때문에 못 들어가더라도 그 목적지 URL은
+    # 신뢰도 높게 복구할 수 있으니 완전히 버리지 않고 꺼내 쓴다(다만 내용은 못 봤으니 verified=False).
     if any(d in final_url for d in BAD_DOMAINS):
+        return _extract_naver_login_target(final_url), False
+    return final_url, True
+
+
+def _extract_naver_login_target(url):
+    """nid.naver.com/nidlogin.login?url=<인코딩된 목적지> 형태면 그 안의 실제 목적지 URL을
+    꺼낸다. 우리가 로그인/캡차 때문에 직접 열어서 확인은 못 해도, 네이버가 로그인 리다이렉트에
+    원래 목적지를 그대로 노출해주므로 URL 자체는 신뢰도 높게 복구 가능. 그 외(카카오 오픈채팅
+    등)는 복구할 게 없으니 None."""
+    parsed = urlparse(url)
+    if 'nid.naver.com' not in parsed.netloc:
         return None
-    return final_url
+    target = parse_qs(parsed.query).get('url', [None])[0]
+    return target or None
 
 
 def extract_collection_links(page):
@@ -401,7 +418,7 @@ def _resolve_one_candidate(page, current_url, product, ctx):
         # 단독으로 열면 400이 나서 아예 안 열리는 죽은 링크가 된다(실측 확인, 2026-07-16) — 지금
         # 있던 페이지에서 온 것처럼 referer를 붙여서 한 번 더 열면(판단 없는 단순 리다이렉트
         # 추적) 정상적으로 진짜 목적지로 넘어간다.
-        chosen_url = _follow_redirect(page, chosen_href, referer=r['final_url'] or current_url)
+        chosen_url, verified = _follow_redirect(page, chosen_href, referer=r['final_url'] or current_url)
         if not chosen_url:
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type} 후보(conf={confidence})를 선택했지만 실제 목적지로 리다이렉트되지 않음'
@@ -412,8 +429,10 @@ def _resolve_one_candidate(page, current_url, product, ctx):
             return {'status': 'hold', 'final_url': chosen_url,
                     'note': f"상품명(\"{product.get('product_name')}\")이 너무 일반적이라 LLM#2 선택을"
                             f" 자동으로 확정할 수 없음 — 사람 검토 필요"}
-        return {'status': 'done', 'final_url': chosen_url,
-                'note': f"LLM#2 선택 채택(conf={confidence}): {(pick.get('reason') or '')[:150]}"}
+        note = f"LLM#2 선택 채택(conf={confidence}): {(pick.get('reason') or '')[:150]}"
+        if not verified:
+            note += ' (⚠ 로그인월/캡차라 URL만 복구했고 내용은 직접 확인 못함)'
+        return {'status': 'done', 'final_url': chosen_url, 'note': note}
 
     if page_type == '무관':
         # "무관"으로 판정된 것 중 일부는 명칭이 달라서 못 알아본 케이스일 수 있어 자동 실패
