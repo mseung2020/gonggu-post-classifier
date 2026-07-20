@@ -7,18 +7,19 @@ classify -> transform -> resolve_links를 한 번에 돌려서 결과를 data/ou
     python3 scripts/_diag_sample.py            # 포스트 300개 랜덤 샘플 -> 상품 50개 랜덤 샘플
     python3 scripts/_diag_sample.py 500 80     # 포스트 500개, 상품 80개
 """
+import queue
 import random
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 
 from classify import classify_one
 from common import DIFY_KEY, RAW_FILE, ROOT, dump_json, load_json
-from resolve_links import (AUTH_STATE_FILE, DIFY_KEY_JUDGE, DIFY_KEY_PICK, UA, product_key,
-                            resolve_product)
+from resolve_links import (DIFY_KEY_JUDGE, DIFY_KEY_PICK, RESOLVE_CONCURRENCY, _new_context_page,
+                            product_key, resolve_product)
 from transform import transform_one
 
 DIAG_FILE = ROOT / 'data/output/_diag_result.json'
@@ -59,37 +60,47 @@ def main():
           f'candidate_url 있는 상품 {len(candidates)}개')
 
     picked = random.sample(candidates, min(PRODUCT_N, len(candidates)))
-    print(f'상품 {len(picked)}개 랜덤 샘플 -> 링크 해석 중...')
+    n_workers = max(1, min(RESOLVE_CONCURRENCY, len(picked) or 1))
+    print(f'상품 {len(picked)}개 랜덤 샘플 -> 링크 해석 중... (동시 워커 {n_workers}개)')
 
     results = []
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
-        ctx_kwargs = dict(user_agent=UA, locale='ko-KR', viewport={'width': 1360, 'height': 900},
-                           extra_http_headers={'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'})
-        if AUTH_STATE_FILE.exists():
-            ctx_kwargs['storage_state'] = str(AUTH_STATE_FILE)
-        ctx = browser.new_context(**ctx_kwargs)
-        Stealth(navigator_platform_override='MacIntel',
-                navigator_languages_override=('ko-KR', 'ko')).apply_stealth_sync(ctx)
-        page = ctx.new_page()
+    lock = threading.Lock()
+    work_q = queue.Queue()
+    for row in picked:
+        work_q.put(row)
 
-        for i, (platform, parent, product, raw_post) in enumerate(picked, 1):
-            try:
-                res = resolve_product(page, platform, parent, product)
-            except Exception as e:
-                res = {'status': 'error', 'final_url': None, 'note': str(e)[:200]}
-            results.append({
-                'key': product_key(platform, parent, product['sort_order']),
-                'description': raw_post.get('description') or raw_post.get('video_description'),
-                'creator_description': raw_post.get('creator_description'),
-                'product': product,
-                'classification_note': parent.get('classification_note'),
-                'resolution': res,
-            })
-            print(f'  [{i}/{len(picked)}] {results[-1]["key"]} -> {res["status"]}')
-            time.sleep(2)
+    def _diag_worker(worker_id):
+        with sync_playwright() as pw:
+            browser, ctx, page = _new_context_page(pw)
+            while True:
+                try:
+                    platform, parent, product, raw_post = work_q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    res = resolve_product(page, platform, parent, product)
+                except Exception as e:
+                    res = {'status': 'error', 'final_url': None, 'note': str(e)[:200]}
+                row = {
+                    'key': product_key(platform, parent, product['sort_order']),
+                    'description': raw_post.get('description') or raw_post.get('video_description'),
+                    'creator_description': raw_post.get('creator_description'),
+                    'product': product,
+                    'classification_note': parent.get('classification_note'),
+                    'resolution': res,
+                }
+                with lock:
+                    results.append(row)
+                    print(f'  [{len(results)}/{len(picked)}] (w{worker_id}) {row["key"]} -> {res["status"]}',
+                          flush=True)
+                time.sleep(2)
+            browser.close()
 
-        browser.close()
+    threads = [threading.Thread(target=_diag_worker, args=(wid,)) for wid in range(n_workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
     dump_json(DIAG_FILE, results)
     by_status = {}
