@@ -247,14 +247,21 @@ def _follow_redirect(page, url, referer):
 
 
 DISCONTINUED_MARKERS = ('discontinued', 'soldout', 'sold-out', 'sold_out')
+# 앱/SPA가 잘못된 딥링크를 자기 도메인의 범용 에러 페이지로 돌리면서도 HTTP 200을 주는
+# 경우(라이브 실행 중 발견, 2026-07-20 — hi.thehyundai.com/error가 그대로 done 확정됨).
+# "error"를 URL 어디서나 부분일치로 찾으면 정상 상품 경로(예: /error-resistant-widget)까지
+# 오탐할 수 있어, 경로 전체가 이 값과 정확히 같을 때만 잡는다.
+BROKEN_PATH_SEGMENTS = ('error', 'notfound', 'not-found', '404')
 
 
 def _looks_discontinued(url):
-    """URL 경로/쿼리 자체에 판매종료 신호가 있으면 검증 없이도 걸러낸다(라이브 실행 중 발견,
-    2026-07-20 — shop.srookpay.com/.../Discontinued 같은 URL이 그대로 done 확정됐었음).
-    이건 페이지 내용을 다시 판단하는 게 아니라 URL 문자열 자체의 결정론적 신호라, "검증 홉
-    없이 확정한다"는 정책과 충돌하지 않는다."""
-    return any(m in url.lower() for m in DISCONTINUED_MARKERS)
+    """URL 경로/쿼리 자체에 판매종료·에러 신호가 있으면 검증 없이도 걸러낸다. 이건 페이지
+    내용을 다시 판단하는 게 아니라 URL 문자열 자체의 결정론적 신호라, "검증 홉 없이
+    확정한다"는 정책과 충돌하지 않는다."""
+    lower = url.lower()
+    if any(m in lower for m in DISCONTINUED_MARKERS):
+        return True
+    return urlparse(lower).path.strip('/') in BROKEN_PATH_SEGMENTS
 
 
 def _recover_from_block(url):
