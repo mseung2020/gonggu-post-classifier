@@ -21,8 +21,10 @@ VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(publishDate)s,
 """
 CHECK_VIDEO_EXISTS = "SELECT id FROM gonggu_video WHERE video_id = %s"
 INSERT_VIDEO_PRODUCT = """
-INSERT INTO gonggu_video_product (video_id, product_name, link_location, url_type, candidate_url, sort_order)
-VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s, %(sort_order)s)
+INSERT INTO gonggu_video_product
+    (video_id, product_name, link_location, url_type, candidate_url, link_status, sort_order)
+VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
+        %(link_status)s, %(sort_order)s)
 """
 
 INSERT_POST = """
@@ -33,8 +35,10 @@ VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
 """
 CHECK_POST_EXISTS = "SELECT id FROM gonggu_post WHERE post_id = %s"
 INSERT_POST_PRODUCT = """
-INSERT INTO gonggu_post_product (post_id, product_name, link_location, url_type, candidate_url, sort_order)
-VALUES (%(post_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s, %(sort_order)s)
+INSERT INTO gonggu_post_product
+    (post_id, product_name, link_location, url_type, candidate_url, link_status, sort_order)
+VALUES (%(post_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
+        %(link_status)s, %(sort_order)s)
 """
 
 
@@ -45,7 +49,9 @@ def load_video(cur, parent, products):
     cur.execute(INSERT_VIDEO, parent)
     video_id = parent['video_id']  # FK 컬럼명이 gonggu_video_product.video_id로 되어있음(자연키)
     for p in products:
-        cur.execute(INSERT_VIDEO_PRODUCT, {**p, 'video_id': video_id})
+        # resolve_links.py를 안 거친 load_ready.json으로 돌아가는 경우 link_status 키가 없을
+        # 수 있어 기본값 None을 깔아준다.
+        cur.execute(INSERT_VIDEO_PRODUCT, {'link_status': None, **p, 'video_id': video_id})
     return True
 
 
@@ -56,7 +62,7 @@ def load_post(cur, parent, products):
     cur.execute(INSERT_POST, parent)
     post_id = parent['post_id']  # FK 컬럼명이 gonggu_post_product.post_id로 되어있음(자연키)
     for p in products:
-        cur.execute(INSERT_POST_PRODUCT, {**p, 'post_id': post_id})
+        cur.execute(INSERT_POST_PRODUCT, {'link_status': None, **p, 'post_id': post_id})
     return True
 
 

@@ -564,6 +564,11 @@ def build_resolved_file(items, resolutions):
             key = product_key(platform, parent, p['sort_order'])
             res = resolutions.get(key)
             np = dict(p)
+            # link_status = 이 candidate_url이 검증된 최종 상품페이지(done)인지, 아니면 아직
+            # 확인 못 한 중간 단계(unresolved/hold/error)인지 — 개발자가 "바로 스크래핑 가능한지
+            # vs 더 파고들어야 하는지" 판단할 수 있게 남겨둔다. url_type은 원본 후보의 종류를
+            # 그대로 유지해서(덮어쓰지 않음) 디버깅용 정보를 보존한다.
+            np['link_status'] = res.get('status') if res else None
             if res and res.get('status') == 'done' and res.get('final_url'):
                 np['candidate_url'] = res['final_url'][:500]
             new_products.append(np)
