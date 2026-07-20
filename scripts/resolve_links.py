@@ -220,11 +220,16 @@ def _follow_redirect(page, url, referer):
     status = resp.status if resp is not None else None
     is_bad_domain = any(d in final_url for d in BAD_DOMAINS)
     if status is not None and status < 400 and not is_bad_domain:
+        if _looks_discontinued(final_url):
+            return None, False
         return final_url, True
     if is_bad_domain:
         # 로그인월/카카오 오픈채팅 등 그 자체는 못 쓰는 목적지 — URL에서 원래 목적지를 복구할
         # 수 있을 때만(예: nid.naver.com의 url= 파라미터) 살리고, 안 되면 완전히 실패.
-        return _recover_from_block(final_url), False
+        recovered = _recover_from_block(final_url)
+        if recovered and _looks_discontinued(recovered):
+            return None, False
+        return recovered, False
     # BAD_DOMAINS는 아닌데 상태코드가 4xx/5xx인 경우(Cloudflare 등 안티봇). 원래 요청한 URL과
     # 아예 같으면(예: referer 없는 inpock api/r/ 400처럼 이동 자체가 안 된 경우) 진짜 실패.
     # 달라졌다면 어딘가로는 이동은 했다는 뜻이라 그 목적지 URL 자체를 신뢰한다 — Cloudflare
@@ -232,7 +237,21 @@ def _follow_redirect(page, url, referer):
     # 2026-07-20) 패턴 매칭만으로는 못 잡고, "이동했는지"가 더 안정적인 신호였음.
     if final_url.split('#')[0] == url.split('#')[0]:
         return None, False
-    return _recover_from_block(final_url) or final_url, False
+    recovered = _recover_from_block(final_url) or final_url
+    if _looks_discontinued(recovered):
+        return None, False
+    return recovered, False
+
+
+DISCONTINUED_MARKERS = ('discontinued', 'soldout', 'sold-out', 'sold_out')
+
+
+def _looks_discontinued(url):
+    """URL 경로/쿼리 자체에 판매종료 신호가 있으면 검증 없이도 걸러낸다(라이브 실행 중 발견,
+    2026-07-20 — shop.srookpay.com/.../Discontinued 같은 URL이 그대로 done 확정됐었음).
+    이건 페이지 내용을 다시 판단하는 게 아니라 URL 문자열 자체의 결정론적 신호라, "검증 홉
+    없이 확정한다"는 정책과 충돌하지 않는다."""
+    return any(m in url.lower() for m in DISCONTINUED_MARKERS)
 
 
 def _recover_from_block(url):
