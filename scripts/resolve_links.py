@@ -75,6 +75,16 @@ NON_MALL_DOMAINS = ('blog.naver.com', 'm.blog.naver.com')
 
 def _is_non_mall(url):
     return host_of(url) in NON_MALL_DOMAINS
+
+
+def _is_linkbio_hub(url):
+    """이 URL이 인포크/litt.ly 등 또 다른 링크인바이오 허브를 가리키는지 — prefetched_final
+    경로에서 "이미 최종 목적지"라는 전제가 깨지는 중첩 구조를 잡아내기 위함."""
+    try:
+        linkbio_parser.detect_platform(url)
+        return True
+    except ValueError:
+        return False
 # 버튼 텍스트에 이런 말이 있으면 애초에 상품 구매 링크가 아니니 LLM#2한테 보여주지도 않고
 # 후보에서 뺀다 — LLM#2 프롬프트에도 같은 취지의 지침이 있지만, 다른 후보가 다 별로면 그중
 # "제일 나은" 걸로 고객센터/문의 링크를 골라버리는 경우가 실제로 있어서(확신도 낮게라도)
@@ -315,22 +325,25 @@ def extract_collection_links(page):
             continue
         if href.split('#')[0] == current_no_frag:
             continue
-        pairs.append((href, text))
+        pairs.append((href, text, 'link'))
     return _filter_link_pairs(pairs)
 
 
 def _filter_link_pairs(pairs):
-    """(href, text) 목록에서 BAD_DOMAINS/NON_PRODUCT_TEXT/중복을 걸러 {href, text} 후보로
-    정리한다 — extract_collection_links와 _linkbio_candidates가 공유하는 필터."""
+    """(href, text, source) 목록에서 BAD_DOMAINS/NON_PRODUCT_TEXT/중복을 걸러 {href, text,
+    source} 후보로 정리한다 — extract_collection_links와 _linkbio_candidates가 공유하는
+    필터. source='product'는 smart_store/collection처럼 실제 상품명·가격이 있는 구조화
+    데이터, source='link'는 그냥 버튼/링크 하나(스토어 메인이나 또 다른 링크모음일 수도
+    있어 신뢰도가 낮음) — _finalize_pick에서 이 구분에 따라 검증 강도를 다르게 적용한다."""
     out, seen = [], set()
-    for href, text in pairs:
+    for href, text, source in pairs:
         if not href or href in seen or any(d in href for d in BAD_DOMAINS):
             continue
         text_norm = re.sub(r'\s+', '', text or '').lower()
         if text_norm and any(kw in text_norm for kw in NON_PRODUCT_TEXT):
             continue
         seen.add(href)
-        out.append({'href': href, 'text': text})
+        out.append({'href': href, 'text': text, 'source': source})
         if len(out) >= MAX_CANDIDATES:
             break
     return out
@@ -362,19 +375,19 @@ def _linkbio_candidates(url):
     pairs = []
     for l in data.get('links') or []:
         href = _absolute(l.get('resolved_url') or l.get('url'))
-        pairs.append((href, l.get('title') or ''))
+        pairs.append((href, l.get('title') or '', 'link'))
     for s in data.get('smart_stores') or []:
         for p in s.get('products') or []:
             href = _absolute(p.get('resolved_url') or p.get('url'))
             price = p.get('sale_price') or p.get('discount_price')
             text = f"{p.get('name') or ''} {price}원".strip() if price else (p.get('name') or '')
-            pairs.append((href, text))
+            pairs.append((href, text, 'product'))
     for c in data.get('collections') or []:
         for p in c.get('products') or []:
             href = _absolute(p.get('resolved_url') or p.get('url'))
             price = p.get('price')
             text = f"{p.get('name') or ''} {price}원".strip() if price else (p.get('name') or '')
-            pairs.append((href, text))
+            pairs.append((href, text, 'product'))
     return _filter_link_pairs(pairs)
 
 
@@ -599,19 +612,26 @@ def _finalize_pick(page, links, product, ctx, referer, page_type_label, prefetch
         return {'status': 'unresolved', 'final_url': None,
                 'note': f'{page_type_label} 후보 중 확신도 낮음(conf={confidence}) — 검증 홉이 없어서 오탐 방지로 채택 안 함'}
     chosen_href = normalize_url(links[idx]['href'])
+    # linkbio_parser의 'links'(smart_store/collection처럼 상품명·가격이 구조화된 게 아니라
+    # 그냥 버튼 하나)는 LLM#2가 "다른 후보가 없어서" 같은 이유로 conf=high를 줘도 실제로는
+    # 스토어 메인이거나 또 다른 링크모음일 위험이 있다(실측 확인, 2026-07-21 — "윤남매맘
+    # 공구쇼핑몰" 스토어 메인이 완전히 다른 상품 4개의 최종 링크로 확정됨). source='product'
+    # (smart_store/collection, 실제 상품명·가격 있는 구조화 데이터)만 확신도 그대로 믿고,
+    # 'link'는 확신도와 무관하게 아래 재검증 홉을 강제로 거친다.
+    force_verify = prefetched_final and links[idx].get('source') == 'link'
     # conf=medium은 LLM#2 혼자 확정하기엔 애매해서(카테고리/매장 단위로 느슨하게 매칭했을
     # 위험) 실제 목적지 페이지까지 들어가 LLM#3로 한 번 더 판별한다 — 상품페이지+일치
     # 확인되면 확정, 아니면 버림. 이때 차단(로그인월/캡차)되면 URL 복구 시도 없이 그냥
     # 이 후보를 포기한다(내용을 못 본 채로 확정하지 않기 위함, 2026-07-20 결정).
-    if confidence == 'medium':
+    if confidence == 'medium' or force_verify:
         r2 = fetch(page, chosen_href, referer=referer)
         if r2['error']:
             return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf=medium) 재검증 중 접속 실패: {r2["error"]}'}
+                    'note': f'{page_type_label} 후보(conf={confidence}) 재검증 중 접속 실패: {r2["error"]}'}
         if r2['status'] in BLOCKED_STATUS_CODES or any(
                 m.lower() in (r2.get('body_text') or '').lower() for m in BLOCKED_TEXT_MARKERS):
             return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf=medium) 재검증 중 차단(로그인월/캡차) — 확인 불가로 포기'}
+                    'note': f'{page_type_label} 후보(conf={confidence}) 재검증 중 차단(로그인월/캡차) — 확인 불가로 포기'}
         page_info2 = {
             'url': r2['final_url'],
             'host': host_of(r2['final_url'] or chosen_href),
@@ -627,20 +647,21 @@ def _finalize_pick(page, links, product, ctx, referer, page_type_label, prefetch
             return {'status': 'error', 'final_url': None, 'note': f'LLM#3 재검증 호출 실패: {str(e)[:120]}'}
         if not (verdict2.get('page_type') == '상품페이지' and verdict2.get('is_final_product_page')):
             return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf=medium)를 LLM#3 재검증에서 반려 — '
+                    'note': f'{page_type_label} 후보(conf={confidence})를 LLM#3 재검증에서 반려 — '
                             f'{(verdict2.get("reason") or "")[:150]}'}
         if _looks_discontinued(r2['final_url'] or chosen_href):
             return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf=medium) — 재검증한 페이지가 판매종료로 보임'}
+                    'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 판매종료로 보임'}
         if _is_non_mall(r2['final_url'] or chosen_href):
             return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf=medium) — 재검증한 페이지가 네이버 블로그(몰 아님)라 채택 안 함'}
+                    'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 네이버 블로그(몰 아님)라 채택 안 함'}
         chosen_url, verify_note = r2['final_url'], (
-            f"LLM#2 선택(conf=medium) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:150]}")
+            f"LLM#2 선택(conf={confidence}) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:150]}")
     elif prefetched_final:
         # linkbio_parser가 이미 최종 목적지까지 리다이렉트를 추적해줬으니(예: inpock
         # /api/r/<토큰> -> 실제 스마트스토어 상품 URL) 다시 열어볼 필요 없다 — URL 문자열
-        # 기반 검증(판매종료/블로그)만 하고 끝낸다.
+        # 기반 검증(판매종료/블로그)만 하고 끝낸다. 여기 도달하는 건 이미 source='product'
+        # (실제 상품명·가격 구조화 데이터)뿐이다 — 'link'는 위 force_verify로 다 걸러짐.
         # ⚠ 방어선: 도메인이 없는 깨진 URL(예: 리다이렉트 추적 실패로 상대경로가 그대로
         # 넘어온 경우, 실측 확인 2026-07-20 — "https:///api/r/..."가 그대로 done 확정됨)은
         # 여기서 한 번 더 걸러낸다. _linkbio_candidates에서 이미 막았지만 이중 안전장치.
@@ -651,6 +672,13 @@ def _finalize_pick(page, links, product, ctx, referer, page_type_label, prefetch
         if _looks_discontinued(chosen_href) or _is_non_mall(chosen_href):
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence})가 판매종료/블로그 URL로 보여 채택 안 함'}
+        # ⚠ 방어선 2: 고른 링크가 또 다른 링크인바이오 허브(인포크 등)면 "이미 최종
+        # 목적지"라는 전제가 깨진다 — 중첩 구조라 검증 없이 확정하면 안 됨(실측 확인,
+        # 2026-07-21 — 인포크 A의 버튼이 인포크 B를 가리켰는데 그대로 done 확정됨).
+        if _is_linkbio_hub(chosen_href):
+            return {'status': 'unresolved', 'final_url': None,
+                    'note': f'{page_type_label} 후보(conf={confidence})가 또 다른 링크모음 허브를 가리켜 채택 안 함'
+                            f' — {chosen_href[:150]}'}
         chosen_url = chosen_href
         verify_note = (f"LLM#2 선택 채택(conf={confidence}, 링크인바이오 구조화 데이터): "
                         f"{(pick.get('reason') or '')[:150]}")
