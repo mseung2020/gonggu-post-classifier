@@ -490,12 +490,61 @@ def _youtube_channel_link(channel_id):
     return url
 
 
+_VIDEO_DESC_CACHE = {}
+_VIDEO_DESC_LOCK = threading.Lock()
+
+
+def _youtube_full_description(video_id):
+    """hifen SRC_DB의 YT_video_lists_detail.video_description은 특정 URL만 '...'으로
+    잘려서 저장돼 있는 경우가 있다(중간 가공 단계에서 그런 것으로 추정 — 실측 확인,
+    2026-07-20: godomall.com URL이 잘림). 근데 유튜브 watch 페이지의
+    ytInitialPlayerResponse.videoDetails.shortDescription엔 안 잘린 원문 전체가 있다.
+    영상당 한 번만 긁어서 캐싱한다."""
+    with _VIDEO_DESC_LOCK:
+        if video_id in _VIDEO_DESC_CACHE:
+            return _VIDEO_DESC_CACHE[video_id]
+    desc = None
+    try:
+        resp = requests.get(f'https://www.youtube.com/watch?v={video_id}',
+                             headers={'User-Agent': UA}, timeout=15)
+        m = re.search(r'var ytInitialPlayerResponse = (\{.*?\});', resp.text, re.S)
+        if m:
+            desc = json.loads(m.group(1)).get('videoDetails', {}).get('shortDescription') or None
+    except Exception:
+        desc = None
+    with _VIDEO_DESC_LOCK:
+        _VIDEO_DESC_CACHE[video_id] = desc
+    return desc
+
+
+def _recover_truncated_url(video_id, truncated_url):
+    """잘린 candidate_url('...' 앞부분)로 시작하는 완전한 URL을 원문 설명에서 찾아 복구한다."""
+    prefix = truncated_url.split('...')[0]
+    desc = _youtube_full_description(video_id)
+    if not desc or prefix not in desc:
+        return None
+    rest = desc[desc.index(prefix):]
+    m = re.match(r'\S+', rest)
+    return m.group(0) if m else None
+
+
 def resolve_product(page, platform, parent, product):
     """candidate_url의 후보들을 순서대로 하나씩 시도하다가 처음 done이 나오면 즉시 반환한다.
     전부 실패하면 그중 가장 나은 상태를 반환. 반환: {status, final_url, note, tried_urls}
     (tried_urls는 실제로 시도한 URL 목록 — 나중에 "어떤 링크를 열어봤는지" 진단용)."""
     raw_urls = [u for u in (product.get('candidate_url') or '').split(';') if u]
     candidates = ordered_candidates(raw_urls, product.get('url_type'))
+
+    if not candidates and platform == 'yt' and parent.get('video_id'):
+        # candidate_url이 있었는데 전부 '...'로 잘려서 못 쓰게 된 경우, 유튜브 원문 설명에서
+        # 안 잘린 전체 URL을 찾아 복구를 시도한다(채널링크 폴백보다 먼저 — 캡션에 있던 그
+        # 링크 자체를 살리는 게 채널 전용 링크로 대체하는 것보다 더 정확한 신호이므로).
+        for u in (u for u in raw_urls if '...' in u):
+            recovered = _recover_truncated_url(parent['video_id'], u)
+            if recovered:
+                candidates = ordered_candidates([recovered], product.get('url_type'))
+                break
+
     if not candidates and platform == 'yt' and parent.get('channel_id'):
         # candidate_url이 원래 없었든, 있었는데 전부 잘려서(...) 못 쓰게 됐든 — 어차피 지금
         # 시도할 후보가 0개인 상황은 똑같으니 유튜브 채널 정보란의 링크를 마지막 수단으로
