@@ -434,10 +434,17 @@ def hint_is_vague(name):
 
 
 def post_context_text(product, parent):
-    parts = [product.get('product_name') or '']
+    """⚠ classification_note는 포스트 전체 공통 설명이라, 한 포스트가 여러 상품으로 쪼개진
+    경우 다른 상품(형제 상품) 이름까지 같이 언급하고 있을 수 있다(실측 확인, 2026-07-21 —
+    "3가지 주방템(설거지통,후드필터,다이닝팬)"이 언급되자 LLM이 설거지통·후드필터 요청에도
+    다이닝팬 링크를 "같은 캠페인이니 관련있다"고 느슨하게 매칭해버림). 그래서 지금 찾는
+    상품명을 명시적으로 못박아 형제 상품과 혼동하지 않게 한다."""
+    name = product.get('product_name') or ''
+    parts = [name]
     note = parent.get('classification_note')
     if note:
-        parts.append(f'(참고: {note})')
+        parts.append(f'(참고: {note} — 단, 지금 찾는 상품은 정확히 "{name}"뿐이며, 이 참고 '
+                      f'설명에 다른 상품명이 같이 언급되어도 그건 매칭 대상이 아님)')
     return ' '.join(p for p in parts if p)
 
 
