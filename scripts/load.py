@@ -16,9 +16,9 @@ INPUT_FILE = RESOLVED_FILE if RESOLVED_FILE.exists() else LOAD_READY_FILE
 INSERT_VIDEO = """
 INSERT INTO gonggu_video
     (video_id, channel_id, title, video_url, external_url, publishDate, gonggu_start_date,
-     gonggu_end_date, classification_note)
+     gonggu_end_date, gonggu_stage, classification_note)
 VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(external_url)s, %(publishDate)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(classification_note)s)
+        %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s, %(classification_note)s)
 """
 CHECK_VIDEO_EXISTS = "SELECT id FROM gonggu_video WHERE video_id = %s"
 INSERT_VIDEO_PRODUCT = """
@@ -30,9 +30,10 @@ VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candi
 
 INSERT_POST = """
 INSERT INTO gonggu_post
-    (post_id, user_id, url, publish_date, gonggu_start_date, gonggu_end_date, classification_note)
+    (post_id, user_id, url, publish_date, gonggu_start_date, gonggu_end_date, gonggu_stage,
+     classification_note)
 VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(classification_note)s)
+        %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s, %(classification_note)s)
 """
 CHECK_POST_EXISTS = "SELECT id FROM gonggu_post WHERE post_id = %s"
 INSERT_POST_PRODUCT = """

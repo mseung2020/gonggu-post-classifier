@@ -9,11 +9,27 @@ LLM이 상품별로 뽑은 원본 후보를 그대로 세미콜론으로 이어�
 결과: data/output/load_ready.json — [{platform, parent: {...}, products: [{...}, ...]}]
     + 사유별 제외 건수 출력
 """
+import datetime
 from collections import Counter
 
 from common import CLASSIFIED_FILE, LOAD_READY_FILE, dump_json, is_affiliate_ranking, load_json
 
 VALID_LINK_LOCATIONS = {'설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명'}
+
+
+def _compute_stage(start, end):
+    """gonggu_start_date/end_date(구조화된 날짜)를 오늘 날짜와 직접 비교해서 계산한다.
+    ⚠ LLM#1이 캡션 문구만 보고 주는 gonggu_stage(예고/진행중/마감)는 "포스트 작성 시점의
+    오늘"을 기준으로 판단한 힌트라 실제 지금 날짜와 어긋날 수 있어(다이파이 프롬프트에도
+    이 경고가 있음) 여기서는 안 쓰고, 날짜 자체를 비교해서 결정론적으로 계산한다."""
+    today = datetime.date.today().isoformat()
+    if start and start > today:
+        return '시작전'
+    if end and end < today:
+        return '종료'
+    if start or end:
+        return '진행중'
+    return '판단불가'
 
 
 def _valid_date(s):
@@ -64,6 +80,7 @@ def transform_one(post):
 
     gonggu_start = _valid_date(lc.get('period_start'))
     gonggu_end = _valid_date(lc.get('period_end'))
+    gonggu_stage = _compute_stage(gonggu_start, gonggu_end)
     note = (lc.get('pattern_note') or '').strip()[:500] or None
 
     if post['platform'] == 'ig':
@@ -74,6 +91,7 @@ def transform_one(post):
             'publish_date': post['publish_date'],
             'gonggu_start_date': gonggu_start,
             'gonggu_end_date': gonggu_end,
+            'gonggu_stage': gonggu_stage,
             'classification_note': note,
         }
     else:
@@ -85,6 +103,7 @@ def transform_one(post):
             'publishDate': post['publishDate'],
             'gonggu_start_date': gonggu_start,
             'gonggu_end_date': gonggu_end,
+            'gonggu_stage': gonggu_stage,
             'classification_note': note,
         }
     return parent, product_rows, None
