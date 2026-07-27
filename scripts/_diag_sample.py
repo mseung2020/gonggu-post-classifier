@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import sync_playwright
 
 from classify import classify_one
-from common import DIFY_KEY, RAW_FILE, ROOT, dump_json, load_json
+from common import DIFY_KEY, RAW_DIR, ROOT, dump_json, load_json_dir
 from resolve_links.browser import new_context_page
 from resolve_links.config import DIFY_KEY_JUDGE, DIFY_KEY_PICK, RESOLVE_CONCURRENCY
 from resolve_links.core import resolve_product
@@ -35,7 +35,7 @@ def main():
         print('DIFY_KEY / DIFY_KEY_PICK / DIFY_KEY_JUDGE가 .env에 모두 필요합니다.', file=sys.stderr)
         sys.exit(1)
 
-    posts = load_json(RAW_FILE)
+    posts = load_json_dir(RAW_DIR)
     sample = random.sample(posts, min(POST_N, len(posts)))
     print(f'포스트 {len(sample)}건 랜덤 샘플 -> LLM#1 분류 중...')
 

@@ -91,11 +91,17 @@ gonggu_video_product, gonggu_post, gonggu_post_product). 신규 설치용이며 
 
 | 스테이지 | 스크립트 | 무엇을 전체 처리하나 |
 |---|---|---|
-| 1. 원본 수집 | `fetch_source.py` | hifen DB → `data/raw/posts_raw.json` |
-| 2. 공구 분류 | `classify.py` | posts_raw.json 중 미분류 전체 → `data/output/classified.json` |
-| 3. 게이트링 | `transform.py` | classified.json 전체(항상 재계산) → `data/output/load_ready.json` |
-| 4. 링크 해석 | `resolve_links`(패키지) | load_ready.json 중 미해석 상품 전체 → `data/output/load_ready_resolved.json` |
+| 1. 원본 수집 | `fetch_source.py` | hifen DB → `data/01_raw/<발행일>.json` |
+| 2. 공구 분류 | `classify.py` | 01_raw 중 미분류 전체 → `data/02_classified/<발행일>.json` |
+| 3. 게이트링 | `transform.py` | 02_classified 전체(항상 재계산) → `data/03_load_ready/<발행일>.json` |
+| 4. 링크 해석 | `resolve_links`(패키지) | 03_load_ready 중 미해석 상품 전체 → `data/04_resolved/<발행일>.json` |
 | 5. DB 적재 | `load.py` | 위 결과 전체 중 미삽입 건 → `dev_gongguking` |
+
+모든 중간 산출물은 폴더 이름(`01_raw` ~ `04_resolved`)이 곧 "어느 단계에서 나온 결과인지"를
+보여주고, 그 안에서 다시 발행일(`YYYY-MM-DD.json`) 파일로 쪼개져 있어서 특정 날짜 포스트가
+지금 어느 단계까지 처리됐는지 파일 하나만 열어도 바로 보입니다. 날짜를 못 읽은 레코드는
+`_unknown.json`에 모입니다. `link_resolution.json`(resolve_links 내부의 상품 단위 체크포인트)만
+날짜 필드가 없는 key-value 저장이라 예외적으로 단일 파일 그대로 둡니다.
 
 **사람 개입 없이 끝까지 자동으로 돌리고 싶을 때:**
 
@@ -104,7 +110,7 @@ python3 scripts/run_pipeline.py                              # 이미 fetch했�
 FETCH_FIRST=1 python3 scripts/run_pipeline.py                 # 원본부터 새로 가져오는 것부터 시작
 FETCH_FIRST=1 DAYS_BACK=14 python3 scripts/run_pipeline.py    # 최근 14일치로 새로 가져오기
 python3 scripts/run_pipeline.py --skip-resolve                # 링크 해석 건너뛰고 원본 후보로 바로 load
-python3 scripts/run_pipeline.py --skip-load                   # DB에 안 넣고 load_ready.json까지만 확인
+python3 scripts/run_pipeline.py --skip-load                   # DB에 안 넣고 03_load_ready까지만 확인
 ```
 
 끝나면 `dev_gongguking`의 4개 테이블 현재 행 수를 보여줍니다.
@@ -113,11 +119,11 @@ python3 scripts/run_pipeline.py --skip-load                   # DB에 안 넣고
 남은 데이터 전체를 한 번에 처리합니다):
 
 ```bash
-python3 scripts/fetch_source.py                       # data/raw/posts_raw.json
-python3 scripts/classify.py                           # data/output/classified.json (10건마다 체크포인트, 이어서 실행 가능)
+python3 scripts/fetch_source.py                       # data/01_raw/<발행일>.json
+python3 scripts/classify.py                           # data/02_classified/<발행일>.json (30건마다 체크포인트, 이어서 실행 가능)
 PLATFORM=yt LIMIT=500 python3 scripts/classify.py     # ig/yt 중 하나만, N건만 끊어서(수동 테스트용)
-python3 scripts/transform.py                          # data/output/load_ready.json + 제외 사유별 건수 출력
-cd scripts && python3 -m resolve_links                # data/output/load_ready_resolved.json (상품 10건마다 체크포인트, 이어서 실행 가능)
+python3 scripts/transform.py                          # data/03_load_ready/<발행일>.json + 제외 사유별 건수 출력
+cd scripts && python3 -m resolve_links                # data/04_resolved/<발행일>.json (상품 10건마다 체크포인트, 이어서 실행 가능)
 cd scripts && python3 -m resolve_links 50              # 상품 50건만 끊어서 테스트(수동 테스트용)
 python3 scripts/load.py                               # dev_gongguking에 실제 INSERT (resolved 파일이 있으면 그걸 우선 사용, 건별 커밋)
 ```
@@ -130,8 +136,8 @@ python3 scripts/load.py                               # dev_gongguking에 실제
 `scripts/check_db.py` — 소스/타겟 DB 연결과 타겟 테이블 스키마를 확인하는 점검 스크립트.
 
 `scripts/_diag_sample.py` — 링크 해석 품질을 점검하고 싶을 때 쓰는 진단용 스크립트. 실제
-파이프라인 체크포인트(classified.json/load_ready.json 등)는 건드리지 않고, `posts_raw.json`에서
-랜덤 샘플을 뽑아 classify→transform→resolve_links를 돌려서 `data/output/_diag_result.json`에
+파이프라인 체크포인트(02_classified/03_load_ready 등)는 건드리지 않고, `01_raw`에서 랜덤
+샘플을 뽑아 classify→transform→resolve_links를 돌려서 `data/output/_diag_result.json`에
 남긴다(포스트 원문·프로필 소개글·LLM들의 판단 근거까지 다 같이 저장되어 있어서 결과를 사람이
 직접 하나씩 읽고 판단하기 좋음).
 

@@ -7,11 +7,11 @@ gonggu_post/gonggu_post_product(인스타그램)에 INSERT한다.
 사용법:
     python3 scripts/load.py
 """
-from common import LOAD_READY_FILE, RESOLVED_FILE, connect_dst, load_json
+from common import LOAD_READY_DIR, RESOLVED_DIR, connect_dst, load_json_dir
 
-# resolve_links를 돌렸으면 candidate_url이 "찐 최종 링크 하나"로 좁혀진 이 파일을 쓰고,
+# resolve_links를 돌렸으면 candidate_url이 "찐 최종 링크 하나"로 좁혀진 이 폴더를 쓰고,
 # 아직 안 돌렸으면(또는 스킵했으면) transform.py 원본(LLM 후보를 세미콜론으로 이어붙인 상태)을 쓴다.
-INPUT_FILE = RESOLVED_FILE if RESOLVED_FILE.exists() else LOAD_READY_FILE
+INPUT_DIR = RESOLVED_DIR if RESOLVED_DIR.exists() and any(RESOLVED_DIR.glob('*.json')) else LOAD_READY_DIR
 
 INSERT_VIDEO = """
 INSERT INTO gonggu_video
@@ -71,8 +71,8 @@ def load_post(cur, parent, products):
 
 
 def main():
-    items = load_json(INPUT_FILE)
-    print(f'입력 파일: {INPUT_FILE}')
+    items = load_json_dir(INPUT_DIR)
+    print(f'입력 폴더: {INPUT_DIR}')
     conn = connect_dst()
     inserted, skipped, failed = 0, 0, 0
     try:

@@ -6,13 +6,15 @@ LLM이 상품별로 뽑은 원본 후보를 그대로 세미콜론으로 이어�
 
 사용법:
     python3 scripts/transform.py
-결과: data/output/load_ready.json — [{platform, parent: {...}, products: [{...}, ...]}]
+결과: data/03_load_ready/<발행일>.json — [{platform, parent: {...}, products: [{...}, ...]}]
+    (매번 classified.json 전체를 재계산하므로 기존 날짜 파일을 지우고 새로 씀)
     + 사유별 제외 건수 출력
 """
 import datetime
 from collections import Counter
 
-from common import CLASSIFIED_FILE, LOAD_READY_FILE, dump_json, is_affiliate_ranking, load_json
+from common import (CLASSIFIED_DIR, LOAD_READY_DIR, clear_json_dir, dump_json_sharded,
+                     is_affiliate_ranking, load_json_dir, parent_date_key)
 
 VALID_LINK_LOCATIONS = {'설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명'}
 
@@ -110,7 +112,7 @@ def transform_one(post):
 
 
 def main():
-    posts = load_json(CLASSIFIED_FILE)
+    posts = load_json_dir(CLASSIFIED_DIR)
     accepted = []
     reasons = Counter()
 
@@ -121,10 +123,11 @@ def main():
             continue
         accepted.append({'platform': post['platform'], 'parent': parent, 'products': products})
 
-    dump_json(LOAD_READY_FILE, accepted)
+    clear_json_dir(LOAD_READY_DIR)
+    dump_json_sharded(LOAD_READY_DIR, accepted, parent_date_key)
     ig_n = sum(1 for a in accepted if a['platform'] == 'ig')
     yt_n = sum(1 for a in accepted if a['platform'] == 'yt')
-    print(f'전체 {len(posts)}건 중 확정 공구 {len(accepted)}건(ig {ig_n} / yt {yt_n}) -> {LOAD_READY_FILE}')
+    print(f'전체 {len(posts)}건 중 확정 공구 {len(accepted)}건(ig {ig_n} / yt {yt_n}) -> {LOAD_READY_DIR}/*.json (날짜별)')
     print('제외 사유:')
     for reason, n in reasons.most_common():
         print(f'  {n:4d}  {reason}')

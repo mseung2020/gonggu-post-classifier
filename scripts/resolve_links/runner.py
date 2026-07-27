@@ -7,7 +7,8 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from common import LOAD_READY_FILE, RESOLVED_FILE, dump_json, load_json
+from common import (LOAD_READY_DIR, RESOLVED_DIR, clear_json_dir, dump_json, dump_json_sharded,
+                     load_json, load_json_dir, parent_date_key)
 
 from .browser import new_context_page
 from .config import (AUTH_STATE_FILE, DIFY_KEY_JUDGE, DIFY_KEY_PICK, ITEM_DELAY, RESOLUTION_FILE,
@@ -38,7 +39,10 @@ def build_resolved_file(items, resolutions):
                 np['candidate_url'] = res['final_url'][:500]
             new_products.append(np)
         out.append({**item, 'products': new_products})
-    dump_json(RESOLVED_FILE, out)
+    # items+resolutions로 매번 전체를 다시 조립하므로, 재계산 후 특정 날짜에 남는 레코드가
+    # 없어졌는데 옛 날짜 파일이 안 지워져 stale로 남는 걸 막기 위해 먼저 비운다.
+    clear_json_dir(RESOLVED_DIR)
+    dump_json_sharded(RESOLVED_DIR, out, parent_date_key)
 
 
 def _resolve_worker(worker_id, work_q, resolutions, lock, total, save_auth_state):
@@ -75,7 +79,7 @@ def main():
         print('.env에 DIFY_KEY_PICK / DIFY_KEY_JUDGE가 필요합니다.', file=sys.stderr)
         sys.exit(1)
 
-    items = load_json(LOAD_READY_FILE)
+    items = load_json_dir(LOAD_READY_DIR)
     resolutions = load_resolutions()
 
     pending = [
@@ -109,7 +113,7 @@ def main():
     by_status = {}
     for r in resolutions.values():
         by_status[r['status']] = by_status.get(r['status'], 0) + 1
-    print(f'누적 {len(resolutions)}건 — {by_status} -> {RESOLVED_FILE}')
+    print(f'누적 {len(resolutions)}건 — {by_status} -> {RESOLVED_DIR}/*.json (날짜별)')
 
 
 if __name__ == '__main__':

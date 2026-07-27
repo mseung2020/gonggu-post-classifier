@@ -5,6 +5,15 @@ __pycache__/
 data/raw/*
 data/output/*
 data/auth/*
+data/01_raw/*
+data/02_classified/*
+data/03_load_ready/*
+data/04_resolved/*
+data/_migrated_backup/*
 !data/raw/.gitkeep
 !data/output/.gitkeep
 !data/auth/.gitkeep
+!data/01_raw/.gitkeep
+!data/02_classified/.gitkeep
+!data/03_load_ready/.gitkeep
+!data/04_resolved/.gitkeep

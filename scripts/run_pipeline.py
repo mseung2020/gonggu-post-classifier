@@ -30,7 +30,7 @@ import pathlib
 import subprocess
 import sys
 
-from common import CLASSIFIED_FILE, RAW_FILE, connect_dst, load_json
+from common import CLASSIFIED_DIR, RAW_DIR, connect_dst, load_json_dir
 
 ROOT = pathlib.Path(__file__).resolve().parent
 TARGET_TABLES = ('gonggu_post', 'gonggu_post_product', 'gonggu_video', 'gonggu_video_product')
@@ -55,11 +55,12 @@ def _key(r):
 
 
 def print_remaining():
-    if not RAW_FILE.exists():
+    if not RAW_DIR.exists():
         return
-    posts = load_json(RAW_FILE)
-    done = load_json(CLASSIFIED_FILE) if CLASSIFIED_FILE.exists() else []
-    done_keys = {_key(r) for r in done}
+    posts = load_json_dir(RAW_DIR)
+    done = load_json_dir(CLASSIFIED_DIR)
+    # classification_error가 남은 건 완료로 안 치는 classify.py 판정과 맞춘다(재시도 대상).
+    done_keys = {_key(r) for r in done if r.get('classification') and not r.get('classification_error')}
     remaining = {'ig': 0, 'yt': 0}
     for p in posts:
         if _key(p) not in done_keys:
