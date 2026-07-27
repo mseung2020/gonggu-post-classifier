@@ -18,8 +18,10 @@ from playwright.sync_api import sync_playwright
 
 from classify import classify_one
 from common import DIFY_KEY, RAW_FILE, ROOT, dump_json, load_json
-from resolve_links import (DIFY_KEY_JUDGE, DIFY_KEY_PICK, RESOLVE_CONCURRENCY, _new_context_page,
-                            product_key, resolve_product)
+from resolve_links.browser import new_context_page
+from resolve_links.config import DIFY_KEY_JUDGE, DIFY_KEY_PICK, RESOLVE_CONCURRENCY
+from resolve_links.core import resolve_product
+from resolve_links.matching import product_key
 from transform import transform_one
 
 DIAG_FILE = ROOT / 'data/output/_diag_result.json'
@@ -71,7 +73,7 @@ def main():
 
     def _diag_worker(worker_id):
         with sync_playwright() as pw:
-            browser, ctx, page = _new_context_page(pw)
+            browser, ctx, page = new_context_page(pw)
             while True:
                 try:
                     platform, parent, product, raw_post = work_q.get_nowait()

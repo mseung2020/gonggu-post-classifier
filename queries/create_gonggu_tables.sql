@@ -31,14 +31,10 @@
 -- 참고: MySQL은 인접한 문자열 리터럴을 자동으로 이어붙이지 않으므로, 모든 COMMENT는
 -- 하나의 문자열 리터럴로 작성한다.
 
--- 이전 버전(2-테이블 통합형 + caption_preview 있던 4-테이블형)을 전부 대체한다.
--- 이미 넣은 데이터가 없다는 전제 — 데이터가 있다면 DROP 전에 반드시 백업할 것.
--- 자식(FK 있는 쪽) 먼저 DROP.
-DROP TABLE IF EXISTS gonggu_product;
-DROP TABLE IF EXISTS gonggu_video_product;
-DROP TABLE IF EXISTS gonggu_post_product;
-DROP TABLE IF EXISTS gonggu_video;
-DROP TABLE IF EXISTS gonggu_post;
+-- 이 파일은 신규 설치용이며 DROP을 포함하지 않는다 — 테이블이 이미 있으면 CREATE TABLE이
+-- 에러로 멈출 뿐 기존 데이터는 절대 건드리지 않는다(안전한 실패). 기존 데이터를 밀고 처음부터
+-- 다시 만들어야 하는 경우에만, 위험을 인지한 상태로 별도 파일 reset_gonggu_tables.sql을 실행할 것
+-- (그 파일은 DROP 전 반드시 백업하라는 경고와 DROP 문만 담고 있음).
 
 -- ============================================================
 -- 1) gonggu_video — 공구가 "확실한"(최대한 보수적으로 필터링된) 유튜브 영상 1건당 1행

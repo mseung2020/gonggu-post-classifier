@@ -71,5 +71,10 @@ def load_json(path):
 
 
 def dump_json(path, obj):
+    """임시 파일에 쓰고 os.replace로 교체 — 저장 도중 강제 종료돼도 기존 체크포인트 파일이
+    반쯤 쓰인 상태로 깨지지 않는다(os.replace는 원자적)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(obj, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)

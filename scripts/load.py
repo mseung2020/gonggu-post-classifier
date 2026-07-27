@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4단계: load_ready.json(또는 resolve_links.py를 거친 load_ready_resolved.json)을
+"""4단계: load_ready.json(또는 resolve_links를 거친 load_ready_resolved.json)을
 dev_gongguking의 gonggu_video/gonggu_video_product(유튜브) 또는
 gonggu_post/gonggu_post_product(인스타그램)에 INSERT한다.
 이미 있는 (post_id) / (video_id)는 건너뛴다(덮어쓰지 않음 — 다운스트림에서 이미 손댔을 수 있음).
@@ -9,7 +9,7 @@ gonggu_post/gonggu_post_product(인스타그램)에 INSERT한다.
 """
 from common import LOAD_READY_FILE, RESOLVED_FILE, connect_dst, load_json
 
-# resolve_links.py를 돌렸으면 candidate_url이 "찐 최종 링크 하나"로 좁혀진 이 파일을 쓰고,
+# resolve_links를 돌렸으면 candidate_url이 "찐 최종 링크 하나"로 좁혀진 이 파일을 쓰고,
 # 아직 안 돌렸으면(또는 스킵했으면) transform.py 원본(LLM 후보를 세미콜론으로 이어붙인 상태)을 쓴다.
 INPUT_FILE = RESOLVED_FILE if RESOLVED_FILE.exists() else LOAD_READY_FILE
 
@@ -53,7 +53,7 @@ def load_video(cur, parent, products):
     cur.execute(INSERT_VIDEO, {'external_url': None, **parent})
     video_id = parent['video_id']  # FK 컬럼명이 gonggu_video_product.video_id로 되어있음(자연키)
     for p in products:
-        # resolve_links.py를 안 거친 load_ready.json으로 돌아가는 경우 link_status 키가 없을
+        # resolve_links를 안 거친 load_ready.json으로 돌아가는 경우 link_status 키가 없을
         # 수 있어 기본값 None을 깔아준다.
         cur.execute(INSERT_VIDEO_PRODUCT, {'link_status': None, **p, 'video_id': video_id})
     return True
@@ -74,23 +74,29 @@ def main():
     items = load_json(INPUT_FILE)
     print(f'입력 파일: {INPUT_FILE}')
     conn = connect_dst()
-    inserted, skipped = 0, 0
+    inserted, skipped, failed = 0, 0, 0
     try:
         with conn.cursor() as cur:
             for item in items:
                 fn = load_video if item['platform'] == 'yt' else load_post
-                ok = fn(cur, item['parent'], item['products'])
+                key = item['parent'].get('video_id') or item['parent'].get('post_id')
+                # 한 건씩 커밋 — 한 건의 INSERT 실패(예: LLM이 준 값이 컬럼 길이/제약을 벗어남)가
+                # 이미 이번 실행에서 성공적으로 넣은 다른 건들까지 롤백시키지 않도록 함.
+                try:
+                    ok = fn(cur, item['parent'], item['products'])
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    failed += 1
+                    print(f'  실패: {item["platform"]} {key} — {e}')
+                    continue
                 if ok:
                     inserted += 1
                 else:
                     skipped += 1
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
     finally:
         conn.close()
-    print(f'삽입 {inserted}건 / 이미 존재해서 스킵 {skipped}건 (전체 {len(items)}건)')
+    print(f'삽입 {inserted}건 / 이미 존재해서 스킵 {skipped}건 / 실패 {failed}건 (전체 {len(items)}건)')
 
 
 if __name__ == '__main__':

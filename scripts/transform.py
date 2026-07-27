@@ -51,7 +51,7 @@ def _product_row(p, sort_order):
         loc = '링크없음_불명'
     urls = [u for u in (p.get('urls') or []) if u]
     return {
-        'product_name': (p.get('name') or '').strip(),
+        'product_name': (p.get('name') or '').strip()[:300],
         'link_location': loc,
         'url_type': p.get('url_type') if p.get('url_type') and p.get('url_type') != '없음' else None,
         'candidate_url': ';'.join(urls)[:500] if urls else None,
