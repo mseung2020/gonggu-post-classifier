@@ -42,7 +42,8 @@ dev_gongguking DB
 
 `scripts/resolve_links/`와 `scripts/linkbio_parser/`는 파일 하나가 아니라 책임별로 나뉜
 패키지입니다(각각 10개 안팎의 파일, 파일당 200줄 이하) — 구성은 각 패키지의
-`__init__.py` 상단 docstring 참고.
+`__init__.py` 상단 docstring 참고. 그래서 `python3 scripts/resolve_links.py`가 아니라
+**`cd scripts && python3 -m resolve_links`**로 실행합니다(자세한 옵션은 아래 "사용법" 절 참고).
 
 컬럼명/타입은 hifen DB의 대응 컬럼(`YT_video_lists.video_id`, `instagram_post.user_id` 등)과
 최대한 동일하게 맞춰져 있습니다 — 실제로 조인하진 않지만 봤을 때 바로 알아볼 수 있도록. 자세한
