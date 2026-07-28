@@ -38,6 +38,12 @@ dev_gongguking DB
 것만 골라 다시 손보는" 보강 단계입니다. 아래 "모듈 하나씩 뜯어보기"에서 각 단계를 순서대로
 자세히 설명합니다 — 처음 보신다면 그 순서대로 읽으시는 걸 추천합니다.
 
+**8번(`fetch_yt_ppl.py` + `classify_yt_ppl.py`)은 이 본줄기와 별도인 독립 유입 경로입니다**
+— hifen DB의 `brand` 테이블(유튜브 PPL/브랜드 협찬 영상)에서 자체 SQL 쿼리로 가져와
+(`fetch_yt_ppl.py`) 자체 프롬프트로 "공구" 여부를 판별한 뒤(`classify_yt_ppl.py`), 1~2번과
+마찬가지로 `data/02_classified/`에 결과를 얹어서 3번(transform.py)부터는 본줄기와
+합류합니다. LLM#1(`classify.py`)이나 위 1~7번 파일은 전혀 건드리지 않습니다.
+
 `resolve_links`는 실제 크롤링(안티봇 회피 대기 포함)이라 느립니다 — 안 돌렸거나 건너뛰면
 `load.py`는 `transform.py`가 만든 원본 후보 목록(세미콜론으로 이어붙인 상태)을 그대로 씁니다.
 `load.py`는 이미 DB에 있는 post_id/video_id를 건너뛰기만 하고 UPDATE는 하지 않으므로, 링크
@@ -185,6 +191,46 @@ dev_gongguking DB
   "진행중" 상태가 먼저 확정돼 있어야 그걸 기준으로 대상을 고를 수 있습니다. resolve_links와
   마찬가지로 동시에 두 개(또는 resolve_links와 동시에) 돌리지 말 것.
 
+### 8. `fetch_yt_ppl.py` + `classify_yt_ppl.py` — 유튜브 PPL 공구 판별 (기존 파이프라인과 완전 독립)
+
+- **무엇**: `fetch_source.py`는 캡션에 "공구"/"공동구매"가 그대로 적힌 유튜브 영상만
+  키워드로 가져오는데, 실제로는 그 단어 없이 PPL/브랜드 협찬으로 진행되는 그룹특가(채널
+  전용 할인코드, 브랜드x유튜버 콜라보 한정마켓 등)가 훨씬 많습니다. 이 두 스크립트는 hifen
+  DB의 `brand` 테이블(브랜드 매칭된 유튜브 영상 전체)에서 "공구"/"공동구매" 키워드가 **없는**
+  것만 모아, 전용 프롬프트(`prompts.YT_PPL_GONGGU_SYSTEM`)로 "PPL이지만 사실상 그룹특가인지"
+  판별합니다. `fetch_source.py`/`classify.py`와 똑같이 **fetch 단계와 LLM 단계를 파일로
+  분리**했습니다(`fetch_yt_ppl.py`는 LLM 호출 없이 raw만 저장, `classify_yt_ppl.py`가
+  그 raw를 읽어 LLM 호출).
+- **기존 LLM#1과 완전히 독립**: `classify.py`(LLM#1, `GONGGU_CLASSIFY_SYSTEM`)는 이 목적으로
+  재사용하지 않습니다 — 이미 검증된 그 판정 로직/파일에 전혀 영향을 주지 않기 위해 fetch도,
+  프롬프트도, 스크립트도 전부 별도로 분리했습니다. is_gonggu는 아래 세 경우만 true입니다:
+  1. 브랜드x유튜버 콜라보 한정 마켓/기간한정 특가
+  2. 채널/구독자 전용 할인코드·전용 할인율
+  3. 기간이 명시된 "구독자 대상 특가"
+
+  브랜드 상시할인 소개, 여행/구독 서비스 프로모코드, 신상소개 브이로그에 섞인 할인가, 게임
+  인앱재화, 순수 브랜드노출, 개인리뷰+일반링크, 제휴마케팅(쿠팡파트너스 등), 댓글이벤트,
+  후원/멤버십 유도는 전부 공구 아님으로 판단합니다.
+- **`fetch_yt_ppl.py`**
+  - **입력**: `brand` 테이블에서 `publishDate >= DAYS_BACK`이고 `video_description`에
+    "공구"/"공동구매"가 없는 행 전체(SQL 단계에서부터 `fetch_source.py`가 다루는 video_id와
+    상호 배타적이라 별도 dedup 불필요)
+  - **출력**: `data/01_raw_yt_ppl/<발행일>.jsonl` — `fetch_source.py`의 `data/01_raw/`와는
+    별도 디렉터리라 서로 덮어쓰지 않습니다.
+  - **명령**: `DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py`
+- **`classify_yt_ppl.py`**
+  - **입력**: `data/01_raw_yt_ppl/*.jsonl` 중 아직 분류 안 된 것
+  - **출력**: `data/02_classified/<발행일>.jsonl` — `classify.py`와 **같은 디렉터리**에 같은
+    레코드 스키마로 append됩니다(서로 다른 video_id만 다루므로 충돌 없음). 그래서
+    `transform.py`부터는 무수정으로 이 결과를 그대로 처리합니다.
+  - **명령**: `CONCURRENCY=100 python3 scripts/classify_yt_ppl.py` (`LIMIT=20`으로 소규모
+    테스트 가능)
+- **알아둘 점**: `classify.py`/`fetch_source.py`보다 먼저(또는 나중에) 돌려도 상관없습니다 —
+  서로 완전히 독립이라 실행 순서가 결과에 영향을 주지 않습니다. 일일 퀘스트에서는
+  `fetch_source.py` 다음에 `fetch_yt_ppl.py`, `classify.py` 다음에 `classify_yt_ppl.py`를
+  추가하는 걸 권장합니다(두 LLM이 직렬로: `classify.py`가 끝나야 `classify_yt_ppl.py`가
+  시작됨).
+
 ## 설치
 
 ```bash
@@ -195,10 +241,13 @@ cp .env.example .env          # 값 채우기 (DB 자격증명, DEEPSEEK_KEY)
 
 ## LLM 설정
 
-LLM#1~#4(공구판별/링크선택/페이지판별/카테고리분류) 전부 DeepSeek API를 직접 호출합니다 —
-Dify 같은 외부 워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드
-(`scripts/common.py`의 `call_llm`, `scripts/prompts.py`의 시스템 프롬프트 4개) 안에 그대로
-있습니다. `.env`에 `DEEPSEEK_KEY`만 채우면 됩니다(`DEEPSEEK_MODEL` 기본값은 `deepseek-v4-pro`).
+LLM#1~#4(공구판별/링크선택/페이지판별/카테고리분류) + 유튜브 PPL 공구 판별(8번,
+`classify_yt_ppl.py` 전용)까지 전부 DeepSeek API를 직접 호출합니다 — Dify 같은 외부
+워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드(`scripts/common.py`의
+`call_llm`, `scripts/prompts.py`의 시스템 프롬프트들) 안에 그대로 있습니다. `.env`에
+`DEEPSEEK_KEY`만 채우면 됩니다(`DEEPSEEK_MODEL` 기본값은 `deepseek-v4-pro`).
+`YT_PPL_GONGGU_SYSTEM`은 `GONGGU_CLASSIFY_SYSTEM`(LLM#1)과 판단 기준이 완전히 다른
+별도 프롬프트입니다 — 서로 절대 공유하지 않습니다.
 
 ## DB 스키마
 
@@ -212,18 +261,23 @@ gonggu_video_product, gonggu_post, gonggu_post_product). 신규 설치용이며 
 
 ### 매일 돌리는 순서 (권장)
 
-위 "모듈 하나씩 뜯어보기" 1~7번을 이 순서 그대로, 하루에 한 번 실행하면 됩니다. 6번이
+위 "모듈 하나씩 뜯어보기" 1~8번을 이 순서 그대로, 하루에 한 번 실행하면 됩니다. 6번이
 5번보다 먼저 와야 그날 "진행중" 상태가 먼저 확정되고, 7번이 그걸 기준으로 재탐색 대상을
-고를 수 있습니다.
+고를 수 있습니다. 8번(`fetch_yt_ppl.py`/`classify_yt_ppl.py`)은 나머지 전부와 완전히
+독립이라 순서상 어디에 둬도 무방하지만, "원본 수집"/"LLM 분류"라는 성격이 같은 1번/2번
+바로 다음에 각각 두는 걸 권장합니다(두 LLM이 직렬로 도는 효과 — `classify.py`가 끝나야
+`classify_yt_ppl.py`가 시작됨).
 
 ```bash
-python3 scripts/update_gonggu_stage.py                       # 6. 공구 상태(시작전/진행중/종료) 갱신
-DAYS_BACK=7 python3 scripts/fetch_source.py                  # 1. 원본 수집
-CONCURRENCY=24 python3 scripts/classify.py                   # 2. LLM#1 공구 분류
-python3 scripts/transform.py                                 # 3. 보수적 게이트링
-cd scripts && RESOLVE_CONCURRENCY=30 python3 -m resolve_links # 4. 링크 해석 (scripts/ 안에서 -m으로!)
-cd .. && python3 scripts/load.py                              # 5. DB 적재
-python3 scripts/rescan_inprogress.py                          # 7. 진행중인데 못 찾은 링크 재탐색
+python3 scripts/update_gonggu_stage.py                        # 6. 공구 상태(시작전/진행중/종료) 갱신
+DAYS_BACK=7 python3 scripts/fetch_source.py                   # 1. 원본 수집
+DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py                   # 8-1. 유튜브 PPL 원본 수집(독립 모듈)
+CONCURRENCY=24 python3 scripts/classify.py                    # 2. LLM#1 공구 분류
+CONCURRENCY=100 python3 scripts/classify_yt_ppl.py             # 8-2. 유튜브 PPL 공구 판별(독립 모듈)
+python3 scripts/transform.py                                  # 3. 보수적 게이트링
+cd scripts && RESOLVE_CONCURRENCY=30 python3 -m resolve_links  # 4. 링크 해석 (scripts/ 안에서 -m으로!)
+cd .. && python3 scripts/load.py                               # 5. DB 적재
+python3 scripts/rescan_inprogress.py                           # 7. 진행중인데 못 찾은 링크 재탐색
 ```
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
@@ -234,8 +288,9 @@ resolve_links/load.py 모두 동시 실행 시 문제가 생긴 전례가 있습
 
 ### 한 번에 자동으로 (1~5번만)
 
-`run_pipeline.py`가 1~5번을 정해진 순서로 이어 부르는 오케스트레이터입니다. **6·7번(공구
-상태 갱신, 진행중 재탐색)은 아직 포함되어 있지 않으므로 따로 실행해야 합니다.**
+`run_pipeline.py`가 1~5번을 정해진 순서로 이어 부르는 오케스트레이터입니다. **6·7·8번(공구
+상태 갱신, 진행중 재탐색, 유튜브 PPL 공구 판별)은 아직 포함되어 있지 않으므로 따로
+실행해야 합니다.**
 
 ```bash
 python3 scripts/run_pipeline.py                              # 이미 fetch했다는 전제, 1~5단계 순서대로

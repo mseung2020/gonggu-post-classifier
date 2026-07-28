@@ -2,10 +2,12 @@
 __pycache__/
 *.pyc
 .DS_Store
+.claude/settings.local.json
 data/raw/*
 data/output/*
 data/auth/*
 data/01_raw/*
+data/01_raw_yt_ppl/*
 data/02_classified/*
 data/03_load_ready/*
 data/04_resolved/*
@@ -14,6 +16,7 @@ data/_migrated_backup/*
 !data/output/.gitkeep
 !data/auth/.gitkeep
 !data/01_raw/.gitkeep
+!data/01_raw_yt_ppl/.gitkeep
 !data/02_classified/.gitkeep
 !data/03_load_ready/.gitkeep
 !data/04_resolved/.gitkeep
