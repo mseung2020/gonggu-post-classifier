@@ -1,5 +1,6 @@
 """판단(LLM) 없이 "이 링크가 실제로 어디로 이동하는지"만 확인하는 리다이렉트 추적."""
 from .antibot import is_non_mall, looks_discontinued, recover_from_block
+from .browser import domain_gate
 from .config import BAD_DOMAINS
 
 
@@ -11,11 +12,12 @@ def follow_redirect(page, url, referer):
     반환: (최종 url 또는 None, verified) — verified=False면 우리가 직접 그 페이지 내용을
     확인하지는 못했지만(로그인월/캡차 등) URL 자체는 복구한 경우."""
     try:
-        resp = page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
-        try:
-            page.wait_for_load_state('networkidle', timeout=6000)
-        except Exception:
-            pass
+        with domain_gate(url):
+            resp = page.goto(url, referer=referer, wait_until='domcontentloaded', timeout=20000)
+            try:
+                page.wait_for_load_state('networkidle', timeout=6000)
+            except Exception:
+                pass
     except Exception:
         return None, False
     final_url = page.url

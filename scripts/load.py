@@ -11,7 +11,7 @@ from common import LOAD_READY_DIR, RESOLVED_DIR, connect_dst, load_json_dir
 
 # resolve_links를 돌렸으면 candidate_url이 "찐 최종 링크 하나"로 좁혀진 이 폴더를 쓰고,
 # 아직 안 돌렸으면(또는 스킵했으면) transform.py 원본(LLM 후보를 세미콜론으로 이어붙인 상태)을 쓴다.
-INPUT_DIR = RESOLVED_DIR if RESOLVED_DIR.exists() and any(RESOLVED_DIR.glob('*.json')) else LOAD_READY_DIR
+INPUT_DIR = RESOLVED_DIR if RESOLVED_DIR.exists() and any(RESOLVED_DIR.glob('*.jsonl')) else LOAD_READY_DIR
 
 INSERT_VIDEO = """
 INSERT INTO gonggu_video

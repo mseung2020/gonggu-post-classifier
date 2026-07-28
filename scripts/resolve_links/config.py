@@ -3,7 +3,9 @@ import os
 
 from common import ROOT
 
-RESOLUTION_FILE = ROOT / 'data/output/link_resolution.json'
+# append-only(레코드 1개=1줄) — 계속 커지는 체크포인트라 전체를 다시 쓰지 않고 한 줄씩
+# 덧붙인다(common.append_jsonl/load_jsonl 참고, 2026-07-27 성능 문제로 .json에서 전환).
+RESOLUTION_FILE = ROOT / 'data/output/link_resolution.jsonl'
 AUTH_STATE_FILE = ROOT / 'data/auth/session_state.json'
 
 DIFY_KEY_PICK = os.environ.get('DIFY_KEY_PICK', '')
@@ -35,6 +37,11 @@ ITEM_DELAY = float(os.environ.get('ITEM_DELAY', '3'))  # 상품 사이 대기(�
 # ITEM_DELAY만으로 완화하던 걸 워커 수까지 감안해서 신중하게 올릴 것 — 진단 라운드로 차단율
 # 확인 후 조정.
 RESOLVE_CONCURRENCY = int(os.environ.get('RESOLVE_CONCURRENCY', '1'))
+# 후보 링크가 스마트스토어/인포크 등 몇 개 도메인에 몰려 있어서 "도메인당 동시 1개"로 막으면
+# 워커를 늘려도 대부분 대기만 하게 된다(실측 확인, 2026-07-27 — 동시 30인데 도메인 락 때문에
+# 2.8배밖에 안 빨라짐) — 그래서 도메인당 동시 허용치를 살짝 풀어주되, 여전히 상한을 둬서
+# 같은 사이트에 몰리는 정도는 제한한다.
+MAX_PER_DOMAIN = int(os.environ.get('MAX_PER_DOMAIN', '4'))
 BLOCKED_STATUS_CODES = (403, 429, 490)  # 490=네이버 캡차/보안확인
 BLOCKED_TEXT_MARKERS = ('security verification', '보안확인을 완료', 'unusual traffic', '비정상적인 접근')
 SLOW_REDIRECT_DOMAINS = ('mkt.shopping.naver.com',)

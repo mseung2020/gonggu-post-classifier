@@ -1,10 +1,19 @@
 """페이지/링크인바이오 허브에서 "구매 링크 후보" 목록을 뽑고 시도 순서를 정하는 로직."""
 import re
+import threading
 
 import linkbio_parser
 
 from .antibot import is_non_mall
 from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT, URL_TYPE_DOMAIN_HINTS
+
+# 같은 인플루언서의 링크인바이오 페이지(예: 인포크 계정 하나)를 형제 상품 여러 개가 그대로
+# 공유하는 경우가 많아서(실측, 2026-07-27 — 남은 4720건이 유니크 URL 1710개뿐, 평균 2.7배
+# 중복) 워커/스레드가 몇 개든 프로세스 전체에서 URL 하나당 한 번만 실제로 요청한다.
+# 진행 중에 다른 스레드가 먼저 요청 중이면 그 결과를 기다렸다가 그대로 재사용한다(동시에
+# 같은 URL을 여러 번 두들기는 걸 막기 위함 — thundering herd 방지).
+_linkbio_cache = {}
+_linkbio_cache_lock = threading.Lock()
 
 
 def normalize_url(u):
@@ -64,6 +73,27 @@ def extract_collection_links(page):
 
 
 def linkbio_candidates(url):
+    """_fetch_linkbio_candidates의 URL 단위 캐시 래퍼. 같은 URL을 여러 상품이 동시에 요청하면
+    첫 요청만 실제로 계산하고 나머지는 그 결과를 기다렸다가 재사용한다."""
+    with _linkbio_cache_lock:
+        entry = _linkbio_cache.get(url)
+        if entry is None:
+            entry = {'event': threading.Event(), 'result': None}
+            _linkbio_cache[url] = entry
+            is_new = True
+        else:
+            is_new = False
+    if not is_new:
+        entry['event'].wait()
+        return entry['result']
+    try:
+        entry['result'] = _fetch_linkbio_candidates(url)
+    finally:
+        entry['event'].set()
+    return entry['result']
+
+
+def _fetch_linkbio_candidates(url):
     """인포크/litt.ly/linktree 등 알려진 링크인바이오 플랫폼이면, Playwright로 렌더링하는
     대신 개발자가 공유해준 linkbio_parser로 requests 기반 구조화 데이터(상품명/가격/실제
     URL)를 직접 뽑아온다 — 브라우저 없이 훨씬 빠르고, 버튼 텍스트 추측 대신 실제 상품 목록을

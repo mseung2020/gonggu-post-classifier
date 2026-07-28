@@ -6,12 +6,12 @@
 
 사용법:
     DAYS_BACK=7 python3 scripts/fetch_source.py
-결과: data/01_raw/<발행일>.json (날짜별 — 이번에 가져온 기간에 해당하는 날짜만 새로 씀)
+결과: data/01_raw/<발행일>.jsonl (날짜별 — 이번에 가져온 기간에 해당하는 날짜만 새로 씀)
 """
 import datetime
 import os
 
-from common import RAW_DIR, connect_src, dump_json_sharded, post_date_key
+from common import RAW_DIR, connect_src, dump_jsonl_sharded, post_date_key
 
 DAYS_BACK = int(os.environ.get('DAYS_BACK', '7'))
 
@@ -84,8 +84,8 @@ def main():
     finally:
         conn.close()
     posts = ig + yt
-    dump_json_sharded(RAW_DIR, posts, post_date_key)
-    print(f'{since} 이후 — ig {len(ig)}건, yt {len(yt)}건, 총 {len(posts)}건 -> {RAW_DIR}/*.json (날짜별)')
+    dump_jsonl_sharded(RAW_DIR, posts, post_date_key)
+    print(f'{since} 이후 — ig {len(ig)}건, yt {len(yt)}건, 총 {len(posts)}건 -> {RAW_DIR}/*.jsonl (날짜별)')
 
 
 if __name__ == '__main__':
