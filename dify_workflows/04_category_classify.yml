@@ -1,0 +1,201 @@
+app:
+  description: ''
+  icon: 🏷️
+  icon_background: '#E4E4FF'
+  icon_type: emoji
+  mode: workflow
+  name: 공구 제품 카테고리 분류
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: llm
+      id: 2000000000001-source-2000000000002-target
+      source: '2000000000001'
+      sourceHandle: source
+      target: '2000000000002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: 2000000000002-source-2000000000003-target
+      source: '2000000000002'
+      sourceHandle: source
+      target: '2000000000003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 시작
+        type: start
+        variables:
+        - default: ''
+          hint: ''
+          label: product_name
+          options: []
+          placeholder: '공구 제품명 (예: "OO 콜라겐 세럼 50ml 3개 세트")'
+          required: true
+          type: text-input
+          variable: product_name
+        - default: ''
+          hint: ''
+          label: title
+          options: []
+          placeholder: '포스트/영상 제목 (인스타그램처럼 제목이 없는 경우 빈 문자열)'
+          required: false
+          type: text-input
+          variable: title
+        - default: ''
+          hint: ''
+          label: description
+          options: []
+          placeholder: 포스트 캡션 또는 영상 설명 전문
+          required: false
+          type: paragraph
+          variable: description
+      height: 165
+      id: '2000000000001'
+      position:
+        x: 80
+        y: 282
+      positionAbsolute:
+        x: 80
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params: {}
+          mode: chat
+          name: claude-sonnet-5
+          provider: langgenius/anthropic/anthropic
+        prompt_template:
+        - id: b1a1e6a0-1c1a-4e1a-9c1a-1a1a1a1a1a01
+          role: system
+          text: "너는 공동구매(공구) 제품을 아래 확정된 대카테고리/하위카테고리 체계에 따라 분류하는 분류기다.\n\n[카테고리 체계] '대카테고리: 하위카테고리1, 하위카테고리2, ...' 형식이다. category는 콜론 왼쪽 값 중 정확히 하나, subcategory는 선택한 category 줄의 콜론 오른쪽 목록 중 정확히 하나여야 한다.\n\n뷰티: 스킨케어(로션/크림), 세럼/앰플, 클렌징, 선케어, 마스크팩, 메이크업, 헤어/바디, 향수, 뷰티기기\n식품: 반찬/밀키트, 정육/수산, 과일/농산물, 간식/디저트, 음료/커피, 냉동/간편식, 김치/장류, 곡물/견과\n영양제: 비타민/종합, 유산균, 홍삼, 오메가3, 콜라겐, 관절/눈/간\n다이어트/헬스: 프로틴/쉐이크, 다이어트보조제, 식단관리식품, 홈트/헬스기구, 운동보조용품, 바디관리기기, 운동복/슬리밍웨어\n육아: 분유/이유식, 기저귀/물티슈, 유아동의류, 유아용품, 완구/교육, 유모차/카시트, 임산부, 유아동도서\n패션: 상의, 하의/스커트, 원피스, 아우터, 이너/속옷, 홈웨어/잠옷, 빅사이즈/임부복\n신발/가방/주얼리: 운동화, 구두/부츠, 슬리퍼/샌들, 여성가방, 남성가방/백팩, 주얼리, 시계, 모자/벨트\n살림/청소: 수납/정리, 세탁/세제, 청소용품, 욕실, 방향/탈취·제습, 휴지/생활소모품\n주방: 냄비/프라이팬, 밀폐용기, 칼/도마, 식기/컵, 텀블러/물병, 주방가전, 베이킹\n가전/디지털: 생활가전, 계절가전, 음향기기, 모바일 액세서리, PC/주변기기, 프린터\n인테리어: 침구/패브릭, 커튼/블라인드, 러그, 조명, 가구, 홈데코, 디퓨저/캔들\n반려동물: 사료/간식, 배변용품, 장난감, 미용/위생, 하네스/이동장, 영양제, 의류\n스포츠/취미: 등산/트레킹, 자전거/라이딩, 골프, 구기/수영, 캠핑/차박, 여행/캐리어, 문구/도서, 자동차용품\n\n[입력] 제품명, (포스트/영상) 제목, (포스트/영상) 설명 3가지가 주어진다. 제목/설명은 비어 있을 수 있다.\n\n[규칙]\n- 판단은 제품명을 최우선으로 하고, 제목/설명은 제품명만으로 불분명할 때 보조 근거로만 참고한다. 설명에는 이벤트 문구·댓글유도·해시태그 등 분류와 무관한 내용이 섞여 있을 수 있으니 무시할 것.\n- category는 위 13개 대카테고리 중 정확히 하나, subcategory는 선택한 category 줄에 있는 하위카테고리 문자열 그대로 정확히 하나 — 이 둘은 항상 채운다. \"기타\"나 목록에 없는 새 값을 만들어내지 말고, 정말 애매해도 그중 가장 유사한 것 하나를 고른다.\n- confidence: 방금 고른 category/subcategory가 이 제품에 실제로 얼마나 잘 맞는지를 0.0~1.0 사이 실수로 스스로 평가한다.\n  · 제품명만 봐도 목록의 하위카테고리 중 하나와 명확하게 일치하면 0.8~1.0.\n  · 여러 하위카테고리 중 어디로 넣어도 좀 애매하지만 그나마 이게 제일 가깝다 싶으면 0.4~0.7.\n  · 이 13개 카테고리 어디에도 진짜로 속하지 않는데(예: 여행용 캐리어/파우치처럼 애초에 이 체계에 travel 전용 카테고리가 없는 경우) 규칙상 어쩔 수 없이 가장 비슷한 곳에 끼워넣은 것뿐이면 0.0~0.3처럼 낮게 매긴다. 이런 항목은 나중에 confidence가 낮은 것만 모아서 \"미분류\"로 따로 뺄 것이므로, 억지로 끼워맞춘 걸 숨기지 말고 솔직하게 낮은 점수를 줄 것.\n- reason: 방금 그 confidence를 왜 그렇게 줬는지 한국어 한 문장으로 짧고 구체적으로 적는다.\n  · confidence가 낮다면 \"왜 이 13개 체계에 잘 안 맞는지\"를 명확히 설명할 것 — 예: \"캐리어(여행가방) 전용 카테고리가 없어 스포츠/취미에 억지로 분류함\", \"숙박권/여행패키지 상품이라 이 체계 어디에도 맞는 대카테고리가 없음\".\n  · confidence가 높다면 왜 그 하위카테고리와 명확히 일치하는지 간단히 적을 것 — 예: \"제품명에 '세럼'이 명시되어 있어 뷰티>세럼/앰플과 정확히 일치\".\n  · 장황하게 쓰지 말고 한 문장(가능하면 40자 이내)으로 끝낼 것.\n\n반드시 아래 JSON 하나만 출력한다. 설명·마크다운·코드블록 금지. 순수 JSON.\n{\n  \"category\": \"뷰티\"|\"식품\"|\"영양제\"|\"다이어트/헬스\"|\"육아\"|\"패션\"|\"신발/가방/주얼리\"|\"살림/청소\"|\"주방\"|\"가전/디지털\"|\"인테리어\"|\"반려동물\"|\"스포츠/취미\",\n  \"subcategory\": string,\n  \"confidence\": number,\n  \"reason\": string\n}"
+        - id: c2b2f7b1-2d2b-4f2b-8d2b-2b2b2b2b2b02
+          role: user
+          text: '제품명: {{#2000000000001.product_name#}}
+
+            제목: {{#2000000000001.title#}}
+
+            설명:
+
+            """
+
+            {{#2000000000001.description#}}
+
+            """'
+        selected: false
+        title: LLM
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '2000000000002'
+      position:
+        x: 382
+        y: 282
+      positionAbsolute:
+        x: 382
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        outputs:
+        - value_selector:
+          - '2000000000002'
+          - text
+          variable: result
+        selected: false
+        title: 출력
+        type: end
+      height: 88
+      id: '2000000000003'
+      position:
+        x: 684
+        y: 282
+      positionAbsolute:
+        x: 684
+        y: 282
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: 0
+      y: 0
+      zoom: 1
+  rag_pipeline_variables: []
