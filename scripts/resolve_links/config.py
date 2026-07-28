@@ -8,9 +8,6 @@ from common import ROOT
 RESOLUTION_FILE = ROOT / 'data/output/link_resolution.jsonl'
 AUTH_STATE_FILE = ROOT / 'data/auth/session_state.json'
 
-DIFY_KEY_PICK = os.environ.get('DIFY_KEY_PICK', '')
-DIFY_KEY_JUDGE = os.environ.get('DIFY_KEY_JUDGE', '')
-
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36')
 
@@ -50,7 +47,7 @@ SLOW_REDIRECT_DOMAINS = ('mkt.shopping.naver.com',)
 LINK_PICK_OK_CONF = os.environ.get('LINK_PICK_OK_CONF', 'high,medium').split(',')
 
 # url_type(LLM#1이 판단한 대표 구매 URL 종류)과 실제 도메인을 매칭시키는 힌트 — 후보가 여러 개일 때
-# 무관한 링크를 먼저 집어서 오판하는 걸 방지 (dify_workflows/01_gonggu_classify.yml의 url_type enum과 대응)
+# 무관한 링크를 먼저 집어서 오판하는 걸 방지 (prompts.GONGGU_CLASSIFY_SYSTEM의 url_type enum과 대응)
 URL_TYPE_DOMAIN_HINTS = {
     '네이버_스마트스토어': ('smartstore.naver.com', 'brand.naver.com', 'shopping.naver.com'),
     '네이버_기타': ('naver.com',),

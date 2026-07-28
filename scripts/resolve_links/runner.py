@@ -7,12 +7,11 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from common import (LOAD_READY_DIR, RESOLVED_DIR, append_jsonl, clear_json_dir, dump_jsonl_sharded,
-                     load_json_dir, load_jsonl, parent_date_key)
+from common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, append_jsonl, clear_json_dir,
+                     dump_jsonl_sharded, load_json_dir, load_jsonl, parent_date_key)
 
 from .browser import new_context_page
-from .config import (AUTH_STATE_FILE, DIFY_KEY_JUDGE, DIFY_KEY_PICK, ITEM_DELAY, RESOLUTION_FILE,
-                      RESOLVE_CONCURRENCY)
+from .config import AUTH_STATE_FILE, ITEM_DELAY, RESOLUTION_FILE, RESOLVE_CONCURRENCY
 from .core import resolve_product
 from .matching import product_key
 
@@ -90,8 +89,8 @@ def _resolve_worker(worker_id, work_q, resolutions, lock, total, save_auth_state
 
 
 def main():
-    if not DIFY_KEY_PICK or not DIFY_KEY_JUDGE:
-        print('.env에 DIFY_KEY_PICK / DIFY_KEY_JUDGE가 필요합니다.', file=sys.stderr)
+    if not DEEPSEEK_KEY:
+        print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)
 
     items = load_json_dir(LOAD_READY_DIR)

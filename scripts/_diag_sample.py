@@ -17,9 +17,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import sync_playwright
 
 from classify import classify_one
-from common import DIFY_KEY, RAW_DIR, ROOT, dump_json, load_json_dir
+from common import DEEPSEEK_KEY, RAW_DIR, ROOT, dump_json, load_json_dir
 from resolve_links.browser import new_context_page
-from resolve_links.config import DIFY_KEY_JUDGE, DIFY_KEY_PICK, RESOLVE_CONCURRENCY
+from resolve_links.config import RESOLVE_CONCURRENCY
 from resolve_links.core import resolve_product
 from resolve_links.matching import product_key
 from transform import transform_one
@@ -31,8 +31,8 @@ PRODUCT_N = int(sys.argv[2]) if len(sys.argv) > 2 else 50
 
 
 def main():
-    if not DIFY_KEY or not DIFY_KEY_PICK or not DIFY_KEY_JUDGE:
-        print('DIFY_KEY / DIFY_KEY_PICK / DIFY_KEY_JUDGE가 .env에 모두 필요합니다.', file=sys.stderr)
+    if not DEEPSEEK_KEY:
+        print('DEEPSEEK_KEY가 .env에 필요합니다.', file=sys.stderr)
         sys.exit(1)
 
     posts = load_json_dir(RAW_DIR)

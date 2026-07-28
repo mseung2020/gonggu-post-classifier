@@ -6,7 +6,7 @@ resolve_links → load. 각 스테이지는 그 시점에 남아 있는 데이�
 RESOLVE_CONCURRENCY)과 체크포인트를 갖고 있으므로 오케스트레이션은 순서 보장에만 집중한다.
 
 resolve_links는 Playwright로 실제 크롤링을 하는 느린 단계라서(안티봇 회피 대기 포함, 상품당
-수 초) DIFY_KEY_PICK/DIFY_KEY_JUDGE가 아직 없거나 이번엔 건너뛰고 싶으면 --skip-resolve로
+수 초) DEEPSEEK_KEY가 아직 없거나 이번엔 건너뛰고 싶으면 --skip-resolve로
 뺄 수 있다 — 이 경우 load.py는 transform.py가 만든 candidate_url(LLM 원본 후보, 세미콜론
 이어붙임)을 그대로 쓴다.
 

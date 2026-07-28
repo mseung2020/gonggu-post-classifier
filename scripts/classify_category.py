@@ -25,12 +25,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from common import CATEGORY_TAXONOMY, SUBCATEGORY_TO_CATEGORY, call_dify
+from common import CATEGORY_TAXONOMY, DEEPSEEK_KEY, SUBCATEGORY_TO_CATEGORY, call_llm
+from prompts import CATEGORY_CLASSIFY_SYSTEM, build_category_classify_user
 
 IN_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'
 OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_result.jsonl'
 
-DIFY_KEY_CATEGORY = os.environ.get('DIFY_KEY_CATEGORY', '')
 CONFIDENCE_THRESHOLD = float(os.environ.get('CONFIDENCE_THRESHOLD', '0.5'))
 
 MAX_RETRY = 3
@@ -49,17 +49,17 @@ def _load_jsonl(path):
 
 
 def classify_one(row):
-    input_obj = {
-        'product_name': row.get('product_name') or '',
-        'title': row.get('title') or '',
-        'description': row.get('description') or '',
-    }
+    user_message = build_category_classify_user(
+        product_name=row.get('product_name') or '',
+        title=row.get('title') or '',
+        description=row.get('description') or '',
+    )
     last_err = None
     rate_limit_attempt = 0
     generic_attempt = 0
     while True:
         try:
-            parsed = call_dify(input_obj, api_key=DIFY_KEY_CATEGORY, raw_inputs=True)
+            parsed = call_llm(CATEGORY_CLASSIFY_SYSTEM, user_message)
             llm_category, llm_subcategory = parsed.get('category'), parsed.get('subcategory')
             confidence = parsed.get('confidence')
             reason = parsed.get('reason')
@@ -93,8 +93,8 @@ def classify_one(row):
 
 
 def main():
-    if not DIFY_KEY_CATEGORY:
-        print('DIFY_KEY_CATEGORY 환경변수가 없음 — .env에 채워넣을 것', file=sys.stderr)
+    if not DEEPSEEK_KEY:
+        print('DEEPSEEK_KEY 환경변수가 없음 — .env에 채워넣을 것', file=sys.stderr)
         sys.exit(1)
 
     in_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else IN_DEFAULT

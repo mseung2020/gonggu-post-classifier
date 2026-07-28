@@ -30,9 +30,9 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from common import append_jsonl, connect_dst
+from common import DEEPSEEK_KEY, append_jsonl, connect_dst
 from resolve_links.browser import new_context_page
-from resolve_links.config import AUTH_STATE_FILE, DIFY_KEY_JUDGE, DIFY_KEY_PICK, ITEM_DELAY, RESOLUTION_FILE
+from resolve_links.config import AUTH_STATE_FILE, ITEM_DELAY, RESOLUTION_FILE
 from resolve_links.core import resolve_product
 from resolve_links.matching import product_key
 
@@ -123,8 +123,8 @@ def _worker(worker_id, work_q, lock, counters, total, save_auth_state):
 
 
 def main():
-    if not DIFY_KEY_PICK or not DIFY_KEY_JUDGE:
-        print('.env에 DIFY_KEY_PICK / DIFY_KEY_JUDGE가 필요합니다.', file=sys.stderr)
+    if not DEEPSEEK_KEY:
+        print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)
 
     conn = connect_dst()

@@ -1,4 +1,4 @@
-"""파이프라인 전체가 공유하는 설정/DB 연결/Dify 호출 헬퍼."""
+"""파이프라인 전체가 공유하는 설정/DB 연결/LLM 호출 헬퍼."""
 import json
 import os
 import pathlib
@@ -19,8 +19,8 @@ CLASSIFIED_DIR = ROOT / 'data/02_classified'
 LOAD_READY_DIR = ROOT / 'data/03_load_ready'
 RESOLVED_DIR = ROOT / 'data/04_resolved'
 
-# dify_workflows/04_category_classify.yml 프롬프트에 박아넣은 것과 동일한 체계 — 여기가
-# 바뀌면 그 yml도 같이 바꿔야 한다. classify_category.py/category_dashboard.py가 공유해서
+# prompts.CATEGORY_CLASSIFY_SYSTEM이 이 dict에서 카테고리 목록을 동적으로 생성하므로 여기만
+# 고치면 프롬프트도 자동으로 맞춰진다. classify_category.py/category_dashboard.py도 공유해서
 # 쓴다(따로 들고 있으면 서로 어긋날 수 있어서 한 곳에 둠).
 CATEGORY_TAXONOMY = {
     '뷰티': ['스킨케어(로션/크림)', '세럼/앰플', '클렌징', '선케어', '마스크팩', '메이크업', '헤어/바디', '향수', '뷰티기기'],
@@ -45,15 +45,18 @@ SUBCATEGORY_TO_CATEGORY = {
     sub: cat for cat, subs in CATEGORY_TAXONOMY.items() for sub in subs
 }
 
-DIFY_URL = os.environ.get('DIFY_URL', 'https://api.dify.ai/v1').rstrip('/')
-DIFY_KEY = os.environ.get('DIFY_KEY', '')
+DEEPSEEK_URL = os.environ.get('DEEPSEEK_URL', 'https://api.deepseek.com').rstrip('/')
+DEEPSEEK_KEY = os.environ.get('DEEPSEEK_KEY', '')
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-pro')
 
-# classify.py/resolve_links가 스레드풀로 동시에 call_dify를 부르므로, 매 호출마다 새
+# classify.py/resolve_links가 스레드풀로 동시에 call_llm을 부르므로, 매 호출마다 새
 # TCP/TLS 커넥션을 맺지 않도록 세션을 공유한다(requests.Session은 스레드 간 공유 안전 —
-# 내부 urllib3 커넥션 풀이 스레드 세이프). pool_maxsize는 실측한 최대 동시성(약 48)보다
-# 넉넉하게 잡아 풀 부족으로 인한 새 연결 생성을 막는다.
+# 내부 urllib3 커넥션 풀이 스레드 세이프). pool_maxsize는 실측한 최대 동시성보다 넉넉하게
+# 잡아 풀 부족으로 인한 새 연결 생성을 막는다 — DeepSeek 직접 호출로 전환 후 동시 400도
+# 429 없이 통과하는 걸 확인해서(2026-07-28), 예전 Dify/Cloudflare 시절 상한(약 48) 기준이던
+# 값을 올려둔다.
 _session = requests.Session()
-_adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64)
+_adapter = requests.adapters.HTTPAdapter(pool_connections=256, pool_maxsize=256)
 _session.mount('https://', _adapter)
 _session.mount('http://', _adapter)
 
@@ -85,16 +88,23 @@ def connect_dst():
     return _connect('DST')
 
 
-def call_dify(input_obj, api_key=None, timeout=60, raw_inputs=False):
-    """raw_inputs=True면 input_obj를 그대로 'inputs'로 보낸다(워크플로우 Start 노드에 변수가
-    여러 개 있는 경우). 기본값(False)은 기존 워크플로우들처럼 단일 'input' json_object 변수로 감싼다."""
-    headers = {'Authorization': f'Bearer {api_key or DIFY_KEY}', 'Content-Type': 'application/json'}
-    inputs = input_obj if raw_inputs else {'input': input_obj}
-    payload = {'inputs': inputs, 'response_mode': 'blocking', 'user': 'gonggu-post-classifier'}
-    r = _session.post(f'{DIFY_URL}/workflows/run', headers=headers, data=json.dumps(payload), timeout=timeout)
+def call_llm(system_prompt, user_message, timeout=60):
+    """DeepSeek chat completions 호출 — system/user 메시지 2개를 보내고 응답 텍스트를 JSON으로
+    파싱해서 돌려준다. response_format을 json_object로 강제해도 모델이 앞뒤에 여분의 텍스트를
+    붙이는 경우가 있어 파싱 폴백을 둔다."""
+    headers = {'Authorization': f'Bearer {DEEPSEEK_KEY}', 'Content-Type': 'application/json'}
+    payload = {
+        'model': DEEPSEEK_MODEL,
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_message},
+        ],
+        'response_format': {'type': 'json_object'},
+    }
+    r = _session.post(f'{DEEPSEEK_URL}/chat/completions', headers=headers, data=json.dumps(payload), timeout=timeout)
     r.raise_for_status()
     data = r.json()
-    raw = (data.get('data', {}).get('outputs', {}) or {}).get('result', '')
+    raw = data['choices'][0]['message']['content'] or ''
     try:
         return json.loads(raw)
     except Exception:

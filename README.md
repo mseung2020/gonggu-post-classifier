@@ -73,9 +73,10 @@ dev_gongguking DB
 
 ### 2. `classify.py` — LLM#1 공구 분류
 
-- **무엇**: 01_raw의 각 포스트를 Dify LLM#1(`01_gonggu_classify` 워크플로우)에 태워서
-  "공구인지(is_gonggu)", "상품이 몇 개인지(products 배열, 상품마다 link_location/url_type/urls)",
-  "공구 시작·종료일"을 뽑아냅니다. 아직 필터링은 안 하고 판단 결과만 붙입니다.
+- **무엇**: 01_raw의 각 포스트를 LLM#1(DeepSeek, 프롬프트는 `scripts/prompts.py`의
+  `GONGGU_CLASSIFY_SYSTEM`)에 태워서 "공구인지(is_gonggu)", "상품이 몇 개인지(products 배열,
+  상품마다 link_location/url_type/urls)", "공구 시작·종료일"을 뽑아냅니다. 아직 필터링은 안
+  하고 판단 결과만 붙입니다.
 - **입력**: `data/01_raw/*.jsonl` 중 아직 분류 안 된 것
 - **출력**: `data/02_classified/<발행일>.jsonl` — 원본 포스트 + `classification` 필드
 - **명령**: `CONCURRENCY=24 python3 scripts/classify.py`
@@ -83,12 +84,8 @@ dev_gongguking DB
   - `PLATFORM=yt` — ig/yt 중 하나만
 - **알아둘 점**:
   - **재시도 설계**: 실패한 건(`classification_error`)은 "완료"로 안 치고 다음 실행에서
-    자동으로 다시 시도합니다. 특히 Dify의 429(레이트리밋)는 최대 10회, 최대 60초 대기까지
-    길게 재시도합니다 — 코드 버그가 아니라 잠깐 기다리면 풀리는 상태이기 때문입니다.
-  - **429가 계속 나면**: Dify가 아니라 `api.dify.ai` 앞단 **Cloudflare**가 막는 경우가
-    많습니다(응답 본문에 "Access denied ... used Cloudflare to restrict access" 문구, `Retry-After`
-    헤더로 몇 초 기다려야 하는지 알려줌). `CONCURRENCY`를 너무 높게(24~30+) 잡고 짧은 시간에
-    몰아치면 걸리기 쉬우니, 걸리면 그 시간만큼 기다렸다가 다시 시도하세요.
+    자동으로 다시 시도합니다. 429(레이트리밋)는 최대 10회, 최대 60초 대기까지 길게
+    재시도합니다 — 코드 버그가 아니라 잠깐 기다리면 풀리는 상태이기 때문입니다.
   - **저장 방식**: 결과 1건 = 그 날짜 파일에 한 줄 append. 건수가 몇만 건이 되어도 저장
     비용이 늘지 않습니다(예전엔 날짜 파일 전체를 매번 다시 썼어서 건수가 쌓일수록 느려졌음).
 
@@ -112,7 +109,7 @@ dev_gongguking DB
   최종 링크 1개"로 확정합니다. 인스타 공구는 프로필 링크(대부분 인포크/링크트리 같은
   "링크인바이오" 허브)를 거치는 경우가 많아서, 그런 페이지면 브라우저 없이 구조화 데이터로
   빠르게 후보를 뽑고(LLM#2로 그중 하나 선택), 아니면 브라우저로 열어서 LLM#3로 상품페이지인지
-  판별합니다.
+  판별합니다. LLM#2/#3도 LLM#1과 같은 DeepSeek 호출(`scripts/resolve_links/llm.py`)입니다.
 - **입력**: `data/03_load_ready/*.jsonl` 중 아직 해석 안 된 상품
 - **출력**: `data/04_resolved/<발행일>.jsonl` (최종 후보 반영) + `data/output/link_resolution.jsonl`
   (상품 단위 체크포인트 — 상품 key당 결과 1줄, 재실행 시 이미 처리된 건 건너뜀)
@@ -193,25 +190,15 @@ dev_gongguking DB
 ```bash
 pip install -r requirements.txt
 playwright install chromium   # resolve_links(링크 해석 단계)용 — 최초 1회만
-cp .env.example .env          # 값 채우기 (DB 자격증명, Dify API 키 3개)
+cp .env.example .env          # 값 채우기 (DB 자격증명, DEEPSEEK_KEY)
 ```
 
-## Dify 워크플로우 준비
+## LLM 설정
 
-앱 3개를 각각 Dify에서 "DSL로 가져오기"로 **새 앱**으로 import하고, 발급된 API 키를 `.env`에
-채웁니다. 기존 앱을 덮어쓰지 말 것 — 이 프로젝트 전용으로 새로 만들 것.
-
-- `dify_workflows/01_gonggu_classify.yml` (공구 판별 + 상품 추출) → `.env`의 `DIFY_KEY`.
-  모델은 원래 gpt-5-mini 기준으로 짰지만 현재는 소넷5로 교체해서 씀.
-- `dify_workflows/02_link_selection.yml` ("공구왕 링크선택" — 링크모음 페이지의 후보 중 이
-  포스트 상품에 맞는 것 하나 고르기) → `.env`의 `DIFY_KEY_PICK`.
-- `dify_workflows/03_page_judge.yml` ("공구왕 페이지판별" — 도착한 페이지가 최종 상품페이지인지
-  판별) → `.env`의 `DIFY_KEY_JUDGE`.
-
-02/03은 `7월_co_buying_data/gonggu-link-resolver` 프로젝트에서 만든 걸 그대로 가져온
-것입니다(입력이 `post_context`/`candidates`/`page` 같은 범용 구조라 이 프로젝트의
-`products` 배열 스키마와 무관하게 재사용 가능) — 모델은 gpt-5-mini 그대로 둬도 되고,
-비용/품질 보고 나중에 바꿔도 됩니다.
+LLM#1~#4(공구판별/링크선택/페이지판별/카테고리분류) 전부 DeepSeek API를 직접 호출합니다 —
+Dify 같은 외부 워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드
+(`scripts/common.py`의 `call_llm`, `scripts/prompts.py`의 시스템 프롬프트 4개) 안에 그대로
+있습니다. `.env`에 `DEEPSEEK_KEY`만 채우면 됩니다(`DEEPSEEK_MODEL` 기본값은 `deepseek-v4-pro`).
 
 ## DB 스키마
 

@@ -17,7 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from common import CLASSIFIED_DIR, DIFY_KEY, RAW_DIR, append_jsonl, call_dify, load_json_dir, post_date_key
+from common import CLASSIFIED_DIR, DEEPSEEK_KEY, RAW_DIR, append_jsonl, call_llm, load_json_dir, post_date_key
+from prompts import GONGGU_CLASSIFY_SYSTEM, build_gonggu_classify_user
 
 MAX_RETRY = 3
 # 429(레이트리밋)는 코드 버그가 아니라 "잠깐 기다리면 반드시 풀리는" 상태라 훨씬 길게/많이
@@ -36,17 +37,17 @@ def _is_429(e):
 
 def classify_one(post):
     pub_date = post.get('publish_date') if post['platform'] == 'ig' else post.get('publishDate')
-    input_obj = {
-        'description': post.get('description') or '',
-        'publish_date': pub_date or '',
-        'creator_description': post.get('creator_description') or '',
-    }
+    user_message = build_gonggu_classify_user(
+        description=post.get('description') or '',
+        publish_date=pub_date or '',
+        creator_description=post.get('creator_description') or '',
+    )
     last_err = None
     rate_limit_attempt = 0
     generic_attempt = 0
     while True:
         try:
-            parsed = call_dify(input_obj)
+            parsed = call_llm(GONGGU_CLASSIFY_SYSTEM, user_message)
             return {**post, 'classification': parsed, 'classification_error': None}
         except Exception as e:
             last_err = str(e)[:200]
@@ -63,8 +64,8 @@ def classify_one(post):
 
 
 def main():
-    if not DIFY_KEY:
-        print('DIFY_KEY 환경변수가 없음 — .env에 채워넣을 것', file=sys.stderr)
+    if not DEEPSEEK_KEY:
+        print('DEEPSEEK_KEY 환경변수가 없음 — .env에 채워넣을 것', file=sys.stderr)
         sys.exit(1)
 
     posts = load_json_dir(RAW_DIR)

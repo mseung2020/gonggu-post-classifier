@@ -86,7 +86,7 @@
   .llm-cards { display:flex; gap:16px; justify-content:center; flex-wrap:wrap; max-width:1040px; margin:0 auto 10px; }
   .llm-card { border:1.4px dashed #111; border-radius:10px; padding:15px 17px; width:300px; font-size:11.5px; line-height:1.6; }
   .llm-card h3 { font-size:13px; margin:0 0 3px; }
-  .llm-card .dify { font-size:9.5px; color:#888; margin-bottom:10px; }
+  .llm-card .prompt-src { font-size:9.5px; color:#888; margin-bottom:10px; }
   .llm-card .io-label { font-weight:700; font-size:10px; margin-top:8px; display:block; }
   .llm-card code { font-size:10px; background:#f1f1f1; padding:0 4px; border-radius:3px; }
 
@@ -114,7 +114,7 @@
 
 <div class="legend">
   <span><i class="swatch sw-code"></i>코드 로직 (LLM 없음) / JSON 파일</span>
-  <span><i class="swatch sw-llm"></i>LLM 호출 (Dify)</span>
+  <span><i class="swatch sw-llm"></i>LLM 호출 (DeepSeek)</span>
   <span><i class="swatch sw-gate"></i>필터·게이트</span>
   <span><i class="swatch sw-db"></i>최종 DB 테이블</span>
 </div>
@@ -288,12 +288,12 @@
   link_status가 done이 아닌 행은 candidate_url이 인포크 등 중간 링크일 수 있음을 뜻한다.
 </div>
 
-<div class="section-title">Dify LLM 워크플로우 3종</div>
-<div class="section-sub">전부 순수 판단만 — 크롤링/파싱은 스크립트가, 판단만 LLM이</div>
+<div class="section-title">DeepSeek LLM 프롬프트 3종</div>
+<div class="section-sub">전부 순수 판단만 — 크롤링/파싱은 스크립트가, 판단만 LLM이 (scripts/common.py의 call_llm으로 직접 호출)</div>
 <div class="llm-cards">
   <div class="llm-card">
     <h3>LLM #1 · 공구왕 분류</h3>
-    <div class="dify">dify_workflows/01_gonggu_classify.yml</div>
+    <div class="prompt-src">scripts/prompts.py · GONGGU_CLASSIFY_SYSTEM</div>
     <span class="io-label">입력</span>
     <code>description · publish_date · creator_description</code>
     <span class="io-label">출력</span>
@@ -303,7 +303,7 @@
   </div>
   <div class="llm-card">
     <h3>LLM #2 · 링크선택</h3>
-    <div class="dify">dify_workflows/02_link_selection.yml</div>
+    <div class="prompt-src">scripts/prompts.py · LINK_SELECTION_SYSTEM</div>
     <span class="io-label">입력</span>
     <code>post_context · candidates[{href,text}]</code>
     <span class="io-label">출력</span>
@@ -313,7 +313,7 @@
   </div>
   <div class="llm-card">
     <h3>LLM #3 · 페이지판별</h3>
-    <div class="dify">dify_workflows/03_page_judge.yml</div>
+    <div class="prompt-src">scripts/prompts.py · PAGE_JUDGE_SYSTEM</div>
     <span class="io-label">입력</span>
     <code>post_context · page{url,host,title,jsonld_name,jsonld_price,has_og_image,body_text_snippet}</code>
     <span class="io-label">출력</span>
