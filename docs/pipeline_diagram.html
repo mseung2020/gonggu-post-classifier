@@ -2,84 +2,397 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>공구왕 포스트 분류 파이프라인</title>
+<title>공구왕 파이프라인 전체 설계도</title>
 <style>
-  body { font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; background:#fff; color:#000; margin:0; padding:40px 20px 80px; }
-  h1 { text-align:center; font-size:19px; margin-bottom:6px; font-weight:700; }
-  .subtitle { text-align:center; font-size:12.5px; color:#333; margin-bottom:36px; }
-  .flow { display:flex; flex-direction:column; align-items:center; gap:0; max-width:640px; margin:0 auto; }
-  .box { border:1.5px solid #000; border-radius:10px; padding:14px 20px; font-size:13.5px; text-align:center; min-width:280px; line-height:1.55; background:#fff; }
-  .box .tag { display:block; font-size:10.5px; font-weight:700; letter-spacing:.05em; margin-bottom:5px; }
-  .box small { display:block; font-size:11.5px; margin-top:3px; color:#111; }
-  .gate { border-style:dashed; }
-  .end { border-width:2.5px; }
-  .arrow { font-size:20px; line-height:1; margin:4px 0; }
-  .label { font-size:11.5px; margin:5px 0 8px; text-align:center; max-width:520px; color:#333; }
-  .reject-row { display:flex; gap:10px; justify-content:center; margin:6px 0 10px; flex-wrap:wrap; }
-  .reject { border:1px dotted #666; border-radius:6px; padding:4px 10px; font-size:10.5px; color:#444; }
-  .split-row { display:flex; gap:24px; justify-content:center; margin:6px 0; flex-wrap:wrap; }
-  .split-col { display:flex; flex-direction:column; align-items:center; gap:0; }
-  .split-col .box { min-width:230px; font-size:12.5px; }
-  .scope-box { border:2.5px dashed #000; border-radius:14px; padding:18px 22px; margin-top:34px; max-width:560px; text-align:center; font-size:12px; line-height:1.6; }
-  .scope-box .tag { font-weight:700; font-size:12.5px; display:block; margin-bottom:6px; }
+  * { box-sizing:border-box; }
+  body {
+    font-family:-apple-system,"Apple SD Gothic Neo",sans-serif;
+    background:#fff; color:#111; margin:0; padding:36px 28px 90px;
+  }
+  h1 { text-align:center; font-size:20px; margin:0 0 6px; font-weight:800; letter-spacing:-.01em; }
+  .subtitle { text-align:center; font-size:12.5px; color:#555; margin-bottom:4px; }
+  .updated { text-align:center; font-size:10.5px; color:#999; margin-bottom:28px; }
+
+  .legend { display:flex; justify-content:center; gap:22px; flex-wrap:wrap; margin:0 auto 40px; font-size:11px; color:#555; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; }
+  .swatch { width:26px; height:14px; border-radius:3px; display:inline-block; background:#fff; }
+  .sw-code   { border:1.4px solid #111; }
+  .sw-llm    { border:1.4px dashed #111; }
+  .sw-gate   { border:1.4px dotted #111; }
+  .sw-db     { border:2.6px solid #111; }
+
+  /* ===== 메인 파이프라인: ㄹ자 스네이크 그리드 ===== */
+  .pipeline-wrap { overflow-x:auto; margin-bottom:8px; }
+  .snake {
+    display:grid;
+    grid-template-columns: 1fr 34px 1fr 34px 1fr 34px 1fr;
+    align-items:start;
+    width:1180px; margin:0 auto; gap:6px 0;
+  }
+  .hz, .vt { align-self:center; }
+  .r1 { grid-row:1; } .t1 { grid-row:2; } .r2 { grid-row:3; } .t2 { grid-row:4; }
+  .r3 { grid-row:5; } .t3 { grid-row:6; } .r4 { grid-row:7; }
+
+  .node {
+    border:1.4px solid #111; border-radius:10px; background:#fff;
+    padding:12px 14px; font-size:11.8px; line-height:1.55; text-align:center;
+  }
+  .node .tag { display:block; font-size:9.8px; font-weight:800; letter-spacing:.03em; margin-bottom:6px; color:#111; text-transform:uppercase; }
+  .node small { display:block; font-size:9.8px; margin-top:5px; color:#444; line-height:1.5; text-align:left; }
+  .node code { font-size:9.3px; background:#f1f1f1; padding:0 3px; border-radius:3px; }
+  .node.llm { border-style:dashed; }
+  .node.gate { border-style:dotted; }
+  .node.db-wrap { border:none; padding:0; background:none; display:flex; flex-direction:column; gap:8px; }
+  .node.db { border-width:2.6px; text-align:left; padding:9px 12px; }
+
+  .src-cols { display:flex; gap:10px; text-align:left; margin-top:6px; }
+  .src-col { flex:1; font-size:9.3px; line-height:1.55; }
+  .src-col b { display:block; font-size:10px; margin-bottom:3px; }
+  .src-col table { width:100%; border-collapse:collapse; }
+  .src-col td { border-top:1px solid #e3e3e3; padding:1.5px 0; vertical-align:top; }
+  .src-col td.k { font-weight:600; white-space:nowrap; padding-right:5px; }
+  .src-col td.v { color:#555; }
+
+  .hz { display:flex; align-items:center; justify-content:center; height:100%; }
+  .vt { display:flex; align-items:center; justify-content:center; }
+
+  .arrow-label { position:absolute; font-size:9px; color:#666; white-space:nowrap; margin-top:26px; }
+  .arrow-wrap { position:relative; display:flex; align-items:center; justify-content:center; }
+
+  /* resolve_links.py 서브플로우 */
+  .subflow { border:2px solid #111; border-radius:14px; padding:16px 16px 12px; background:#fff; }
+  .subflow-title { text-align:center; font-size:11.5px; font-weight:800; margin-bottom:10px; letter-spacing:.02em; }
+  .path-row { display:flex; gap:12px; }
+  .path { border:1.2px solid #999; border-radius:9px; padding:9px 11px; font-size:10.5px; line-height:1.55; flex:1; background:#fcfcfc; text-align:left; }
+  .path .path-title { font-weight:700; font-size:10.5px; display:block; margin-bottom:4px; text-align:center; }
+  .path.llm-path { border-style:dashed; border-color:#111; }
+  .path ol, .path ul { margin:3px 0 0; padding-left:15px; }
+  .path li { margin-bottom:2px; }
+  .guardrail-box { border-top:1px dashed #ccc; padding-top:8px; margin-top:10px; font-size:9.8px; color:#555; line-height:1.5; text-align:center; }
+  .guardrail-box b { color:#111; }
+
+  .reject-row { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+  .reject { border:1px dotted #999; border-radius:5px; padding:3px 7px; font-size:9.5px; color:#555; text-align:center; }
+
+  .scope-box {
+    border:1.6px dashed #111; border-radius:12px; padding:16px 22px; margin:38px auto 0;
+    max-width:900px; text-align:center; font-size:11.5px; line-height:1.65;
+  }
+  .scope-box .tag { font-weight:800; font-size:12px; display:block; margin-bottom:6px; }
+
+  .section-title { text-align:center; font-size:15px; font-weight:800; margin:64px 0 6px; }
+  .section-sub { text-align:center; font-size:11px; color:#666; margin-bottom:26px; }
+
+  .llm-cards { display:flex; gap:16px; justify-content:center; flex-wrap:wrap; max-width:1040px; margin:0 auto 10px; }
+  .llm-card { border:1.4px dashed #111; border-radius:10px; padding:15px 17px; width:300px; font-size:11.5px; line-height:1.6; }
+  .llm-card h3 { font-size:13px; margin:0 0 3px; }
+  .llm-card .dify { font-size:9.5px; color:#888; margin-bottom:10px; }
+  .llm-card .io-label { font-weight:700; font-size:10px; margin-top:8px; display:block; }
+  .llm-card code { font-size:10px; background:#f1f1f1; padding:0 4px; border-radius:3px; }
+
+  .erd { display:flex; gap:18px; justify-content:center; flex-wrap:wrap; max-width:1120px; margin:0 auto; }
+  .erd-table { border:1.6px solid #111; border-radius:8px; width:260px; overflow:hidden; }
+  .erd-table h4 { margin:0; padding:8px 12px; font-size:12px; background:#111; color:#fff; text-align:left; font-weight:700; }
+  .erd-table ul { margin:0; padding:8px 12px 10px; list-style:none; font-size:10.8px; line-height:1.75; }
+  .erd-table li.pk { font-weight:700; }
+  .erd-table li.fk { font-weight:600; text-decoration:underline; text-decoration-style:dotted; }
+  .erd-table li .col-type { color:#888; font-size:9px; margin-left:4px; }
+  .erd-note { text-align:center; font-size:10px; color:#666; margin-top:12px; }
+
+  .orchestration {
+    max-width:760px; margin:34px auto 0; border:1.2px solid #999; border-radius:10px;
+    padding:14px 20px; font-size:11px; line-height:1.75; background:#fff;
+  }
+  .orchestration b { font-weight:700; }
 </style>
 </head>
 <body>
-<h1>공구왕 포스트 분류 파이프라인</h1>
-<div class="subtitle">인스타그램/유튜브 원본 포스트에서 "확실한 공구"만 보수적으로 걸러 gonggu_post·gonggu_video(+ product) 테이블에 저장하기까지</div>
 
-<div class="flow">
+<h1>공구왕 파이프라인 전체 설계도</h1>
+<div class="subtitle">hifen 소스 DB &rarr; JSON 체크포인트 &rarr; LLM 판별/선택/재검증 &rarr; dev_gongguking 최종 저장</div>
+<div class="updated">2026-07-21 기준 · scripts/run_all.py 오케스트레이션 (classify &rarr; transform &rarr; resolve_links &rarr; load)</div>
 
-  <div class="box"><span class="tag">SOURCE</span>hifen DB (읽기 전용)
-    <small>최근 N일 · 캡션/영상설명에 "공구" 또는 "공동구매" 포함</small>
-    <small>instagram_post + instagram_post_description / YT_video_lists + YT_video_lists_detail</small>
-  </div>
-  <div class="arrow">↓</div>
-  <div class="label">fetch_source.py</div>
-
-  <div class="box"><span class="tag">LLM #1 — 판별</span>이 포스트가 진짜 공구인지, 무슨 상품을 파는지, 상품마다 구매 링크는 어디 있는지를 읽어서 판단
-    <small>원칙: 한 포스트 = 한 공구로 최대한 합쳐서 판단</small>
-    <small>정말 서로 다른 공구가 병렬로 나열된 경우에만 상품별로 쪼개서, 상품마다 link_location/url_type/urls를 따로 채움</small>
-    <small>is_gonggu / products[{name, link_location, url_type, urls}] / period_start·end</small>
-  </div>
-  <div class="arrow">↓</div>
-  <div class="label">classify.py</div>
-
-  <div class="box gate"><span class="tag">게이트 (코드, 보수적으로)</span>확실하지 않으면 무조건 제외</div>
-  <div class="reject-row">
-    <span class="reject">is_gonggu = false</span>
-    <span class="reject">상품 특정 실패</span>
-    <span class="reject">제휴 광고성 다중 링크</span>
-  </div>
-  <div class="arrow">↓</div>
-  <div class="label">transform.py — 플랫폼별로 부모 1행 + 상품 N행으로 정리</div>
-
-  <div class="split-row">
-    <div class="split-col">
-      <div class="box end"><span class="tag">TARGET (유튜브)</span>gonggu_video
-        <small>video_id · channel_id · publishDate</small>
-      </div>
-      <div class="arrow">↓</div>
-      <div class="box"><span class="tag">gonggu_video_product</span>product_name · link_location · url_type · candidate_url</div>
-    </div>
-    <div class="split-col">
-      <div class="box end"><span class="tag">TARGET (인스타그램)</span>gonggu_post
-        <small>post_id · user_id · publish_date</small>
-      </div>
-      <div class="arrow">↓</div>
-      <div class="box"><span class="tag">gonggu_post_product</span>product_name · link_location · url_type · candidate_url</div>
-    </div>
-  </div>
-  <div class="arrow">↓</div>
-  <div class="label">load.py — 이미 있는 (video_id) / (post_id)는 재삽입 안 함. 넷 다 이어서 실행하면 run_pipeline.py</div>
-
+<div class="legend">
+  <span><i class="swatch sw-code"></i>코드 로직 (LLM 없음) / JSON 파일</span>
+  <span><i class="swatch sw-llm"></i>LLM 호출 (Dify)</span>
+  <span><i class="swatch sw-gate"></i>필터·게이트</span>
+  <span><i class="swatch sw-db"></i>최종 DB 테이블</span>
 </div>
 
-<div class="scope-box" style="margin-left:auto;margin-right:auto;">
-  <span class="tag">여기까지가 이 파이프라인의 범위</span>
-  gonggu_video·gonggu_post(+product) 테이블에 "확실한 공구" 목록을 채워넣는 것까지만 담당한다.<br>
-  실제 구매 링크를 프로필·인포크까지 따라가서 최종 상품/가격/이미지를 확정하는 것은
-  이 테이블을 읽어가는 <b>별도 개발자</b>의 담당 영역이며 이 저장소에는 포함되지 않는다.
+<div class="pipeline-wrap">
+<div class="snake">
+
+  <!-- Row1: 좌 -> 우 -->
+  <div class="node r1" style="grid-column:1;">
+    <span class="tag">Source · hifen DB (읽기 전용)</span>
+    <div class="src-cols">
+      <div class="src-col">
+        <b>인스타그램</b>
+        <table>
+          <tr><td class="k">instagram_post</td><td class="v">post_id·user_id·url·publish_date</td></tr>
+          <tr><td class="k">·_description</td><td class="v">description (캡션)</td></tr>
+          <tr><td class="k">·user_external_url</td><td class="v">external_url (프로필 링크)</td></tr>
+        </table>
+      </div>
+      <div class="src-col">
+        <b>유튜브</b>
+        <table>
+          <tr><td class="k">YT_video_lists_detail</td><td class="v">video_id·title·video_description·publishDate</td></tr>
+          <tr><td class="k">YT_video_lists</td><td class="v">channel_id (LEFT JOIN)</td></tr>
+        </table>
+      </div>
+    </div>
+    <small>필터: publish_date ≥ 오늘−DAYS_BACK, 캡션/설명에 "공구" 또는 "공동구매" 포함 (ORDER BY 없음)</small>
+  </div>
+
+  <div class="hz r1" style="grid-column:2;">
+    <svg width="34" height="16"><line x1="0" y1="8" x2="24" y2="8" stroke="#111" stroke-width="1.6"/><polygon points="24,3 34,8 24,13" fill="#111"/></svg>
+  </div>
+
+  <div class="node r1" style="grid-column:3;">
+    <span class="tag">File</span>
+    data/raw/posts_raw.json
+    <small>{platform, post_id·video_id, description, creator_description, publish_date}</small>
+    <small style="margin-top:8px;color:#888;">by <code>fetch_source.py</code> — 매번 전체 덮어쓰기</small>
+  </div>
+
+  <div class="hz r1" style="grid-column:4;">
+    <svg width="34" height="16"><line x1="0" y1="8" x2="24" y2="8" stroke="#111" stroke-width="1.6"/><polygon points="24,3 34,8 24,13" fill="#111"/></svg>
+  </div>
+
+  <div class="node llm r1" style="grid-column:5;">
+    <span class="tag">LLM #1 · 공구왕 분류</span>
+    진짜 공구인지 / 무슨 상품인지 / 링크가 어디 있는지
+    <small>한 포스트=한 공구 원칙. 무관 상품 나열일 때만 쪼갬</small>
+    <small style="margin-top:8px;color:#888;">by <code>classify.py</code> — 포스트당 1회, 병렬</small>
+  </div>
+
+  <div class="hz r1" style="grid-column:6;">
+    <svg width="34" height="16"><line x1="0" y1="8" x2="24" y2="8" stroke="#111" stroke-width="1.6"/><polygon points="24,3 34,8 24,13" fill="#111"/></svg>
+  </div>
+
+  <div class="node r1" style="grid-column:7;">
+    <span class="tag">File</span>
+    data/output/classified.json
+    <small><code>is_gonggu, products[], period_start/end, gonggu_stage(문구힌트), pattern_note</code></small>
+  </div>
+
+  <!-- Turn 1: 우측에서 아래로 -->
+  <div class="vt t1" style="grid-column:7;">
+    <svg width="16" height="30"><line x1="8" y1="0" x2="8" y2="20" stroke="#111" stroke-width="1.6"/><polygon points="3,20 8,30 13,20" fill="#111"/></svg>
+  </div>
+
+  <!-- Row2: 우 -> 좌 -->
+  <div class="node gate r2" style="grid-column: 5 / 8;">
+    <span class="tag">게이트 + 날짜 재계산</span>
+    확실하지 않으면 제외. gonggu_stage는 문구힌트 대신 gonggu_start/end_date를 오늘과 직접 비교해 재계산(시작전/진행중/종료/판단불가)
+    <div class="reject-row">
+      <span class="reject">분류실패 · is_gonggu=false</span>
+      <span class="reject">products 비어있음 · 제휴 광고성 다중 링크</span>
+    </div>
+    <small style="margin-top:8px;color:#888;">by <code>transform.py</code> — LLM 없음</small>
+  </div>
+
+  <div class="hz r2" style="grid-column:4;">
+    <svg width="34" height="16"><line x1="34" y1="8" x2="10" y2="8" stroke="#111" stroke-width="1.6"/><polygon points="10,3 0,8 10,13" fill="#111"/></svg>
+  </div>
+
+  <div class="node r2" style="grid-column: 1 / 4;">
+    <span class="tag">File</span>
+    data/output/load_ready.json
+    <small>parent(post_id/video_id···gonggu_start/end_date, gonggu_stage) + products[{product_name, link_location, url_type, candidate_url}]</small>
+  </div>
+
+  <!-- Turn 2: 좌측에서 아래로 -->
+  <div class="vt t2" style="grid-column:1;">
+    <svg width="16" height="30"><line x1="8" y1="0" x2="8" y2="20" stroke="#111" stroke-width="1.6"/><polygon points="3,20 8,30 13,20" fill="#111"/></svg>
+  </div>
+
+  <!-- Row3: resolve_links.py 전체 폭 -->
+  <div class="r3" style="grid-column: 1 / 8;">
+    <div class="subflow">
+      <div class="subflow-title">resolve_links.py — 상품 1건당 1회, candidate_url을 실제로 열어서 "최종 링크 하나"로 판정</div>
+      <div class="path-row">
+        <div class="path">
+          <span class="path-title">① linkbio 패스트패스</span>
+          인포크·litt.ly·linktree 등이면 Playwright 없이 <code>requests</code>로 페이지 속 JSON을 직접 파싱
+          <ul>
+            <li>smart_store/collection &rarr; source=<code>product</code>(상품명·가격 구조화, 신뢰)</li>
+            <li>일반 링크 버튼 &rarr; source=<code>link</code>(신뢰도 낮음, 강제 재검증)</li>
+          </ul>
+        </div>
+        <div class="path llm-path">
+          <span class="path-title">② Playwright + LLM#3 / LLM#2</span>
+          <ol>
+            <li>fetch &rarr; LLM#3 페이지판별</li>
+            <li>상품페이지+일치 &rarr; done</li>
+            <li>링크모음/스토어메인 &rarr; 버튼추출 &rarr; LLM#2 링크선택</li>
+            <li>high=신뢰 / medium·link출처=재검증(LLM#3) / low=반려</li>
+          </ol>
+        </div>
+        <div class="path">
+          <span class="path-title">③ 유튜브 전용 폴백</span>
+          candidate 0개일 때만, 순서대로:
+          <ol>
+            <li>잘린(...) URL 복구 — watch페이지 원문 설명</li>
+            <li>채널 정보란 링크 — /about 페이지</li>
+          </ol>
+          둘 다 requests 기반, 영상·채널당 1회 캐싱
+        </div>
+      </div>
+      <div class="guardrail-box">
+        <b>안전장치</b> — 로그인월 도메인 · 네이버블로그(몰 아님) · 판매종료/에러페이지 문자열 · 중첩 링크모음 허브 거부 · 모호한 상품명 &rarr; hold
+      </div>
+    </div>
+  </div>
+
+  <!-- Turn 3: 좌측에서 아래로 -->
+  <div class="vt t3" style="grid-column:1;">
+    <svg width="16" height="30"><line x1="8" y1="0" x2="8" y2="20" stroke="#111" stroke-width="1.6"/><polygon points="3,20 8,30 13,20" fill="#111"/></svg>
+  </div>
+
+  <!-- Row4: 좌 -> 우 -->
+  <div class="node r4" style="grid-column:1;">
+    <span class="tag">File</span>
+    link_resolution.json &rarr; load_ready_resolved.json
+    <small>done이면 candidate_url을 최종 링크로 교체. link_status / (yt)external_url 추가</small>
+  </div>
+
+  <div class="hz r4" style="grid-column:2;">
+    <svg width="34" height="16"><line x1="0" y1="8" x2="24" y2="8" stroke="#111" stroke-width="1.6"/><polygon points="24,3 34,8 24,13" fill="#111"/></svg>
+  </div>
+
+  <div class="node gate r4" style="grid-column:3;">
+    <span class="tag">load.py</span>
+    이미 있는 post_id/video_id는 스킵 (멱등)
+    <small style="color:#888;">LLM 없음</small>
+  </div>
+
+  <div class="hz r4" style="grid-column:4;">
+    <svg width="34" height="16"><line x1="0" y1="8" x2="24" y2="8" stroke="#111" stroke-width="1.6"/><polygon points="24,3 34,8 24,13" fill="#111"/></svg>
+  </div>
+
+  <div class="node db-wrap r4" style="grid-column: 5 / 8;">
+    <div class="node db"><span class="tag">DB · 인스타</span>gonggu_post &rarr; gonggu_post_product</div>
+    <div class="node db"><span class="tag">DB · 유튜브</span>gonggu_video &rarr; gonggu_video_product</div>
+  </div>
+
+</div>
+</div>
+</div>
+
+<div class="scope-box">
+  <span class="tag">이 저장소의 범위</span>
+  "확실한 공구" 판별부터 구매 링크를 최종 상품페이지 하나로 확정하는 것까지 담당한다(resolve_links.py 포함).
+  그 최종 링크에 들어가서 실제 가격·이미지·옵션 등 상품 상세 데이터를 스크래핑하는 것은 여전히 별도 개발자의 담당 영역이다.
+  link_status가 done이 아닌 행은 candidate_url이 인포크 등 중간 링크일 수 있음을 뜻한다.
+</div>
+
+<div class="section-title">Dify LLM 워크플로우 3종</div>
+<div class="section-sub">전부 순수 판단만 — 크롤링/파싱은 스크립트가, 판단만 LLM이</div>
+<div class="llm-cards">
+  <div class="llm-card">
+    <h3>LLM #1 · 공구왕 분류</h3>
+    <div class="dify">dify_workflows/01_gonggu_classify.yml</div>
+    <span class="io-label">입력</span>
+    <code>description · publish_date · creator_description</code>
+    <span class="io-label">출력</span>
+    <code>is_gonggu, products[], period_start/end, gonggu_stage, comment_gated, pattern_note</code>
+    <span class="io-label">호출 시점</span>
+    classify.py, 포스트 1건당 1회
+  </div>
+  <div class="llm-card">
+    <h3>LLM #2 · 링크선택</h3>
+    <div class="dify">dify_workflows/02_link_selection.yml</div>
+    <span class="io-label">입력</span>
+    <code>post_context · candidates[{href,text}]</code>
+    <span class="io-label">출력</span>
+    <code>chosen_index, confidence(high/medium/low), reason</code>
+    <span class="io-label">호출 시점</span>
+    resolve_links.py, 링크모음/스토어메인 페이지를 만났을 때
+  </div>
+  <div class="llm-card">
+    <h3>LLM #3 · 페이지판별</h3>
+    <div class="dify">dify_workflows/03_page_judge.yml</div>
+    <span class="io-label">입력</span>
+    <code>post_context · page{url,host,title,jsonld_name,jsonld_price,has_og_image,body_text_snippet}</code>
+    <span class="io-label">출력</span>
+    <code>page_type, is_final_product_page, product_name_guess, reason</code>
+    <span class="io-label">호출 시점</span>
+    resolve_links.py, 후보 도착 직후 + medium/link 재검증 시 한 번 더
+  </div>
+</div>
+
+<div class="section-title">최종 DB 스키마 (dev_gongguking)</div>
+<div class="section-sub">post_id·video_id가 자연키 — product 테이블의 FK도 같은 값을 그대로 씀</div>
+<div class="erd">
+  <div class="erd-table">
+    <h4>gonggu_post</h4>
+    <ul>
+      <li class="pk">id <span class="col-type">PK</span></li>
+      <li class="pk">post_id <span class="col-type">UNIQUE</span></li>
+      <li>user_id</li>
+      <li>url</li>
+      <li>publish_date</li>
+      <li>gonggu_start_date</li>
+      <li>gonggu_end_date</li>
+      <li>gonggu_stage <span class="col-type">시작전/진행중/종료/판단불가</span></li>
+      <li>classification_note</li>
+      <li>created_at / updated_at</li>
+    </ul>
+  </div>
+  <div class="erd-table">
+    <h4>gonggu_post_product</h4>
+    <ul>
+      <li class="pk">id <span class="col-type">PK</span></li>
+      <li class="fk">post_id <span class="col-type">FK</span></li>
+      <li>product_name</li>
+      <li>link_location <span class="col-type">ENUM 5종</span></li>
+      <li>url_type</li>
+      <li>candidate_url <span class="col-type">done면 최종링크</span></li>
+      <li>link_status <span class="col-type">done/unresolved/hold/error</span></li>
+      <li>sort_order</li>
+      <li>created_at / updated_at</li>
+    </ul>
+  </div>
+  <div class="erd-table">
+    <h4>gonggu_video</h4>
+    <ul>
+      <li class="pk">id <span class="col-type">PK</span></li>
+      <li class="pk">video_id <span class="col-type">UNIQUE</span></li>
+      <li>channel_id</li>
+      <li>title</li>
+      <li>video_url</li>
+      <li>external_url <span class="col-type">채널 정보란 링크</span></li>
+      <li>publishDate</li>
+      <li>gonggu_start_date</li>
+      <li>gonggu_end_date</li>
+      <li>gonggu_stage</li>
+      <li>classification_note</li>
+      <li>created_at / updated_at</li>
+    </ul>
+  </div>
+  <div class="erd-table">
+    <h4>gonggu_video_product</h4>
+    <ul>
+      <li class="pk">id <span class="col-type">PK</span></li>
+      <li class="fk">video_id <span class="col-type">FK</span></li>
+      <li>product_name</li>
+      <li>link_location</li>
+      <li>url_type</li>
+      <li>candidate_url</li>
+      <li>link_status</li>
+      <li>sort_order</li>
+      <li>created_at / updated_at</li>
+    </ul>
+  </div>
+</div>
+<div class="erd-note">link_location ENUM = 설명_직접링크 · 설명_프로필안내 · 댓글참여_DM · 고정댓글_더보기 · 링크없음_불명</div>
+
+<div class="orchestration">
+  <b>run_all.py 오케스트레이션</b> — CHUNK_SIZE(기본 100)건씩 ig/yt를 번갈아가며 classify &rarr; transform &rarr; resolve_links &rarr; load를 자동 반복. 한쪽 플랫폼이 다 끝나면 남은 플랫폼만 계속. 전 단계가 체크포인트 기반이라 Ctrl+C로 중단해도 재실행 시 이어서 진행됨.
+  <br><br>
+  <b>동시성</b> — classify.py는 CONCURRENCY(API 호출만, 브라우저 없음), resolve_links.py는 RESOLVE_CONCURRENCY(워커마다 독립 Playwright 인스턴스).
 </div>
 
 </body>
