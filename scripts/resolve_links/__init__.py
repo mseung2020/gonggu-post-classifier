@@ -4,8 +4,10 @@
 
 흐름 (post -> 프로필/링크모음 -> 상품. 옛 gonggu-link-resolver/scripts/resolver.py의
 크롤링 로직을 이 프로젝트의 상품 배열 스키마에 맞게 이식):
-  candidate_url의 후보(세미콜론 구분) 중 url_type과 도메인이 맞는 것부터 순서대로 하나씩 시도
-  (links.ordered_candidates) — 하나가 실패하면 다음 후보로 넘어가고, 하나라도 done이 나오면 즉시 확정.
+  candidate_url의 후보(세미콜론 구분) 중 (핸들-슬러그 일치 > 링크인바이오 허브 > 확정몰 >
+  그 외) 순으로 정렬(ranking.rank_candidates) 후 하나씩 시도 — 상품과 무관한 게 명백한
+  도메인(forms.gle 등)은 이 단계에서 아예 제거된다. 하나가 실패하면 다음 후보로 넘어가고,
+  하나라도 done이 나오면 즉시 확정.
   후보 하나에 대한 시도(core._resolve_one_candidate):
     -> LLM#3(페이지판별): 도착한 페이지가 원본 포스트 상품의 "최종 상품페이지"인지 판별
        - 최종 상품페이지로 확정 -> candidate_url을 이 URL로 교체, done
@@ -15,8 +17,10 @@
          안티봇 차단을 원천적으로 피하기 위함 — 그 대신 판단의 무게중심을 LLM#2 쪽으로 옮겨서
          링크선택 프롬프트를 더 신중하게 다듬어둠)
        - 로그인월_차단/무관/확신도 낮은 링크선택 등 -> 이 후보는 실패, 다음 후보로
-  모든 후보가 실패하면 그중 가장 나은 상태(hold > unresolved > error)를 반환하고, candidate_url은
-  원본 후보 목록 그대로 유지. 실제로 시도한 URL들은 결과의 tried_urls에 남아서 나중에 진단 가능.
+  모든 후보가 실패하면 그중 가장 나은 상태(hold > unresolved > error)를 반환한다. candidate_url은
+  상태와 무관하게 항상 대표 URL 1개다(2026-07-29 결정, DB에 세미콜론 구분 원본 목록을 절대
+  남기지 않음) — hold면 실제로 열어봤던 페이지, 그마저 없으면 정렬 1순위 후보(대부분 링크인바이오
+  허브). 실제로 시도한 URL들은 결과의 tried_urls에 남아서 나중에 진단 가능.
 
 ⚠ 마감/예정 등 진행 단계와 무관하게 항상 해석을 시도한다 — 공구가 끝났거나 아직 안 열렸어도
 프로필의 링크모음(인포크 등)에 상품 링크가 걸려있을 수 있으므로 미리 걸러내지 않음.
@@ -33,7 +37,8 @@ DeepSeek API 키 필요(.env): DEEPSEEK_KEY (LLM#2 "공구왕 링크선택", LLM
   browser.py   : Playwright 페이지 조작/파싱 원시 함수(판단 없음)
   antibot.py   : "이 URL을 확정해도 되는가" 방어 규칙(네이버 블로그/판매종료/링크인바이오 중첩 등)
   redirect.py  : 판단 없는 리다이렉트 추적
-  links.py     : 페이지/링크인바이오 허브에서 후보 링크 목록 뽑기 + 시도 순서 정하기
+  links.py     : 페이지/링크인바이오 허브에서 후보 링크 목록 뽑기
+  ranking.py   : candidate_url 원본 후보들의 시도 순서 정하기 + 명백히 무관한 후보 제거
   youtube.py   : 유튜브 전용 링크 복구(잘린 캡션 URL, 채널 정보란 링크)
   matching.py  : 상품명/컨텍스트 텍스트 휴리스틱
   picker.py    : LLM#2로 링크 고르고 확신도별로 확정/재검증(finalize_pick)

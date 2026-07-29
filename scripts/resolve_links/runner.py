@@ -36,9 +36,12 @@ def build_resolved_file(items, resolutions):
             # 확인 못 한 중간 단계(unresolved/hold/error)인지 — 개발자가 "바로 스크래핑 가능한지
             # vs 더 파고들어야 하는지" 판단할 수 있게 남겨둔다. url_type은 원본 후보의 종류를
             # 그대로 유지해서(덮어쓰지 않음) 디버깅용 정보를 보존한다.
+            # candidate_url은 상태와 무관하게 항상 단일 URL이어야 한다(2026-07-29 결정, DB의
+            # candidate_url엔 세미콜론 구분 원본 후보 목록을 절대 남기지 않음) — resolve_product가
+            # 이미 성공/실패 어느 쪽이든 대표 URL 1개를 candidate_url 필드에 담아 반환한다.
             np['link_status'] = res.get('status') if res else None
-            if res and res.get('status') == 'done' and res.get('final_url'):
-                np['candidate_url'] = res['final_url'][:500]
+            if res and res.get('candidate_url'):
+                np['candidate_url'] = res['candidate_url'][:500]
             new_products.append(np)
         out.append({**item, 'products': new_products})
     # items+resolutions로 매번 전체를 다시 조립하므로, 재계산 후 특정 날짜에 남는 레코드가

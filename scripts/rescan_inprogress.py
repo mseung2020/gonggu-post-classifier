@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""5단계 보강: gonggu_stage='진행중'인데 link_status='unresolved'인 상품만 골라 링크 해석을
-다시 시도한다. 시작전 단계에서는 인포크 등에 아직 구매 링크가 없어서 못 찾았을 뿐인데,
+"""5단계 보강: gonggu_stage='진행중'인데 link_status가 'unresolved'/'hold'인 상품만 골라 링크
+해석을 다시 시도한다. 시작전 단계에서는 인포크 등에 아직 구매 링크가 없어서 못 찾았을 뿐인데,
 진행중이 되면 실제로 링크가 채워지는 경우가 많아서(원준님 피드백 반영) 이 전이 시점을
-노려 재탐색한다.
+노려 재탐색한다. hold도 unresolved와 동일하게 취급한다(2026-07-29 결정) — hold도 결국
+candidate_url이 허브 URL 하나로 남아있는 경우가 많아서 재확인할 가치가 같다.
 
 resolve_links의 실제 판단/크롤링 로직(resolve_product)과 안티봇 대응(도메인당 동시 접근
 제한 — browser.fetch()/redirect.follow_redirect() 내부의 domain_gate)을 그대로 재사용한다.
-load_ready/link_resolution 파일을 거치지 않고 DB에서 직접 대상을 뽑아 DB에 직접 반영한다 —
-unresolved 상품의 candidate_url엔 LLM이 뽑은 원본 후보가 그대로 보존되어 있어(build_resolved_file이
-done일 때만 덮어씀) DB만으로 재시도에 필요한 정보가 충분하다.
+load_ready/link_resolution 파일을 거치지 않고 DB에서 직접 대상을 뽑아 DB에 직접 반영한다.
+candidate_url은 성공/실패와 무관하게 항상 대표 URL 1개다(resolve_product가 반환하는
+candidate_url 필드 참고) — 원본 다중 후보를 DB에 보존해뒀다가 다시 꺼내 쓰는 방식이 아니라,
+매번 그 시점의 candidate_url(대부분 링크인바이오 허브 URL) 하나를 다시 열어봐서 "그 사이에
+새 링크가 붙었는지"만 확인하는 것이 이 재탐색의 목적이다 — 예전에 시도했다가 버린 죽은
+후보(naver.me 단축링크 등)까지 다시 살려서 재시도할 필요는 없다.
 
 link_resolution.jsonl에도 같은 키로 결과를 append해서, 정기 파이프라인이 나중에
 04_resolved를 다시 조립할 때 이 재탐색 결과가 잊히지 않게 한다(파일과 DB가 항상 같은
 진실을 가리키게 유지).
 
-여전히 unresolved면 그대로 둔다 — 이번에도 못 찾았으면 다음 번 진행중 재탐색이나 다른
+여전히 unresolved/hold면 그대로 둔다 — 이번에도 못 찾았으면 다음 번 진행중 재탐색이나 다른
 보강 전까지는 어쩔 수 없음.
 
 사용법:
@@ -43,7 +47,7 @@ SELECT pp.id AS row_id, pp.product_name, pp.link_location, pp.url_type, pp.candi
        pp.sort_order, p.post_id, p.user_id, p.url, p.publish_date, p.classification_note
 FROM gonggu_post_product pp
 JOIN gonggu_post p ON p.post_id = pp.post_id
-WHERE p.gonggu_stage = '진행중' AND pp.link_status = 'unresolved'
+WHERE p.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold')
 """
 
 SELECT_VIDEO = """
@@ -51,7 +55,7 @@ SELECT vp.id AS row_id, vp.product_name, vp.link_location, vp.url_type, vp.candi
        vp.sort_order, v.video_id, v.channel_id, v.video_url, v.publishDate, v.classification_note
 FROM gonggu_video_product vp
 JOIN gonggu_video v ON v.video_id = vp.video_id
-WHERE v.gonggu_stage = '진행중' AND vp.link_status = 'unresolved'
+WHERE v.gonggu_stage = '진행중' AND vp.link_status IN ('unresolved', 'hold')
 """
 
 UPDATE_POST = 'UPDATE gonggu_post_product SET candidate_url = %s, link_status = %s WHERE id = %s'
@@ -100,8 +104,9 @@ def _worker(worker_id, work_q, lock, counters, total, save_auth_state):
 
                 key = product_key(platform, parent, product['sort_order'])
                 update_sql = UPDATE_POST if platform == 'ig' else UPDATE_VIDEO
-                new_candidate_url = res['final_url'][:500] if res.get('status') == 'done' and res.get('final_url') \
-                    else product['candidate_url']
+                # candidate_url은 상태와 무관하게 항상 단일 URL — resolve_product가 성공/실패
+                # 어느 쪽이든 대표 URL 1개를 candidate_url에 담아 반환한다(2026-07-29 결정).
+                new_candidate_url = (res.get('candidate_url') or product['candidate_url'])[:500]
 
                 with lock:
                     with db.cursor() as cur:

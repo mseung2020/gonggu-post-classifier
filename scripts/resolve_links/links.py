@@ -1,11 +1,10 @@
-"""페이지/링크인바이오 허브에서 "구매 링크 후보" 목록을 뽑고 시도 순서를 정하는 로직."""
+"""페이지/링크인바이오 허브에서 "구매 링크 후보" 목록을 뽑는 로직(시도 순서 결정은 ranking.py)."""
 import re
 import threading
 
 import linkbio_parser
 
-from .antibot import is_non_mall
-from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT, URL_TYPE_DOMAIN_HINTS
+from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT
 
 # 같은 인플루언서의 링크인바이오 페이지(예: 인포크 계정 하나)를 형제 상품 여러 개가 그대로
 # 공유하는 경우가 많아서(실측, 2026-07-27 — 남은 4720건이 유니크 URL 1710개뿐, 평균 2.7배
@@ -133,21 +132,3 @@ def _fetch_linkbio_candidates(url):
             text = f"{p.get('name') or ''} {price}원".strip() if price else (p.get('name') or '')
             pairs.append((href, text, 'product'))
     return _filter_link_pairs(pairs)
-
-
-def ordered_candidates(urls, url_type=None):
-    """후보 URL들을 시도할 순서대로 정렬한다 — url_type과 도메인이 일치하는 후보를 먼저,
-    나머지는 원래 순서 그대로 뒤에 붙인다. "..."로 잘린 링크(캡션 원본부터 잘려서 우리가
-    고칠 방법이 없는 것)는 애초에 열어볼 수 없으니 제외한다. 네이버 블로그는 몰이 아니므로
-    url_type 힌트가 우연히 걸리더라도(예: LLM#1이 "네이버_기타"로 잘못 분류) 맨 뒤로 미룬다 —
-    그래도 결국 시도는 되지만(다른 후보가 없을 때의 최후 수단), core._resolve_one_candidate에서
-    최종 확정은 못 하게 막아둔다."""
-    urls = [u for u in (urls or []) if u and '...' not in u]
-    non_mall = [u for u in urls if is_non_mall(u)]
-    urls = [u for u in urls if u not in non_mall]
-    hints = URL_TYPE_DOMAIN_HINTS.get(url_type)
-    if not hints:
-        return urls + non_mall
-    matching = [u for u in urls if any(h in u for h in hints)]
-    rest = [u for u in urls if u not in matching]
-    return matching + rest + non_mall

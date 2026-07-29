@@ -46,14 +46,11 @@ SLOW_REDIRECT_DOMAINS = ('mkt.shopping.naver.com',)
 # 이 확신도 이상일 때만 최종 채택한다(low는 자동 확정 안 함).
 LINK_PICK_OK_CONF = os.environ.get('LINK_PICK_OK_CONF', 'high,medium').split(',')
 
-# url_type(LLM#1이 판단한 대표 구매 URL 종류)과 실제 도메인을 매칭시키는 힌트 — 후보가 여러 개일 때
-# 무관한 링크를 먼저 집어서 오판하는 걸 방지 (prompts.GONGGU_CLASSIFY_SYSTEM의 url_type enum과 대응)
-URL_TYPE_DOMAIN_HINTS = {
-    '네이버_스마트스토어': ('smartstore.naver.com', 'brand.naver.com', 'shopping.naver.com'),
-    '네이버_기타': ('naver.com',),
-    '쿠팡_오픈마켓': ('coupang.com', 'gmarket.co.kr', 'auction.co.kr', '11st.co.kr', 'interpark.com'),
-    '카카오채널': ('kakao.com',),
-}
+# ranking.py가 "확정몰"로 취급하는 도메인 — 이 목록에 있으면 크롤링 없이도 실제 구매 가능한
+# 채널로 신뢰하고 우선순위를 높인다(링크인바이오 허브 다음으로).
+MALL_DOMAINS = ('smartstore.naver.com', 'm.smartstore.naver.com', 'brand.naver.com',
+                 'shopping.naver.com', 'coupang.com', 'www.coupang.com', 'gmarket.co.kr',
+                 'auction.co.kr', '11st.co.kr', 'interpark.com')
 
 DISCONTINUED_MARKERS = ('discontinued', 'soldout', 'sold-out', 'sold_out')
 # 앱/SPA가 잘못된 딥링크를 자기 도메인의 범용 에러 페이지로 돌리면서도 HTTP 200을 주는

@@ -3,10 +3,11 @@
 from .antibot import is_non_mall
 from .browser import fetch
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
-from .links import extract_collection_links, linkbio_candidates, normalize_url, ordered_candidates
+from .links import extract_collection_links, linkbio_candidates, normalize_url
 from .llm import judge_page
 from .matching import hint_is_vague, post_context_text
 from .picker import finalize_pick
+from .ranking import rank_candidates
 from .urlutil import host_of
 from .youtube import recover_truncated_url, youtube_channel_link
 
@@ -17,11 +18,15 @@ _STATUS_RANK = {'error': 0, 'unresolved': 1, 'hold': 2}
 
 
 def resolve_product(page, platform, parent, product):
-    """candidate_url의 후보들을 순서대로 하나씩 시도하다가 처음 done이 나오면 즉시 반환한다.
-    전부 실패하면 그중 가장 나은 상태를 반환. 반환: {status, final_url, note, tried_urls}
-    (tried_urls는 실제로 시도한 URL 목록 — 나중에 "어떤 링크를 열어봤는지" 진단용)."""
+    """candidate_url의 후보들을 순서대로(rank_candidates가 정한 순서) 하나씩 시도하다가 처음
+    done이 나오면 즉시 반환한다. 전부 실패해도 candidate_url엔 반드시 대표 URL 1개만 남긴다
+    (DB의 candidate_url이 항상 단일 값이길 원함, 2026-07-29 결정) — hold면 실제로 열어봤던
+    페이지, 그마저 없으면(전부 unresolved/error) 순위 1순위 후보(대부분 링크인바이오 허브라
+    나중에 gonggu_stage가 진행중으로 바뀔 때 rescan_inprogress.py가 재확인할 가치가 있음).
+    반환: {status, final_url, candidate_url, note, tried_urls}."""
     raw_urls = [u for u in (product.get('candidate_url') or '').split(';') if u]
-    candidates = ordered_candidates(raw_urls, product.get('url_type'))
+    handle = parent.get('user_id') if platform == 'ig' else None
+    candidates = rank_candidates(raw_urls, handle)
 
     if not candidates and platform == 'yt' and parent.get('video_id'):
         # candidate_url이 있었는데 전부 '...'로 잘려서 못 쓰게 된 경우, 유튜브 원문 설명에서
@@ -30,7 +35,7 @@ def resolve_product(page, platform, parent, product):
         for u in (u for u in raw_urls if '...' in u):
             recovered = recover_truncated_url(parent['video_id'], u)
             if recovered:
-                candidates = ordered_candidates([recovered], product.get('url_type'))
+                candidates = [recovered]
                 break
 
     if not candidates and platform == 'yt' and parent.get('channel_id'):
@@ -40,12 +45,13 @@ def resolve_product(page, platform, parent, product):
         # parent에 남겨서 gonggu_video.external_url로도 저장되게 한다.
         parent['external_url'] = youtube_channel_link(parent['channel_id'])
         if parent['external_url']:
-            candidates = ordered_candidates([parent['external_url']], product.get('url_type'))
+            candidates = [parent['external_url']]
 
     if not raw_urls and not candidates:
-        return {'status': 'unresolved', 'final_url': None, 'note': '크롤링할 후보 링크 없음', 'tried_urls': []}
+        return {'status': 'unresolved', 'final_url': None, 'candidate_url': None,
+                'note': '크롤링할 후보 링크 없음', 'tried_urls': []}
     if not candidates:
-        return {'status': 'unresolved', 'final_url': None,
+        return {'status': 'unresolved', 'final_url': None, 'candidate_url': None,
                 'note': f"실제 구매 링크(url_type={product.get('url_type')})가 원본부터 잘려서 확인 불가",
                 'tried_urls': []}
 
@@ -57,10 +63,12 @@ def resolve_product(page, platform, parent, product):
         res = _resolve_one_candidate(page, norm_url, product, ctx)
         if res['status'] == 'done':
             res['tried_urls'] = tried_urls
+            res['candidate_url'] = res['final_url']
             return res
         if best is None or _STATUS_RANK.get(res['status'], -1) > _STATUS_RANK.get(best['status'], -1):
             best = res
     best['tried_urls'] = tried_urls
+    best['candidate_url'] = best.get('final_url') or normalize_url(candidates[0])
     return best
 
 
