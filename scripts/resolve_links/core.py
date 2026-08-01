@@ -1,7 +1,7 @@
 """링크 해석의 핵심 상태 기계 — 후보 URL 하나하나를 시도하며 done/hold/unresolved/error를
 가른다(post -> 프로필/링크모음 -> 상품 흐름의 오케스트레이션 본체)."""
 from .antibot import is_non_mall
-from .browser import fetch
+from .browser import fetch, fetch_with_browser
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
 from .links import extract_collection_links, linkbio_candidates, normalize_url
 from .llm import judge_page
@@ -119,6 +119,13 @@ def _resolve_one_candidate(page, current_url, product, ctx):
 
     page_type = verdict.get('page_type')
     if page_type in ('링크모음', '스토어메인'):
+        # 여기서부터는 렌더링된 DOM에서 <a>를 긁어야 하는데, 위 fetch()가 requests 패스트패스로
+        # 끝났다면 page는 아직 아무 데도 가 있지 않다 — 링크모음은 대개 JS로 버튼을 그리기도
+        # 해서, 이 분기에서만 브라우저로 다시 연다(패스트패스가 헛돈 건 0.2초라 감수할 만하다).
+        if r.get('via') == 'http':
+            r = fetch_with_browser(page, current_url)
+            if r['error']:
+                return {'status': 'error', 'final_url': None, 'note': r['error']}
         links = extract_collection_links(page)
         if not links:
             return {'status': 'unresolved', 'final_url': None, 'note': f'{page_type}인데 후보 링크 추출 실패'}

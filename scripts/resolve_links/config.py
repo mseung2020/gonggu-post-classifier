@@ -1,7 +1,7 @@
 """링크 해석 단계 전체가 공유하는 설정값/상수. 환경변수로 조정 가능한 값은 여기서만 읽는다."""
 import os
 
-from common import ROOT
+from common import DEEPSEEK_MODEL, ROOT
 
 # append-only(레코드 1개=1줄) — 계속 커지는 체크포인트라 전체를 다시 쓰지 않고 한 줄씩
 # 덧붙인다(common.append_jsonl/load_jsonl 참고, 2026-07-27 성능 문제로 .json에서 전환).
@@ -34,6 +34,45 @@ ITEM_DELAY = float(os.environ.get('ITEM_DELAY', '3'))  # 상품 사이 대기(�
 # ITEM_DELAY만으로 완화하던 걸 워커 수까지 감안해서 신중하게 올릴 것 — 진단 라운드로 차단율
 # 확인 후 조정.
 RESOLVE_CONCURRENCY = int(os.environ.get('RESOLVE_CONCURRENCY', '1'))
+# RESOLVE_CONCURRENCY(워커 스레드 수)와 별개로, 실제로 떠 있는 Playwright 브라우저 프로세스
+# 개수의 하드웨어 안전판 — 이 상한이 없으면 최악의 경우(워커가 전부 동시에 브라우저를 필요로
+# 하는 순간) 워커 수만큼 크롬 프로세스가 떠서 메모리를 통째로 먹는다(실측 확인, 2026-07-30 —
+# 워커 200개 = 크롬 관련 프로세스 550개+, 스왑 32GB 소진으로 시스템 전체가 먹통이 됨).
+#
+# ⚠ 이건 "동시 브라우저 수"의 상한이지 "동시 워커 수"의 상한이 아니다. 다만 브라우저가 필요한
+# 작업의 처리량은 결국 이 값이 정한다 — 워커를 200개로 올려도 브라우저 작업은 이 수만큼만
+# 동시에 돈다. 예전 LazyPage는 브라우저를 다 쓴 뒤에도 워커가 끝날 때까지 허가증을 쥐고 있어서
+# 대기자가 값싼 건조차 처리하지 못했고, 지금은 release_if_contended로 놓아준다.
+# 허가증 쟁탈이 잦으면 재기동(3.9초)이 반복되므로 워커 수와 이 값의 차이가 너무 벌어지지 않게
+# 두는 게 좋다(runner가 시작 시 경고).
+MAX_BROWSERS = int(os.environ.get('MAX_BROWSERS', str(min(40, (os.cpu_count() or 4) * 4))))
+# 브라우저를 띄우기 전에 requests로 먼저 시도할지(httpfetch.py 참고). 판별에 쓰는 정보가
+# 충분히 나오면 그대로 쓰고, 모자라거나 차단되면 자동으로 브라우저 경로로 넘어간다 —
+# 판정이 이상해지면 HTTP_FAST_PATH=0으로 끄고 예전 동작(항상 브라우저)으로 되돌릴 수 있다.
+HTTP_FAST_PATH = os.environ.get('HTTP_FAST_PATH', '1') != '0'
+# LLM#2(링크선택)/LLM#3(페이지판별)에 쓰는 모델.
+#
+# ⚠ 플래시로 바꾸는 건 이미 시도해봤고, 실행 시간이 오히려 늘어서 되돌렸다(실측, 2026-08-01 —
+# 60건/워커 15개로 순서를 바꿔가며 4회). LLM 누적 시간은 1311초 -> 886초로 32% 줄었는데
+# 정작 실제 소요 시간은 프로 196초/196초 vs 플래시 202초/278초였다. 원인은 평균이 아니라
+# 꼬리다 — 호출 하나가 60~117초씩 걸리는 경우가 있고(플래시가 더 심함: 최대 71~117초 vs
+# 프로 60초), 그런 한 건이 안 끝나면 나머지가 다 끝나도 전체가 안 끝난다. 즉 이 단계는
+# "평균을 깎아서" 빨라지지 않는다. 꼬리를 자르거나(call_llm 타임아웃/재시도) 대기 구간
+# (domain_gate·ITEM_DELAY, 워커 가용시간의 약 34%)을 손대야 한다.
+# 요금을 아끼는 게 목적이라면 플래시도 선택지다 — 품질은 같은 40건에서 done 15건(플래시) vs
+# 13건(프로)으로 차이가 없었다(동일 설정 재실행 시 일치율이 88%인 LLM 자체 변동성 범위 안).
+LINK_LLM_MODEL = os.environ.get('LINK_LLM_MODEL', DEEPSEEK_MODEL)
+HTTP_FETCH_TIMEOUT = (5, float(os.environ.get('HTTP_FETCH_TIMEOUT', '12')))  # (connect, read)
+# 본문을 전부 JS로 그리는 몰(실측, 2026-08-01 — store.kakao.com은 og 태그는 다 있는데 body
+# 텍스트가 0자)을 걸러내는 최소 본문 길이. LLM#3이 본문 속 "정가/공구가"를 판별 근거로 쓰기
+# 때문에, 본문이 비면 브라우저로 열었을 때와 판정이 달라진다 — 그런 페이지는 브라우저로 넘긴다.
+HTTP_MIN_BODY_TEXT = int(os.environ.get('HTTP_MIN_BODY_TEXT', '200'))
+# bare requests에 429/봇차단을 주는 호스트 — 어차피 실패할 요청을 보내 네이버 쪽 레이트리밋
+# 카운터만 올릴 이유가 없어서 아예 건너뛰고 바로 브라우저로 간다(실측, 2026-08-01 —
+# smartstore/brand.naver.com 둘 다 requests 단독 호출에 429). 브라우저 경로는 저장된 세션
+# 쿠키(AUTH_STATE_FILE)와 stealth가 있어서 통과한다. 서브도메인까지 접미사 매칭한다.
+BROWSER_ONLY_HOSTS = tuple(h for h in os.environ.get(
+    'BROWSER_ONLY_HOSTS', 'naver.com,naver.me').split(',') if h)
 # 후보 링크가 스마트스토어/인포크 등 몇 개 도메인에 몰려 있어서 "도메인당 동시 1개"로 막으면
 # 워커를 늘려도 대부분 대기만 하게 된다(실측 확인, 2026-07-27 — 동시 30인데 도메인 락 때문에
 # 2.8배밖에 안 빨라짐) — 그래서 도메인당 동시 허용치를 살짝 풀어주되, 여전히 상한을 둬서
