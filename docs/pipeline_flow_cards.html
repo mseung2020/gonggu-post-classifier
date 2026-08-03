@@ -20,6 +20,8 @@
     --accent-core-tint: #e7f0fb;
     --accent-boost:      #eb6834;  /* categorical slot 2 — 매일 보강(6~7) */
     --accent-boost-tint: #fdece2;
+    --accent-branch:      #1baf7a; /* categorical slot 3 — 독립 소스 병합(유튜브 PPL) */
+    --accent-branch-tint: #e3f6ee;
 
     --code-bg:   #14140f;
     --code-ink:  #f2f1ec;
@@ -184,6 +186,45 @@
     .card { grid-template-columns: 1fr; }
     .card-head, .card-body { grid-column: 1; }
   }
+
+  /* 1~7 본줄기가 아니라 옆에서 같은 산출물로 합류하는 별도 소스 카드 — 점선 테두리 +
+     연한 배경으로 "번호가 매겨진 단계는 아니지만 파이프라인에 들어온다"를 표시한다. */
+  .card.branch {
+    border-style: dashed;
+    border-color: var(--accent-branch);
+    background: var(--accent-branch-tint);
+  }
+  .branch-marker {
+    grid-row: 1 / 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .branch-marker .plus {
+    width: 72px; height: 72px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px;
+    font-weight: 800;
+    color: #fff;
+    background: var(--accent-branch);
+    box-shadow: 0 6px 16px -6px var(--accent-branch);
+  }
+  @media (max-width: 640px) {
+    .branch-marker { flex-direction: row; margin-bottom: 8px; }
+    .branch-marker .plus { width: 52px; height: 52px; font-size: 22px; }
+  }
+  .merge-note {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: -6px 0 20px 108px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-branch);
+  }
+  .merge-note .line { flex: 0 0 20px; height: 1px; background: var(--accent-branch); }
+  @media (max-width: 640px) { .merge-note { margin-left: 0; } }
 
   .card-num {
     grid-row: 1 / 3;
@@ -394,13 +435,15 @@
       전체 7단계입니다. 1~5는 새로 올라온 포스트를 처음부터 끝까지 처리하는 본줄기이고,
       6~7은 이미 처리된 것 중 상태가 바뀐 것만 골라 매일 다시 손보는 보강 단계입니다.
       모든 LLM 판단(2·4단계)은 이제 외부 워크플로우 없이 자체 코드가 직접 호출합니다 —
-      그래서 동시 처리량도 훨씬 크게 늘었습니다.
+      그래서 동시 처리량도 훨씬 크게 늘었습니다. 2번 옆에는 "공구"라는 단어 없이도 사실상
+      그룹특가인 유튜브 PPL 영상을 따로 잡아내는 독립 소스가 하나 더 합류합니다.
     </p>
   </header>
 
   <div class="legend">
     <span class="legend-item"><span class="legend-dot" style="background:#2a78d6"></span>핵심 파이프라인 · 1~5단계</span>
     <span class="legend-item"><span class="legend-dot" style="background:#eb6834"></span>매일 보강 · 6~7단계</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#1baf7a"></span>독립 소스 병합 · 유튜브 PPL</span>
   </div>
 
   <div class="stepper-wrap">
@@ -477,6 +520,47 @@
         </div>
       </div>
     </section>
+
+    <!-- BRANCH: 유튜브 PPL 별도 소스 (02_classified에서 본줄기와 합류) -->
+    <section class="card branch" id="step-2-branch">
+      <div class="branch-marker"><div class="plus">＋</div></div>
+      <div class="card-head">
+        <span class="card-tag" style="color:var(--accent-branch); background:var(--accent-branch-tint);">독립 소스 병합</span>
+        <h2>유튜브 PPL 별도 수집·분류</h2>
+        <div class="module">fetch_yt_ppl.py · classify_yt_ppl.py</div>
+        <p class="lede">
+          "공구"/"공동구매" 키워드가 없어서 1~2단계가 원천적으로 못 보는 영상이 있습니다 —
+          브랜드 협찬(PPL)으로만 표시됐지만 실제로는 그룹특가인 경우입니다. 그래서 hifen DB의
+          <code style="font-family:inherit">brand</code> 테이블에서 공구 키워드가
+          <strong>없는</strong> 영상만 따로 가져와, 전용 LLM으로 "PPL이지만 사실상
+          그룹특가인지"를 판별합니다. 1~2단계 코드는 이미 검증된 로직이라 전혀 손대지 않고,
+          fetch·프롬프트·스크립트를 전부 새로 분리했습니다.
+        </p>
+      </div>
+      <div class="card-body">
+        <div class="flow-grid">
+          <div class="flow-box"><div class="cap">입력</div><div class="val">hifen DB brand 테이블<br>(공구 키워드 없는 것만)</div></div>
+          <div class="flow-box"><div class="cap">처리</div><div class="val">전용 LLM<br>(PPL→그룹특가 판별)</div></div>
+          <div class="flow-box"><div class="cap">출력</div><div class="val"><code>02_classified/&lt;날짜&gt;.jsonl</code><br>(2단계와 같은 파일)</div></div>
+        </div>
+        <div class="cmd">
+          <span class="c1">DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py</span><br>
+          <span class="c1">CONCURRENCY=100 python3 scripts/classify_yt_ppl.py</span>
+        </div>
+        <div class="notes" style="border-left-color: var(--accent-branch); background: #fff;">
+          <div class="cap" style="color: var(--accent-branch);">알아둘 점</div>
+          <ul>
+            <li><strong>2단계(classify.py)와 상호 배타적</strong> — fetch_source.py는 공구 키워드가 <strong>있는</strong> 영상만, fetch_yt_ppl.py는 <strong>없는</strong> 영상만 가져오도록 SQL 단계에서부터 나눠져 있어 같은 video_id를 두 번 처리할 일이 없습니다.</li>
+            <li>결과는 02_classified에 <strong>같은 스키마로 append</strong>됩니다 — 그래서 3단계(transform.py)부터는 이게 어디서 왔는지 구분하지 않고 완전히 동일하게 처리합니다.</li>
+            <li>재시도/체크포인트 방식도 classify.py와 동일(429는 최대 10회, 결과 1건=1줄 append).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <div class="merge-note">
+      <span class="line"></span>여기서 02_classified로 합류 — 3단계부터는 본줄기와 완전히 동일하게 처리됩니다
+    </div>
 
     <!-- STEP 3 -->
     <section class="card" id="step-3" data-accent="core" style="--accent:#2a78d6; --accent-tint:#e7f0fb;">
@@ -640,11 +724,16 @@
     <div class="recap">
       <h2>매일 실행 순서 요약</h2>
       <p>위 1~7번을 이 순서 그대로, 하루에 한 번 실행합니다. 6번이 5번보다 먼저 와야 그날의
-        "진행중" 상태가 확정되고, 7번이 그걸 기준으로 재탐색 대상을 고를 수 있습니다.</p>
+        "진행중" 상태가 확정되고, 7번이 그걸 기준으로 재탐색 대상을 고를 수 있습니다.
+        2번 다음의 <span style="color:#1baf7a; font-weight:700;">＋</span> 두 줄(유튜브 PPL
+        별도 소스)은 번호가 없지만 매일 같이 돌려야 하는 명령입니다 — 3번이 처리하는
+        02_classified에 그 결과가 같이 들어가기 때문입니다.</p>
       <div class="cmd">
 <span class="step-no">6</span><span class="c1">python3 scripts/update_gonggu_stage.py</span><br>
 <span class="step-no">1</span><span class="c1">DAYS_BACK=7 python3 scripts/fetch_source.py</span><br>
 <span class="step-no">2</span><span class="c1">CONCURRENCY=100 python3 scripts/classify.py</span><span class="c2"># 실측 400까지도 안전</span><br>
+<span class="step-no" style="color:#1baf7a;">＋</span><span class="c1">DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py</span><span class="c2"># 독립 소스</span><br>
+<span class="step-no" style="color:#1baf7a;">＋</span><span class="c1">CONCURRENCY=100 python3 scripts/classify_yt_ppl.py</span><br>
 <span class="step-no">3</span><span class="c1">python3 scripts/transform.py</span><br>
 <span class="step-no">4</span><span class="c1">cd scripts && RESOLVE_CONCURRENCY=30 python3 -m resolve_links</span><br>
 <span class="step-no">5</span><span class="c1">cd .. && python3 scripts/load.py</span><br>
