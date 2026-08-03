@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 
 from classify import classify_one
 from common import DEEPSEEK_KEY, RAW_DIR, ROOT, dump_json, load_json_dir
-from resolve_links.browser import new_context_page
+from resolve_links.browser import LazyPage
 from resolve_links.config import RESOLVE_CONCURRENCY
 from resolve_links.core import resolve_product
 from resolve_links.matching import product_key
@@ -73,7 +73,10 @@ def main():
 
     def _diag_worker(worker_id):
         with sync_playwright() as pw:
-            browser, ctx, page = new_context_page(pw)
+            # 워커마다 무조건 브라우저를 띄우면 RESOLVE_CONCURRENCY를 크게 준 채로 이 진단
+            # 스크립트를 돌릴 때 그 수만큼 크롬이 뜬다 — LazyPage로 지연 생성 + MAX_BROWSERS
+            # 제한을 건다(resolve_links/browser.py 참고, runner.py/rescan_inprogress.py와 동일).
+            page = LazyPage(pw)
             while True:
                 try:
                     platform, parent, product, raw_post = work_q.get_nowait()
@@ -95,8 +98,9 @@ def main():
                     results.append(row)
                     print(f'  [{len(results)}/{len(picked)}] (w{worker_id}) {row["key"]} -> {res["status"]}',
                           flush=True)
+                page.release_if_contended()
                 time.sleep(2)
-            browser.close()
+            page.close()
 
     threads = [threading.Thread(target=_diag_worker, args=(wid,)) for wid in range(n_workers)]
     for t in threads:

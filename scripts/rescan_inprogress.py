@@ -24,7 +24,12 @@ link_resolution.jsonl에도 같은 키로 결과를 append해서, 정기 파이�
 사용법:
     python3 scripts/rescan_inprogress.py            # 전체 대상
     LIMIT=50 python3 scripts/rescan_inprogress.py   # 앞에서 50건만(테스트용)
-    RESCAN_CONCURRENCY=4 python3 scripts/rescan_inprogress.py
+    RESCAN_CONCURRENCY=40 python3 scripts/rescan_inprogress.py
+
+RESCAN_CONCURRENCY는 "동시에 처리 중인 상품 수"지 "동시에 뜨는 크롬 수"가 아니다 — 실제
+브라우저 개수는 MAX_BROWSERS가 따로 제한한다(resolve_links/browser.py의 LazyPage). 다만
+브라우저가 필요한 건의 처리량은 결국 MAX_BROWSERS가 정하므로, 워커만 무작정 올려도 그만큼
+빨라지지는 않는다(둘의 차이가 3배를 넘으면 실행 시작 시 경고가 뜬다).
 """
 import os
 import queue
@@ -35,9 +40,10 @@ import time
 from playwright.sync_api import sync_playwright
 
 from common import DEEPSEEK_KEY, append_jsonl, connect_dst
-from resolve_links.browser import new_context_page
-from resolve_links.config import AUTH_STATE_FILE, ITEM_DELAY, RESOLUTION_FILE
+from resolve_links.browser import LazyPage
+from resolve_links.config import HTTP_FAST_PATH, ITEM_DELAY, MAX_BROWSERS, RESOLUTION_FILE
 from resolve_links.core import resolve_product
+from resolve_links.httpfetch import stats as httpfetch_stats
 from resolve_links.matching import product_key
 
 RESCAN_CONCURRENCY = int(os.environ.get('RESCAN_CONCURRENCY', '4'))
@@ -91,7 +97,15 @@ def _worker(worker_id, work_q, lock, counters, total, save_auth_state):
     db = connect_dst()
     try:
         with sync_playwright() as pw:
-            browser, ctx, page = new_context_page(pw)
+            # 브라우저는 실제로 필요해지는 첫 순간까지 미루고, 동시에 뜨는 개수도 MAX_BROWSERS로
+            # 제한한다(resolve_links/browser.py의 LazyPage 참고) — 예전엔 여기서 워커마다 무조건
+            # new_context_page()를 불러서 사실상 "RESCAN_CONCURRENCY = 크롬 프로세스 수"였다.
+            # 기본값 4로 돌 땐 안 드러났지만 실제로는 RESCAN_CONCURRENCY=100으로도 돌리는데,
+            # 그러면 크롬 100개가 한꺼번에 떠서 2026-07-30에 시스템을 먹통으로 만든 그 상황
+            # (워커 200개 = 크롬 관련 프로세스 550개+, 스왑 32GB 소진)이 그대로 재현된다.
+            # 재탐색 대상은 대부분 링크인바이오 허브 URL 하나를 다시 열어보는 것이라 requests
+            # 패스트패스로 끝나는 비율이 높아서, 지연 생성의 이득도 크다.
+            page = LazyPage(pw, save_auth_state=save_auth_state)
             while True:
                 try:
                     platform, parent, product, row_id = work_q.get_nowait()
@@ -118,11 +132,10 @@ def _worker(worker_id, work_q, lock, counters, total, save_auth_state):
                     shown = res.get('final_url') or res.get('note', '')
                     print(f"  [{counters['_done_n']}/{total}] (w{worker_id}) {key} -> {res['status']} {shown[:70]}",
                           flush=True)
+                # 브라우저를 더 안 쓰게 됐는데 기다리는 워커가 있으면 넘겨준다(runner.py와 동일).
+                page.release_if_contended()
                 time.sleep(ITEM_DELAY)
-            if save_auth_state:
-                AUTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                ctx.storage_state(path=str(AUTH_STATE_FILE))
-            browser.close()
+            page.close()
     finally:
         db.close()
 
@@ -140,8 +153,8 @@ def main():
 
     limit = int(os.environ.get('LIMIT', '0')) or len(targets)
     targets = targets[:limit]
-    print(f'진행중 + unresolved 재탐색 대상 {len(targets)}건 (동시 워커 {RESCAN_CONCURRENCY}개)')
     if not targets:
+        print('진행중 + unresolved 재탐색 대상 0건')
         return
 
     work_q = queue.Queue()
@@ -150,6 +163,12 @@ def main():
     lock = threading.Lock()
     counters = {}
     n_workers = max(1, min(RESCAN_CONCURRENCY, len(targets)))
+    print(f'진행중 + unresolved 재탐색 대상 {len(targets)}건 — 동시 워커 {n_workers}개, '
+          f'브라우저 상한 {MAX_BROWSERS}개, requests 패스트패스 {"ON" if HTTP_FAST_PATH else "OFF"}')
+    if n_workers > MAX_BROWSERS * 3:
+        print(f'  ⚠ 워커({n_workers})가 브라우저 상한({MAX_BROWSERS})의 3배를 넘습니다 — 브라우저가 '
+              f'필요한 건이 많으면 재기동 오버헤드로 오히려 느려질 수 있습니다. '
+              f'MAX_BROWSERS를 올리거나 RESCAN_CONCURRENCY를 낮춰보세요.')
     threads = [
         threading.Thread(target=_worker, args=(wid, work_q, lock, counters, len(targets), wid == 0))
         for wid in range(n_workers)
@@ -159,6 +178,10 @@ def main():
     for t in threads:
         t.join()
 
+    hs = httpfetch_stats()
+    if hs['tried']:
+        print(f"requests 패스트패스: {hs['hit']}/{hs['tried']}건 적중 "
+              f"({100 * hs['hit'] / hs['tried']:.1f}%) — 나머지는 브라우저로 폴백")
     by_status = {k: v for k, v in counters.items() if not k.startswith('_')}
     print(f'재탐색 완료 {len(targets)}건 — {by_status}')
 
