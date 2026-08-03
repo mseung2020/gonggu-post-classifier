@@ -143,6 +143,13 @@ dev_gongguking DB
     (`.gitignore`로 커밋은 막아둠) 복사/공유하지 말 것.
   - **동시에 두 번 실행하지 말 것**: `MAX_PER_DOMAIN`은 프로세스 하나 안에서만 관리되는
     값이라, 두 인스턴스를 동시에 돌리면 같은 도메인에 실제로는 두 배까지 몰릴 수 있습니다.
+  - **HTTP 패스트패스(`httpfetch.py`)**: LLM#3 판별에 실제로 쓰는 정보(title/og:image
+    유무/JSON-LD/본문 텍스트 2000자)는 브라우저 없이 `requests`+`bs4`로도 대부분 얻을 수
+    있습니다(건당 0.1~0.3초 vs Playwright 3~4초). 그래서 매 링크마다 먼저 이 패스트패스로
+    시도하고, 정보가 부족하거나 차단된 낌새(429 등)가 있으면 그때만 기존 Playwright 경로로
+    넘어갑니다(`BROWSER_ONLY_HOSTS`에 등록된 호스트는 애초에 패스트패스를 건너뜀). 실행이
+    끝나면 패스트패스 적중률과 폴백 사유별 건수가 출력되므로, 느려졌다면 그 로그로 원인
+    도메인을 바로 알 수 있습니다.
 
 ### 5. `load.py` — DB 적재
 
@@ -231,6 +238,24 @@ dev_gongguking DB
   추가하는 걸 권장합니다(두 LLM이 직렬로: `classify.py`가 끝나야 `classify_yt_ppl.py`가
   시작됨).
 
+### 9. `backfill_period.py` — 공구기간 보강 크롤링 (매일 보강)
+
+- **무엇**: 캡션에 명시적 날짜가 없어 `gonggu_stage='판단불가'`로 남은 것 중, 상품이
+  정확히 1개이고 그 상품 링크가 이미 `link_status='done'`으로 확정된 것만 골라 그 확정
+  상품페이지를 크롤링해서 페이지 안에 공구기간이 적혀 있는지 LLM(`prompts.PERIOD_BACKFILL_SYSTEM`)으로
+  찾습니다. 찾으면 `gonggu_start_date`/`gonggu_end_date`와 `gonggu_stage`를 그 자리에서
+  같이 갱신합니다.
+- **입력/출력**: `gonggu_post`/`gonggu_video` 테이블 자체(파일 관여 없음) +
+  `data/output/period_backfill.jsonl`(체크포인트 — 찾았으면 영구 스킵, 못 찾았으면
+  `PERIOD_RETRY_COOLDOWN_DAYS`일 쿨다운 후 재시도, `PERIOD_MAX_ATTEMPTS`회 넘으면 영구 스킵)
+- **명령**: `python3 scripts/backfill_period.py` (`LIMIT=20`으로 소규모 테스트,
+  `BACKFILL_PERIOD_CONCURRENCY=4`로 동시성 조절)
+- **알아둘 점**: 이미 날짜가 하나라도 있는 행(시작전/진행중/종료)은 조회 대상에서 아예
+  빠지므로 기존 값을 덮어쓸 여지가 구조적으로 없고, 상품이 2개 이상인 포스트/영상도
+  스코프 밖입니다(날짜가 상품이 아니라 포스트/영상 단위 컬럼이라 어느 상품 기준인지
+  모호해지기 때문). `update_gonggu_stage.py`와 마찬가지로 `transform.py`의
+  `_compute_stage`를 재사용합니다.
+
 ## 설치
 
 ```bash
@@ -261,12 +286,13 @@ gonggu_video_product, gonggu_post, gonggu_post_product). 신규 설치용이며 
 
 ### 매일 돌리는 순서 (권장)
 
-위 "모듈 하나씩 뜯어보기" 1~8번을 이 순서 그대로, 하루에 한 번 실행하면 됩니다. 6번이
+위 "모듈 하나씩 뜯어보기" 1~9번을 이 순서 그대로, 하루에 한 번 실행하면 됩니다. 6번이
 5번보다 먼저 와야 그날 "진행중" 상태가 먼저 확정되고, 7번이 그걸 기준으로 재탐색 대상을
-고를 수 있습니다. 8번(`fetch_yt_ppl.py`/`classify_yt_ppl.py`)은 나머지 전부와 완전히
-독립이라 순서상 어디에 둬도 무방하지만, "원본 수집"/"LLM 분류"라는 성격이 같은 1번/2번
-바로 다음에 각각 두는 걸 권장합니다(두 LLM이 직렬로 도는 효과 — `classify.py`가 끝나야
-`classify_yt_ppl.py`가 시작됨).
+고를 수 있습니다. 9번(`backfill_period.py`)도 6번이 그날 상태를 먼저 확정해야 대상이
+정확해지므로 6번 다음에 두는 걸 권장합니다. 8번(`fetch_yt_ppl.py`/`classify_yt_ppl.py`)은
+나머지 전부와 완전히 독립이라 순서상 어디에 둬도 무방하지만, "원본 수집"/"LLM 분류"라는
+성격이 같은 1번/2번 바로 다음에 각각 두는 걸 권장합니다(두 LLM이 직렬로 도는 효과 —
+`classify.py`가 끝나야 `classify_yt_ppl.py`가 시작됨).
 
 ```bash
 python3 scripts/update_gonggu_stage.py                        # 6. 공구 상태(시작전/진행중/종료) 갱신
@@ -278,6 +304,7 @@ python3 scripts/transform.py                                  # 3. 보수적 게
 cd scripts && RESOLVE_CONCURRENCY=30 python3 -m resolve_links  # 4. 링크 해석 (scripts/ 안에서 -m으로!)
 cd .. && python3 scripts/load.py                               # 5. DB 적재
 python3 scripts/rescan_inprogress.py                           # 7. 진행중인데 못 찾은 링크 재탐색
+python3 scripts/backfill_period.py                             # 9. 공구기간 판단불가 건 보강 크롤링
 ```
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
@@ -288,9 +315,9 @@ resolve_links/load.py 모두 동시 실행 시 문제가 생긴 전례가 있습
 
 ### 한 번에 자동으로 (1~5번만)
 
-`run_pipeline.py`가 1~5번을 정해진 순서로 이어 부르는 오케스트레이터입니다. **6·7·8번(공구
-상태 갱신, 진행중 재탐색, 유튜브 PPL 공구 판별)은 아직 포함되어 있지 않으므로 따로
-실행해야 합니다.**
+`run_pipeline.py`가 1~5번을 정해진 순서로 이어 부르는 오케스트레이터입니다. **6·7·8·9번(공구
+상태 갱신, 진행중 재탐색, 유튜브 PPL 공구 판별, 공구기간 보강)은 아직 포함되어 있지 않으므로
+따로 실행해야 합니다.**
 
 ```bash
 python3 scripts/run_pipeline.py                              # 이미 fetch했다는 전제, 1~5단계 순서대로
@@ -326,6 +353,10 @@ grep/head로 한 줄씩 바로 들여다볼 수 있고, classify.py처럼 계속
   python3 scripts/_diag_sample.py            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
   python3 scripts/_diag_sample.py 500 80     # 포스트 500개, 상품 80개
   ```
+- `scripts/_backfill_collapse_candidates.py` — 일회성 백필. 2026-07-29 결정("DB의
+  `candidate_url`엔 항상 링크 1개만") 이전에 이미 적재되어 세미콜론으로 여러 후보가 남아있는
+  기존 행을 한 번 훑어서 대표 URL 1개로 정리한다. 일일 파이프라인에는 포함하지 않음 —
+  다 정리되면 다시 쓸 일 없는 임시 스크립트.
 
 ## 보수적 필터링 기준
 
