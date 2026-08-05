@@ -11,6 +11,7 @@ LLM이 상품별로 뽑은 원본 후보를 그대로 세미콜론으로 이어�
     + 사유별 제외 건수 출력
 """
 import datetime
+import os
 from collections import Counter
 
 from common import (CLASSIFIED_DIR, LOAD_READY_DIR, clear_json_dir, dump_jsonl_sharded,
@@ -19,12 +20,20 @@ from common import (CLASSIFIED_DIR, LOAD_READY_DIR, clear_json_dir, dump_jsonl_s
 VALID_LINK_LOCATIONS = {'설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명'}
 
 
+def _today_iso():
+    """'오늘'의 단일 정의 — 평소에는 실제 오늘 날짜지만, 테스트(골든 diff)에서는 GONGGU_TODAY
+    환경변수(YYYY-MM-DD)로 고정할 수 있다. 이 훅이 있어야 transform이 완전 결정론이 되어
+    리팩터링 전후 산출물을 바이트 단위로 비교할 수 있다(2026-08-05 대공사 0단계에서 추가).
+    운영 실행에서는 GONGGU_TODAY를 설정하지 않으므로 동작이 예전과 완전히 같다."""
+    return os.environ.get('GONGGU_TODAY') or datetime.date.today().isoformat()
+
+
 def _compute_stage(start, end):
     """gonggu_start_date/end_date(구조화된 날짜)를 오늘 날짜와 직접 비교해서 계산한다.
     ⚠ LLM#1이 캡션 문구만 보고 주는 gonggu_stage(예고/진행중/마감)는 "포스트 작성 시점의
     오늘"을 기준으로 판단한 힌트라 실제 지금 날짜와 어긋날 수 있어(다이파이 프롬프트에도
     이 경고가 있음) 여기서는 안 쓰고, 날짜 자체를 비교해서 결정론적으로 계산한다."""
-    today = datetime.date.today().isoformat()
+    today = _today_iso()
     if start and start > today:
         return '시작전'
     if end and end < today:

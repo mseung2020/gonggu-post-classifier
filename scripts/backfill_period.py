@@ -41,8 +41,8 @@ from playwright.sync_api import sync_playwright
 
 from common import DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, connect_dst, load_jsonl
 from prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
-from resolve_links.browser import fetch, new_context_page
-from resolve_links.config import AUTH_STATE_FILE, BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
+from resolve_links.browser import LazyPage, fetch
+from resolve_links.config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS
 from transform import _compute_stage
 
 CONCURRENCY = int(os.environ.get('BACKFILL_PERIOD_CONCURRENCY', '4'))
@@ -117,11 +117,18 @@ def _page_text_or_raise(page, url):
 
 
 def _worker(worker_id, work_q, checkpoint, lock, counters, total, save_auth_state):
-    # DB/브라우저 모두 워커(스레드)당 1개만 열어서 재사용한다(rescan_inprogress.py와 동일 패턴).
+    # DB는 워커(스레드)당 1개만 열어서 재사용한다(rescan_inprogress.py와 동일 패턴).
     db = connect_dst()
     try:
         with sync_playwright() as pw:
-            browser, ctx, page = new_context_page(pw)
+            # 브라우저는 LazyPage로 — 실제로 필요해지는 첫 순간까지 미루고, 동시 개수도
+            # MAX_BROWSERS 허가증으로 제한한다. 예전엔 여기서 워커마다 new_context_page()를
+            # 직접 불러서 사실상 "BACKFILL_PERIOD_CONCURRENCY = 크롬 프로세스 수"였다 —
+            # rescan_inprogress.py는 2026-08-04에 LazyPage로 고쳐졌는데 이 파일만 누락돼
+            # 있었다(2026-08-05 감사 A1). CONCURRENCY=50으로 돌리면 크롬 50개가 동시에 뜨는,
+            # 2026-07-30 스왑 32GB 사고와 같은 패턴이었음. 대상 페이지는 requests 패스트패스로
+            # 끝나는 비율이 높아서(fetch가 먼저 시도) 지연 생성의 이득도 크다.
+            page = LazyPage(pw, save_auth_state=save_auth_state)
             while True:
                 try:
                     platform, key, r = work_q.get_nowait()
@@ -161,10 +168,10 @@ def _worker(worker_id, work_q, checkpoint, lock, counters, total, save_auth_stat
                     counters['_done_n'] = counters.get('_done_n', 0) + 1
                     print(f"  [{counters['_done_n']}/{total}] (w{worker_id}) {key} -> {result['status']} "
                           f"{start or ''}~{end or ''} {note[:60]}", flush=True)
-            if save_auth_state:
-                AUTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-                ctx.storage_state(path=str(AUTH_STATE_FILE))
-            browser.close()
+                # 브라우저를 더 안 쓰게 됐는데 기다리는 워커가 있으면 넘겨준다(runner/rescan과 동일).
+                page.release_if_contended()
+            # 세션 저장은 LazyPage._teardown이 save_auth_state에 따라 닫는 시점마다 처리한다.
+            page.close()
     finally:
         db.close()
 
@@ -189,9 +196,15 @@ def main():
     targets = eligible[:limit]
     limit_skipped = len(eligible) - len(targets)
     print(f'판단불가 + 단일상품 + link_status=done 대상 {len(raw_targets)}건 중 이번 실행 {len(targets)}건 '
-          f'(체크포인트로 스킵 {checkpoint_skipped}건, LIMIT으로 보류 {limit_skipped}건, 동시 워커 {CONCURRENCY}개)')
+          f'(체크포인트로 스킵 {checkpoint_skipped}건, LIMIT으로 보류 {limit_skipped}건, 동시 워커 {CONCURRENCY}개, '
+          f'브라우저 상한 {MAX_BROWSERS}개)')
     if not targets:
         return
+    n_check = max(1, min(CONCURRENCY, len(targets)))
+    if n_check > MAX_BROWSERS * 3:
+        print(f'  ⚠ 워커({n_check})가 브라우저 상한({MAX_BROWSERS})의 3배를 넘습니다 — 브라우저가 '
+              f'필요한 건이 많으면 재기동 오버헤드로 오히려 느려질 수 있습니다. '
+              f'MAX_BROWSERS를 올리거나 BACKFILL_PERIOD_CONCURRENCY를 낮춰보세요.')
 
     work_q = queue.Queue()
     for t in targets:

@@ -20,3 +20,5 @@ data/_migrated_backup/*
 !data/02_classified/.gitkeep
 !data/03_load_ready/.gitkeep
 !data/04_resolved/.gitkeep
+data/_backup_*/
+_to_delete/

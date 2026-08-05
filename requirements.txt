@@ -1,6 +1,14 @@
+# 파이썬 3.9+ (팀 표준 인터프리터 하나로 고정 권장 — 3.9/3.12가 섞여 쓰인 흔적이 있어
+# 2026-08-05 대공사 0단계에서 명시).
 pymysql
 python-dotenv
 requests
 playwright
 playwright-stealth
 openpyxl
+# resolve_links/httpfetch.py(HTTP 패스트패스)가 bs4 + lxml 파서를 직접 사용 — 예전엔
+# requirements에 빠져 있어서 새 환경에서 import 단계에 죽었음(2026-08-05 감사에서 발견).
+beautifulsoup4
+lxml
+# 테스트(대공사 0단계부터): 저장소 루트에서 `python3 -m pytest`로 실행
+pytest
