@@ -2,7 +2,7 @@
 import re
 import threading
 
-import linkbio_parser
+from gonggu import linkbio_parser
 
 from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT
 

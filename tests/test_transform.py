@@ -1,7 +1,7 @@
 """transform.py 순수 함수 단위 테스트 — 게이트 규칙의 경계 사례들을 박제한다."""
 import pytest
 
-from transform import _compute_stage, _product_row, _valid_date, transform_one
+from gonggu.transform import _compute_stage, _product_row, _valid_date, transform_one
 
 
 @pytest.fixture(autouse=True)

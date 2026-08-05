@@ -14,7 +14,7 @@
 import datetime
 import os
 
-from common import ROOT, connect_src, dump_jsonl_sharded, post_date_key
+from gonggu.common import ROOT, connect_src, dump_jsonl_sharded, post_date_key
 
 DAYS_BACK = int(os.environ.get('DAYS_BACK', '7'))
 RAW_DIR_YT_PPL = ROOT / 'data/01_raw_yt_ppl'

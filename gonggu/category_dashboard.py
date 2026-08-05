@@ -15,7 +15,7 @@ import pathlib
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from common import CATEGORY_TAXONOMY
+from gonggu.common import CATEGORY_TAXONOMY
 
 RESULT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_result.jsonl'
 INPUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'

@@ -54,12 +54,12 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from common import DEEPSEEK_KEY, append_jsonl, connect_dst
-from resolve_links.browser import LazyPage
-from resolve_links.config import HTTP_FAST_PATH, ITEM_DELAY, MAX_BROWSERS, RESOLUTION_FILE
-from resolve_links.core import resolve_product
-from resolve_links.httpfetch import stats as httpfetch_stats
-from resolve_links.matching import product_key
+from gonggu.common import DEEPSEEK_KEY, append_jsonl, connect_dst
+from gonggu.resolve_links.browser import LazyPage
+from gonggu.resolve_links.config import HTTP_FAST_PATH, ITEM_DELAY, MAX_BROWSERS, RESOLUTION_FILE
+from gonggu.resolve_links.core import resolve_product
+from gonggu.resolve_links.httpfetch import stats as httpfetch_stats
+from gonggu.resolve_links.matching import product_key
 
 RESCAN_CONCURRENCY = int(os.environ.get('RESCAN_CONCURRENCY', '4'))
 RESCAN_SKIP_TODAY = os.environ.get('RESCAN_SKIP_TODAY', '1') != '0'

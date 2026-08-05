@@ -1,5 +1,5 @@
 """ranking.py — 후보 정렬/제거 규칙. 주석에 기록된 실측 사고들을 테스트로 박제."""
-from resolve_links.ranking import _dedup_key, handle_matches, rank_candidates
+from gonggu.resolve_links.ranking import _dedup_key, handle_matches, rank_candidates
 
 
 class TestDedup:

@@ -1,7 +1,7 @@
 """링크 해석 단계 전체가 공유하는 설정값/상수. 환경변수로 조정 가능한 값은 여기서만 읽는다."""
 import os
 
-from common import DEEPSEEK_MODEL, ROOT
+from gonggu.common import DEEPSEEK_MODEL, ROOT
 
 # append-only(레코드 1개=1줄) — 계속 커지는 체크포인트라 전체를 다시 쓰지 않고 한 줄씩
 # 덧붙인다(common.append_jsonl/load_jsonl 참고, 2026-07-27 성능 문제로 .json에서 전환).

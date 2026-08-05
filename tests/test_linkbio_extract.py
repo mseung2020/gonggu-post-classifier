@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from linkbio_parser.extract import extract_balanced_json, extract_raw
-from linkbio_parser.hosts import detect_platform
+from gonggu.linkbio_parser.extract import extract_balanced_json, extract_raw
+from gonggu.linkbio_parser.hosts import detect_platform
 
 
 class TestBalancedJson:

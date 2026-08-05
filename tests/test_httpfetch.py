@@ -2,7 +2,7 @@
 display:none 모달이 본문 앞을 잡아먹던 문제, 가격이 2000자 창 밖에 있던 문제."""
 from bs4 import BeautifulSoup
 
-from resolve_links.httpfetch import _snippet, _strip_hidden, extract_jsonld, extract_jsonld_blocks
+from gonggu.resolve_links.httpfetch import _snippet, _strip_hidden, extract_jsonld, extract_jsonld_blocks
 
 
 class TestExtractJsonld:

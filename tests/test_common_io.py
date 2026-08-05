@@ -1,7 +1,7 @@
 """common.py — 체크포인트 I/O 규약(append-only last-wins, 날짜 샤딩)의 박제."""
 import json
 
-from common import (_date_key_from_raw, append_jsonl, dump_jsonl_sharded, is_affiliate_ranking,
+from gonggu.common import (_date_key_from_raw, append_jsonl, dump_jsonl_sharded, is_affiliate_ranking,
                     load_json_dir, load_jsonl)
 
 

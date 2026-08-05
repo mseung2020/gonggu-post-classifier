@@ -16,7 +16,7 @@ import sys
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from common import connect_dst
+from gonggu.common import connect_dst
 
 IN_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_result.jsonl'
 OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_unclassified.csv'

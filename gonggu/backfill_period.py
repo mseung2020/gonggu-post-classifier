@@ -39,11 +39,11 @@ import threading
 
 from playwright.sync_api import sync_playwright
 
-from common import DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, connect_dst, load_jsonl
-from prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
-from resolve_links.browser import LazyPage, fetch
-from resolve_links.config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS
-from transform import _compute_stage
+from gonggu.common import DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, connect_dst, load_jsonl
+from gonggu.prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
+from gonggu.resolve_links.browser import LazyPage, fetch
+from gonggu.resolve_links.config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS
+from gonggu.transform import _compute_stage
 
 CONCURRENCY = int(os.environ.get('BACKFILL_PERIOD_CONCURRENCY', '4'))
 RETRY_COOLDOWN_DAYS = int(os.environ.get('PERIOD_RETRY_COOLDOWN_DAYS', '5'))

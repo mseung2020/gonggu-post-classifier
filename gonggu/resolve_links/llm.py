@@ -1,6 +1,6 @@
 """링크 해석 단계에서 쓰는 LLM 호출 2개 — 판단은 전부 여기로 모은다."""
-from common import call_llm
-from prompts import (
+from gonggu.common import call_llm
+from gonggu.prompts import (
     LINK_SELECTION_SYSTEM,
     PAGE_JUDGE_SYSTEM,
     build_link_selection_user,

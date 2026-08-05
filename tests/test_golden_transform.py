@@ -26,7 +26,7 @@ def _freeze_today(monkeypatch):
 
 
 def test_transform_matches_golden():
-    from transform import transform_one
+    from gonggu.transform import transform_one
 
     sample = _load('classified_sample.jsonl')
     golden = _load('golden_transform.jsonl')

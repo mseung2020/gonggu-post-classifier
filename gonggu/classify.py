@@ -17,8 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from common import CLASSIFIED_DIR, DEEPSEEK_KEY, RAW_DIR, append_jsonl, call_llm, load_json_dir, post_date_key
-from prompts import GONGGU_CLASSIFY_SYSTEM, build_gonggu_classify_user
+from gonggu.common import CLASSIFIED_DIR, DEEPSEEK_KEY, RAW_DIR, append_jsonl, call_llm, load_json_dir, post_date_key
+from gonggu.prompts import GONGGU_CLASSIFY_SYSTEM, build_gonggu_classify_user
 
 MAX_RETRY = 3
 # 429(레이트리밋)는 코드 버그가 아니라 "잠깐 기다리면 반드시 풀리는" 상태라 훨씬 길게/많이

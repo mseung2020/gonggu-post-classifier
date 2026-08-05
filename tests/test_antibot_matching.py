@@ -1,6 +1,6 @@
 """antibot.py / matching.py — 사고 하나 = 방어 규칙 하나로 대응되는 함수들의 박제."""
-from resolve_links.antibot import is_linkbio_hub, is_non_mall, looks_discontinued, recover_from_block
-from resolve_links.matching import hint_is_vague, post_context_text, product_key
+from gonggu.resolve_links.antibot import is_linkbio_hub, is_non_mall, looks_discontinued, recover_from_block
+from gonggu.resolve_links.matching import hint_is_vague, post_context_text, product_key
 
 
 class TestLooksDiscontinued:

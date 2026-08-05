@@ -1,6 +1,6 @@
 """links.py — URL 정규화와 후보 필터링 규칙."""
-from resolve_links.config import MAX_CANDIDATES
-from resolve_links.links import _filter_link_pairs, normalize_url
+from gonggu.resolve_links.config import MAX_CANDIDATES
+from gonggu.resolve_links.links import _filter_link_pairs, normalize_url
 
 
 class TestNormalizeUrl:

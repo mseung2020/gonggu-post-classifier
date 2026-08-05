@@ -7,7 +7,7 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, append_jsonl, clear_json_dir,
+from gonggu.common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, append_jsonl, clear_json_dir,
                      dump_jsonl_sharded, load_json_dir, load_jsonl, parent_date_key)
 
 from .browser import LazyPage

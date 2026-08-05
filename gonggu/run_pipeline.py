@@ -30,20 +30,18 @@ import pathlib
 import subprocess
 import sys
 
-from common import CLASSIFIED_DIR, RAW_DIR, connect_dst, load_json_dir
+from gonggu.common import CLASSIFIED_DIR, RAW_DIR, connect_dst, load_json_dir
 
-ROOT = pathlib.Path(__file__).resolve().parent
+# 패키지화 이후(2026-08-05) 모든 단계는 저장소 루트에서 `python3 -m gonggu.<모듈>`로 실행한다 —
+# 예전처럼 scripts/ 경로나 실행 디렉터리에 따라 임포트가 갈라지는 문제가 없다.
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGET_TABLES = ('gonggu_post', 'gonggu_post_product', 'gonggu_video', 'gonggu_video_product')
 
 
-def run(script, as_module=False, args=()):
-    label = script if not as_module else f'-m {script}'
+def run(module, args=()):
+    label = f'-m gonggu.{module}'
     print(f'\n=== {label} ===')
-    if as_module:
-        cmd = [sys.executable, '-m', script, *args]
-        result = subprocess.run(cmd, cwd=ROOT)
-    else:
-        result = subprocess.run([sys.executable, str(ROOT / script), *args])
+    result = subprocess.run([sys.executable, '-m', f'gonggu.{module}', *args], cwd=REPO_ROOT)
     if result.returncode != 0:
         print(f'{label} 실패 (exit {result.returncode}) — 파이프라인 중단', file=sys.stderr)
         sys.exit(result.returncode)
@@ -88,21 +86,21 @@ def main():
     skip_resolve = '--skip-resolve' in sys.argv
 
     if os.environ.get('FETCH_FIRST') == '1':
-        run('fetch_source.py')
+        run('fetch_source')
 
     print_remaining()
-    run('classify.py')  # 이 시점의 원본 전체(ig+yt)를 한 번에 — 내부 CONCURRENCY로 동시 처리
+    run('classify')  # 이 시점의 원본 전체(ig+yt)를 한 번에 — 내부 CONCURRENCY로 동시 처리
 
-    run('transform.py')  # classified.json 전체를 다시 게이트링(항상 전체 재계산, 결정론적)
+    run('transform')  # 02_classified 전체를 다시 게이트링(항상 전체 재계산, 결정론적)
 
     if skip_load:
-        print('\n--skip-load 지정됨 — data/output/load_ready.json 확인 후 python3 scripts/load.py로 직접 실행할 것')
+        print('\n--skip-load 지정됨 — data/03_load_ready/ 확인 후 python3 -m gonggu.load로 직접 실행할 것')
         return
 
     if not skip_resolve:
-        run('resolve_links', as_module=True)  # load_ready.json 전체 중 아직 해석 안 된 상품만
+        run('resolve_links')  # 03_load_ready 전체 중 아직 해석 안 된 상품만
 
-    run('load.py')
+    run('load')
     print('\n파이프라인 완료.')
     print_db_summary()
 

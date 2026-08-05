@@ -24,11 +24,11 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-from common import DEEPSEEK_KEY, append_jsonl, connect_dst
-from resolve_links.browser import new_context_page
-from resolve_links.config import AUTH_STATE_FILE, ITEM_DELAY, RESOLUTION_FILE
-from resolve_links.core import resolve_product
-from resolve_links.matching import product_key
+from gonggu.common import DEEPSEEK_KEY, append_jsonl, connect_dst
+from gonggu.resolve_links.browser import new_context_page
+from gonggu.resolve_links.config import AUTH_STATE_FILE, ITEM_DELAY, RESOLUTION_FILE
+from gonggu.resolve_links.core import resolve_product
+from gonggu.resolve_links.matching import product_key
 
 BACKFILL_CONCURRENCY = int(os.environ.get('BACKFILL_CONCURRENCY', '4'))
 

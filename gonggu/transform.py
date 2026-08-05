@@ -14,7 +14,7 @@ import datetime
 import os
 from collections import Counter
 
-from common import (CLASSIFIED_DIR, LOAD_READY_DIR, clear_json_dir, dump_jsonl_sharded,
+from gonggu.common import (CLASSIFIED_DIR, LOAD_READY_DIR, clear_json_dir, dump_jsonl_sharded,
                      is_affiliate_ranking, load_json_dir, parent_date_key)
 
 VALID_LINK_LOCATIONS = {'설명_직접링크', '설명_프로필안내', '댓글참여_DM', '고정댓글_더보기', '링크없음_불명'}

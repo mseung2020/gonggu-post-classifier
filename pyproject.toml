@@ -1,0 +1,42 @@
+# 공구왕 포스트 분류 파이프라인 — 패키지 정의 (대공사 2단계 B1, 2026-08-05)
+#
+# 설치 없이 쓰기: 저장소 루트에서 `python3 -m gonggu.<모듈>` (예: python3 -m gonggu.classify)
+# 설치해서 쓰기: `pip install -e .` 후 어느 디렉터리에서든 gonggu-classify 같은 명령 사용 가능
+#
+# 의존성 목록은 requirements.txt 한 곳에서만 관리한다(아래 dynamic 설정이 그대로 읽어감).
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gonggu-post-classifier"
+version = "0.5.0"
+description = "인스타그램/유튜브 원본에서 확실한 공구만 걸러 dev_gongguking에 적재하는 파이프라인"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["gonggu*"]
+
+[project.scripts]
+gonggu-fetch = "gonggu.fetch_source:main"
+gonggu-fetch-yt-ppl = "gonggu.fetch_yt_ppl:main"
+gonggu-classify = "gonggu.classify:main"
+gonggu-classify-yt-ppl = "gonggu.classify_yt_ppl:main"
+gonggu-transform = "gonggu.transform:main"
+gonggu-resolve = "gonggu.resolve_links.runner:main"
+gonggu-load = "gonggu.load:main"
+gonggu-update-stage = "gonggu.update_gonggu_stage:main"
+gonggu-rescan = "gonggu.rescan_inprogress:main"
+gonggu-backfill-period = "gonggu.backfill_period:main"
+gonggu-pipeline = "gonggu.run_pipeline:main"
+gonggu-check-db = "gonggu.check_db:main"
+gonggu-login-naver = "gonggu.login_naver:main"
+gonggu-llm-usage = "gonggu.llm_usage_report:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

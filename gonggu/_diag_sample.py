@@ -16,13 +16,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from playwright.sync_api import sync_playwright
 
-from classify import classify_one
-from common import DEEPSEEK_KEY, RAW_DIR, ROOT, dump_json, load_json_dir
-from resolve_links.browser import LazyPage
-from resolve_links.config import RESOLVE_CONCURRENCY
-from resolve_links.core import resolve_product
-from resolve_links.matching import product_key
-from transform import transform_one
+from gonggu.classify import classify_one
+from gonggu.common import DEEPSEEK_KEY, RAW_DIR, ROOT, dump_json, load_json_dir
+from gonggu.resolve_links.browser import LazyPage
+from gonggu.resolve_links.config import RESOLVE_CONCURRENCY
+from gonggu.resolve_links.core import resolve_product
+from gonggu.resolve_links.matching import product_key
+from gonggu.transform import transform_one
 
 DIAG_FILE = ROOT / 'data/output/_diag_result.json'
 

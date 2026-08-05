@@ -15,11 +15,11 @@ import pathlib
 import random
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / 'scripts'))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import os
 
 os.environ['GONGGU_TODAY'] = '2026-08-05'  # 골든은 항상 이 날짜 기준으로 계산/검증한다
-from transform import transform_one  # noqa: E402
+from gonggu.transform import transform_one  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / 'fixtures'
 SAMPLE_N = 400

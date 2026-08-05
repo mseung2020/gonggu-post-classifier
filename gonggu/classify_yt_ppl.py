@@ -23,8 +23,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from common import CLASSIFIED_DIR, DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, load_json_dir, post_date_key
-from prompts import YT_PPL_GONGGU_SYSTEM, build_yt_ppl_gonggu_user
+from gonggu.common import CLASSIFIED_DIR, DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, load_json_dir, post_date_key
+from gonggu.prompts import YT_PPL_GONGGU_SYSTEM, build_yt_ppl_gonggu_user
 
 RAW_DIR_YT_PPL = ROOT / 'data/01_raw_yt_ppl'
 

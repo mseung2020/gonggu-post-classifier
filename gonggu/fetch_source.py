@@ -11,7 +11,7 @@
 import datetime
 import os
 
-from common import RAW_DIR, connect_src, dump_jsonl_sharded, post_date_key
+from gonggu.common import RAW_DIR, connect_src, dump_jsonl_sharded, post_date_key
 
 DAYS_BACK = int(os.environ.get('DAYS_BACK', '7'))
 

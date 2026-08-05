@@ -1,7 +1,7 @@
 """load.py — 입력 병합/보류 규칙(감사 A3)과 중복 경합 판정(감사 A4)."""
 import pymysql
 
-from load import _is_duplicate_entry, _item_key, split_unresolved
+from gonggu.load import _is_duplicate_entry, _item_key, split_unresolved
 
 
 def _item(platform, native_id):

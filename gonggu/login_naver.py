@@ -16,7 +16,7 @@ data/auth/*를 이미 막아두었지만, 이 파일을 다른 곳에 복사/공
 """
 from playwright.sync_api import sync_playwright
 
-from resolve_links.config import AUTH_STATE_FILE
+from gonggu.resolve_links.config import AUTH_STATE_FILE
 
 
 def main():

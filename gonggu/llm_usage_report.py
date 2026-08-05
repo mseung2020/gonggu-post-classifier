@@ -20,7 +20,7 @@ import json
 import os
 from collections import defaultdict
 
-from common import LLM_USAGE_FILE
+from gonggu.common import LLM_USAGE_FILE
 
 
 def _load_entries(date_str):

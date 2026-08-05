@@ -50,10 +50,16 @@ dev_gongguking DB
 해석은 반드시 load 전에 끝나 있어야 DB에 반영됩니다 — 그래서 1~5의 순서가 고정이고 나중에
 따로 붙이는 방식은 못 씁니다.
 
-`scripts/resolve_links/`와 `scripts/linkbio_parser/`는 파일 하나가 아니라 책임별로 나뉜
-패키지입니다(각각 10개 안팎의 파일, 파일당 200줄 이하) — 구성은 각 패키지의
-`__init__.py` 상단 docstring 참고. 그래서 `python3 scripts/resolve_links.py`가 아니라
-**`cd scripts && python3 -m resolve_links`**로 실행합니다.
+`gonggu/resolve_links/`와 `gonggu/linkbio_parser/`는 파일 하나가 아니라 책임별로 나뉜
+하위 패키지입니다(각각 10개 안팎의 파일, 파일당 200줄 이하) — 구성은 각 패키지의
+`__init__.py` 상단 docstring 참고.
+
+**실행 규약(2026-08-05 패키지화 이후)**: 모든 모듈은 저장소 루트에서
+`python3 -m gonggu.<모듈>`로 실행합니다(예: `python3 -m gonggu.classify`,
+`python3 -m gonggu.resolve_links`). 예전의 `python3 scripts/x.py` /
+`cd scripts && python3 -m resolve_links` 방식은 더 이상 쓰지 않습니다. `pip install -e .`를
+한 번 해두면 어느 디렉터리에서든 `gonggu-classify` 같은 짧은 명령으로도 실행할 수
+있습니다(pyproject.toml 참고). 코드를 고친 뒤에는 `python3 -m pytest`로 골든 diff를 확인합니다.
 
 컬럼명/타입은 hifen DB의 대응 컬럼(`YT_video_lists.video_id`, `instagram_post.user_id` 등)과
 최대한 동일하게 맞춰져 있습니다 — 실제로 조인하진 않지만 봤을 때 바로 알아볼 수 있도록. 자세한
@@ -73,19 +79,19 @@ dev_gongguking DB
 - **입력**: hifen DB (읽기 전용)
 - **출력**: `data/01_raw/<발행일>.jsonl` — 발행일별로 쪼개서 저장. 이번에 가져온 기간(`DAYS_BACK`)에
   해당하는 날짜 파일만 새로 씁니다(그 밖의 날짜 파일은 그대로 둠).
-- **명령**: `DAYS_BACK=7 python3 scripts/fetch_source.py`
+- **명령**: `DAYS_BACK=7 python3 -m gonggu.fetch_source`
 - **알아둘 점**: `FETCH_FIRST`라는 환경변수는 이 스크립트가 아니라 `run_pipeline.py`에서만
   쓰입니다 — `fetch_source.py`를 직접 실행할 땐 무의미(에러는 안 나지만 아무 효과 없음).
 
 ### 2. `classify.py` — LLM#1 공구 분류
 
-- **무엇**: 01_raw의 각 포스트를 LLM#1(DeepSeek, 프롬프트는 `scripts/prompts.py`의
+- **무엇**: 01_raw의 각 포스트를 LLM#1(DeepSeek, 프롬프트는 `gonggu/prompts.py`의
   `GONGGU_CLASSIFY_SYSTEM`)에 태워서 "공구인지(is_gonggu)", "상품이 몇 개인지(products 배열,
   상품마다 link_location/url_type/urls)", "공구 시작·종료일"을 뽑아냅니다. 아직 필터링은 안
   하고 판단 결과만 붙입니다.
 - **입력**: `data/01_raw/*.jsonl` 중 아직 분류 안 된 것
 - **출력**: `data/02_classified/<발행일>.jsonl` — 원본 포스트 + `classification` 필드
-- **명령**: `CONCURRENCY=24 python3 scripts/classify.py`
+- **명령**: `CONCURRENCY=24 python3 -m gonggu.classify`
   - `LIMIT=500` — 이번 실행에 500건만(체크포인트는 이어서)
   - `PLATFORM=yt` — ig/yt 중 하나만
 - **알아둘 점**:
@@ -104,7 +110,7 @@ dev_gongguking DB
 - **출력**: `data/03_load_ready/<발행일>.jsonl` — `{platform, parent: {...}, products: [...]}`
   형태로 DB 테이블 구조에 가깝게 정리됨. `candidate_url`은 아직 LLM이 뽑은 원본 후보 목록
   (세미콜론으로 이어붙인 상태)입니다.
-- **명령**: `python3 scripts/transform.py` (제외 사유별 건수까지 같이 출력)
+- **명령**: `python3 -m gonggu.transform` (제외 사유별 건수까지 같이 출력)
 - **알아둘 점**: 매번 02_classified **전체**를 처음부터 다시 계산합니다(누적하지 않음) — 그래서
   실행할 때마다 기존 03_load_ready 날짜 파일을 지우고 새로 씁니다. 필터링 규칙을 바꾸면
   이 스크립트만 다시 돌리면 전체가 그 새 규칙대로 재계산됩니다.
@@ -115,14 +121,14 @@ dev_gongguking DB
   최종 링크 1개"로 확정합니다. 인스타 공구는 프로필 링크(대부분 인포크/링크트리 같은
   "링크인바이오" 허브)를 거치는 경우가 많아서, 그런 페이지면 브라우저 없이 구조화 데이터로
   빠르게 후보를 뽑고(LLM#2로 그중 하나 선택), 아니면 브라우저로 열어서 LLM#3로 상품페이지인지
-  판별합니다. LLM#2/#3도 LLM#1과 같은 DeepSeek 호출(`scripts/resolve_links/llm.py`)입니다.
+  판별합니다. LLM#2/#3도 LLM#1과 같은 DeepSeek 호출(`gonggu/resolve_links/llm.py`)입니다.
 - **입력**: `data/03_load_ready/*.jsonl` 중 아직 해석 안 된 상품
 - **출력**: `data/04_resolved/<발행일>.jsonl` (최종 후보 반영) + `data/output/link_resolution.jsonl`
   (상품 단위 체크포인트 — 상품 key당 결과 1줄, 재실행 시 이미 처리된 건 건너뜀)
-- **명령**(반드시 `scripts/` 디렉터리에서 `-m`으로 실행):
+- **명령**(저장소 루트에서):
   ```
-  cd scripts && RESOLVE_CONCURRENCY=30 python3 -m resolve_links
-  cd scripts && python3 -m resolve_links 50   # 50건만 끊어서 테스트
+  RESOLVE_CONCURRENCY=30 python3 -m gonggu.resolve_links
+  python3 -m gonggu.resolve_links 50   # 50건만 끊어서 테스트
   ```
 - **알아둘 점**:
   - **워커 1개 = 브라우저 1개**라 `RESOLVE_CONCURRENCY`를 올리면 메모리를 많이 씁니다.
@@ -136,7 +142,7 @@ dev_gongguking DB
   - **인포크 등 링크인바이오 캐시**: 같은 인플루언서 계정을 형제 상품 여러 개가 공유하는
     경우가 많아서(실측: 평균 2.7배 중복), 같은 URL은 프로세스 안에서 한 번만 실제로 요청하고
     재사용합니다.
-  - **`python3 scripts/login_naver.py`**: 네이버에 직접 로그인해서 세션을
+  - **`python3 -m gonggu.login_naver`**: 네이버에 직접 로그인해서 세션을
     `data/auth/session_state.json`에 저장해두면, 이후 모든 resolve_links 워커가 로그인된
     상태로 스마트스토어/블로그에 접근합니다(로그인월로 튕기는 페이지를 실제 계정으로 우회 —
     안티봇을 속이는 게 아니라 진짜 로그인이라 더 안전함). 이 파일엔 실제 로그인 쿠키가 들어있으니
@@ -157,7 +163,7 @@ dev_gongguking DB
   그대로)를 dev_gongguking에 INSERT합니다.
 - **입력**: `data/04_resolved/*.jsonl`가 있으면 그걸, 없으면 `data/03_load_ready/*.jsonl`
 - **출력**: `gonggu_post`/`gonggu_post_product`(인스타) 또는 `gonggu_video`/`gonggu_video_product`(유튜브)
-- **명령**: `python3 scripts/load.py`
+- **명령**: `python3 -m gonggu.load`
 - **알아둘 점**:
   - **이미 있는 post_id/video_id는 완전히 스킵**합니다(UPDATE 없음) — 그래서 링크 해석이
     끝난 뒤에 실행해야 하고, 나중에 다시 실행해도 새로 생긴 것만 추가됩니다.
@@ -173,7 +179,7 @@ dev_gongguking DB
   (`시작전`/`진행중`/`종료`/`판단불가`)를 갱신합니다. LLM 재호출 없이 순수 날짜 비교 +
   UPDATE만 하는 정적 배치라 빠릅니다.
 - **입력/출력**: `gonggu_post`/`gonggu_video` 테이블 자체(파일 관여 없음)
-- **명령**: `python3 scripts/update_gonggu_stage.py`
+- **명령**: `python3 -m gonggu.update_gonggu_stage`
 - **알아둘 점**: 이미 `종료`인 행은 다시 열릴 일이 없으므로 조회 대상에서 아예 제외합니다 —
   그래서 실제로 확인하는 전이는 `시작전 → 진행중/종료`, `진행중 → 종료` 두 가지뿐입니다.
   매일 실행해도 이미 맞게 계산된 행은 그대로 두므로(idempotent) 하루에 여러 번 돌려도
@@ -192,7 +198,7 @@ dev_gongguking DB
 - **출력**: `done`으로 바뀐 상품만 해당 행의 `candidate_url`/`link_status`를 UPDATE.
   여전히 `unresolved`면 그대로 둡니다. 동시에 `link_resolution.jsonl`에도 같은 키로
   결과를 append해서, 나중에 04_resolved를 다시 조립해도 이 재탐색 결과가 안 잊혀지게 합니다.
-- **명령**: `RESCAN_CONCURRENCY=6 python3 scripts/rescan_inprogress.py` (`LIMIT=50`으로
+- **명령**: `RESCAN_CONCURRENCY=6 python3 -m gonggu.rescan_inprogress` (`LIMIT=50`으로
   소규모 테스트 가능)
 - **알아둘 점**: **6번(`update_gonggu_stage.py`) 다음에 실행해야 합니다** — 오늘자
   "진행중" 상태가 먼저 확정돼 있어야 그걸 기준으로 대상을 고를 수 있습니다. resolve_links와
@@ -224,13 +230,13 @@ dev_gongguking DB
     상호 배타적이라 별도 dedup 불필요)
   - **출력**: `data/01_raw_yt_ppl/<발행일>.jsonl` — `fetch_source.py`의 `data/01_raw/`와는
     별도 디렉터리라 서로 덮어쓰지 않습니다.
-  - **명령**: `DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py`
+  - **명령**: `DAYS_BACK=7 python3 -m gonggu.fetch_yt_ppl`
 - **`classify_yt_ppl.py`**
   - **입력**: `data/01_raw_yt_ppl/*.jsonl` 중 아직 분류 안 된 것
   - **출력**: `data/02_classified/<발행일>.jsonl` — `classify.py`와 **같은 디렉터리**에 같은
     레코드 스키마로 append됩니다(서로 다른 video_id만 다루므로 충돌 없음). 그래서
     `transform.py`부터는 무수정으로 이 결과를 그대로 처리합니다.
-  - **명령**: `CONCURRENCY=100 python3 scripts/classify_yt_ppl.py` (`LIMIT=20`으로 소규모
+  - **명령**: `CONCURRENCY=100 python3 -m gonggu.classify_yt_ppl` (`LIMIT=20`으로 소규모
     테스트 가능)
 - **알아둘 점**: `classify.py`/`fetch_source.py`보다 먼저(또는 나중에) 돌려도 상관없습니다 —
   서로 완전히 독립이라 실행 순서가 결과에 영향을 주지 않습니다. 일일 퀘스트에서는
@@ -248,7 +254,7 @@ dev_gongguking DB
 - **입력/출력**: `gonggu_post`/`gonggu_video` 테이블 자체(파일 관여 없음) +
   `data/output/period_backfill.jsonl`(체크포인트 — 찾았으면 영구 스킵, 못 찾았으면
   `PERIOD_RETRY_COOLDOWN_DAYS`일 쿨다운 후 재시도, `PERIOD_MAX_ATTEMPTS`회 넘으면 영구 스킵)
-- **명령**: `python3 scripts/backfill_period.py` (`LIMIT=20`으로 소규모 테스트,
+- **명령**: `python3 -m gonggu.backfill_period` (`LIMIT=20`으로 소규모 테스트,
   `BACKFILL_PERIOD_CONCURRENCY=4`로 동시성 조절)
 - **알아둘 점**: 이미 날짜가 하나라도 있는 행(시작전/진행중/종료)은 조회 대상에서 아예
   빠지므로 기존 값을 덮어쓸 여지가 구조적으로 없고, 상품이 2개 이상인 포스트/영상도
@@ -262,14 +268,18 @@ dev_gongguking DB
 pip install -r requirements.txt
 playwright install chromium   # resolve_links(링크 해석 단계)용 — 최초 1회만
 cp .env.example .env          # 값 채우기 (DB 자격증명, DEEPSEEK_KEY)
+pip install -e .              # (선택) gonggu-classify 같은 짧은 명령을 쓰려면
 ```
+
+코드를 고친 뒤에는 저장소 루트에서 `python3 -m pytest`로 테스트를 돌려 골든 diff
+(리팩터링 전후 판정 결과 동일성)가 깨지지 않았는지 확인합니다.
 
 ## LLM 설정
 
 LLM#1~#4(공구판별/링크선택/페이지판별/카테고리분류) + 유튜브 PPL 공구 판별(8번,
 `classify_yt_ppl.py` 전용)까지 전부 DeepSeek API를 직접 호출합니다 — Dify 같은 외부
-워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드(`scripts/common.py`의
-`call_llm`, `scripts/prompts.py`의 시스템 프롬프트들) 안에 그대로 있습니다. `.env`에
+워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드(`gonggu/common.py`의
+`call_llm`, `gonggu/prompts.py`의 시스템 프롬프트들) 안에 그대로 있습니다. `.env`에
 `DEEPSEEK_KEY`만 채우면 됩니다(`DEEPSEEK_MODEL` 기본값은 `deepseek-v4-pro`).
 `YT_PPL_GONGGU_SYSTEM`은 `GONGGU_CLASSIFY_SYSTEM`(LLM#1)과 판단 기준이 완전히 다른
 별도 프롬프트입니다 — 서로 절대 공유하지 않습니다.
@@ -295,16 +305,16 @@ gonggu_video_product, gonggu_post, gonggu_post_product). 신규 설치용이며 
 `classify.py`가 끝나야 `classify_yt_ppl.py`가 시작됨).
 
 ```bash
-python3 scripts/update_gonggu_stage.py                        # 6. 공구 상태(시작전/진행중/종료) 갱신
-DAYS_BACK=7 python3 scripts/fetch_source.py                   # 1. 원본 수집
-DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py                   # 8-1. 유튜브 PPL 원본 수집(독립 모듈)
-CONCURRENCY=24 python3 scripts/classify.py                    # 2. LLM#1 공구 분류
-CONCURRENCY=100 python3 scripts/classify_yt_ppl.py             # 8-2. 유튜브 PPL 공구 판별(독립 모듈)
-python3 scripts/transform.py                                  # 3. 보수적 게이트링
-cd scripts && RESOLVE_CONCURRENCY=30 python3 -m resolve_links  # 4. 링크 해석 (scripts/ 안에서 -m으로!)
-cd .. && python3 scripts/load.py                               # 5. DB 적재
-python3 scripts/rescan_inprogress.py                           # 7. 진행중인데 못 찾은 링크 재탐색
-python3 scripts/backfill_period.py                             # 9. 공구기간 판단불가 건 보강 크롤링
+python3 -m gonggu.update_gonggu_stage                        # 6. 공구 상태(시작전/진행중/종료) 갱신
+DAYS_BACK=7 python3 -m gonggu.fetch_source                   # 1. 원본 수집
+DAYS_BACK=7 python3 -m gonggu.fetch_yt_ppl                   # 8-1. 유튜브 PPL 원본 수집(독립 모듈)
+CONCURRENCY=24 python3 -m gonggu.classify                    # 2. LLM#1 공구 분류
+CONCURRENCY=100 python3 -m gonggu.classify_yt_ppl             # 8-2. 유튜브 PPL 공구 판별(독립 모듈)
+python3 -m gonggu.transform                                  # 3. 보수적 게이트링
+RESOLVE_CONCURRENCY=30 python3 -m gonggu.resolve_links          # 4. 링크 해석
+python3 -m gonggu.load                                         # 5. DB 적재
+python3 -m gonggu.rescan_inprogress                           # 7. 진행중인데 못 찾은 링크 재탐색
+python3 -m gonggu.backfill_period                             # 9. 공구기간 판단불가 건 보강 크롤링
 ```
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
@@ -320,11 +330,11 @@ resolve_links/load.py 모두 동시 실행 시 문제가 생긴 전례가 있습
 따로 실행해야 합니다.**
 
 ```bash
-python3 scripts/run_pipeline.py                              # 이미 fetch했다는 전제, 1~5단계 순서대로
-FETCH_FIRST=1 python3 scripts/run_pipeline.py                 # 원본부터 새로 가져오는 것부터 시작
-FETCH_FIRST=1 DAYS_BACK=14 python3 scripts/run_pipeline.py    # 최근 14일치로 새로 가져오기
-python3 scripts/run_pipeline.py --skip-resolve                # 링크 해석 건너뛰고 원본 후보로 바로 load
-python3 scripts/run_pipeline.py --skip-load                   # DB에 안 넣고 03_load_ready까지만 확인
+python3 -m gonggu.run_pipeline                              # 이미 fetch했다는 전제, 1~5단계 순서대로
+FETCH_FIRST=1 python3 -m gonggu.run_pipeline                 # 원본부터 새로 가져오는 것부터 시작
+FETCH_FIRST=1 DAYS_BACK=14 python3 -m gonggu.run_pipeline    # 최근 14일치로 새로 가져오기
+python3 -m gonggu.run_pipeline --skip-resolve                # 링크 해석 건너뛰고 원본 후보로 바로 load
+python3 -m gonggu.run_pipeline --skip-load                   # DB에 안 넣고 03_load_ready까지만 확인
 ```
 
 끝나면 `dev_gongguking`의 4개 테이블 현재 행 수를 보여줍니다.
@@ -343,17 +353,17 @@ grep/head로 한 줄씩 바로 들여다볼 수 있고, classify.py처럼 계속
 
 ### 보조/진단 스크립트
 
-- `scripts/check_db.py` — 소스/타겟 DB 연결과 타겟 테이블 스키마를 확인하는 점검 스크립트.
-- `scripts/_diag_sample.py` — 링크 해석 품질을 점검하고 싶을 때 쓰는 진단용 스크립트. 실제
+- `gonggu/check_db.py` — 소스/타겟 DB 연결과 타겟 테이블 스키마를 확인하는 점검 스크립트.
+- `gonggu/_diag_sample.py` — 링크 해석 품질을 점검하고 싶을 때 쓰는 진단용 스크립트. 실제
   파이프라인 체크포인트(02_classified/03_load_ready 등)는 건드리지 않고, `01_raw`에서 랜덤
   샘플을 뽑아 classify→transform→resolve_links를 돌려서 `data/output/_diag_result.json`에
   남긴다(포스트 원문·프로필 소개글·LLM들의 판단 근거까지 다 같이 저장되어 있어서 결과를 사람이
   직접 하나씩 읽고 판단하기 좋음).
   ```bash
-  python3 scripts/_diag_sample.py            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
-  python3 scripts/_diag_sample.py 500 80     # 포스트 500개, 상품 80개
+  python3 -m gonggu._diag_sample            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
+  python3 -m gonggu._diag_sample 500 80     # 포스트 500개, 상품 80개
   ```
-- `scripts/_backfill_collapse_candidates.py` — 일회성 백필. 2026-07-29 결정("DB의
+- `gonggu/_backfill_collapse_candidates.py` — 일회성 백필. 2026-07-29 결정("DB의
   `candidate_url`엔 항상 링크 1개만") 이전에 이미 적재되어 세미콜론으로 여러 후보가 남아있는
   기존 행을 한 번 훑어서 대표 URL 1개로 정리한다. 일일 파이프라인에는 포함하지 않음 —
   다 정리되면 다시 쓸 일 없는 임시 스크립트.

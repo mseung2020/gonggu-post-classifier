@@ -1,6 +1,6 @@
 """LLM#1~#4 시스템 프롬프트 + 유저 메시지 조립. 판단은 전부 여기 프롬프트 텍스트가 결정하고,
 호출은 common.call_llm(DeepSeek)이 담당한다."""
-from common import CATEGORY_TAXONOMY
+from gonggu.common import CATEGORY_TAXONOMY
 
 # ── LLM#1 · 공구왕 링크방식 분류 ─────────────────────────────────────────────────────────
 GONGGU_CLASSIFY_SYSTEM = """너는 인스타그램/유튜브 공동구매(공구) 게시글에서 "구매 링크가 어떤 방식으로 제공되는지"를 분류하는 분석기다.

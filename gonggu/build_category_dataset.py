@@ -12,7 +12,7 @@ import json
 import pathlib
 import sys
 
-from common import connect_dst, connect_src
+from gonggu.common import connect_dst, connect_src
 
 OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'
 

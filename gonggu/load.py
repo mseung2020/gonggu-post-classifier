@@ -11,7 +11,7 @@ import os
 
 import pymysql
 
-from common import LOAD_READY_DIR, RESOLVED_DIR, connect_dst, load_json_dir
+from gonggu.common import LOAD_READY_DIR, RESOLVED_DIR, connect_dst, load_json_dir
 
 
 def _item_key(item):

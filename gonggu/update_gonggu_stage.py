@@ -11,8 +11,8 @@ gonggu_stage를 갱신한다. LLM 재호출 없이 순수 날짜 비교 + UPDATE
 사용법:
     python3 scripts/update_gonggu_stage.py
 """
-from common import connect_dst
-from transform import _compute_stage
+from gonggu.common import connect_dst
+from gonggu.transform import _compute_stage
 
 TABLES = [
     ('gonggu_post', 'post_id'),

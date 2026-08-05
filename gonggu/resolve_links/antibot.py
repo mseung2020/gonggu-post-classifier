@@ -3,7 +3,7 @@
 import re
 from urllib.parse import parse_qs, urlparse
 
-import linkbio_parser
+from gonggu import linkbio_parser
 
 from .config import BROKEN_PATH_SEGMENTS, DISCONTINUED_MARKERS, NON_MALL_DOMAINS
 from .urlutil import host_of

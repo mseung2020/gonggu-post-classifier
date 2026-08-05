@@ -34,9 +34,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from common import CATEGORY_TAXONOMY, DEEPSEEK_KEY, DEEPSEEK_MODEL, DEEPSEEK_MODEL_FLASH, \
+from gonggu.common import CATEGORY_TAXONOMY, DEEPSEEK_KEY, DEEPSEEK_MODEL, DEEPSEEK_MODEL_FLASH, \
     SUBCATEGORY_TO_CATEGORY, call_llm
-from prompts import CATEGORY_CLASSIFY_SYSTEM, build_category_classify_user
+from gonggu.prompts import CATEGORY_CLASSIFY_SYSTEM, build_category_classify_user
 
 IN_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'
 OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_result.jsonl'
