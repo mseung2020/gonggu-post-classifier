@@ -111,9 +111,11 @@ dev_gongguking DB
   형태로 DB 테이블 구조에 가깝게 정리됨. `candidate_url`은 아직 LLM이 뽑은 원본 후보 목록
   (세미콜론으로 이어붙인 상태)입니다.
 - **명령**: `python3 -m gonggu.transform` (제외 사유별 건수까지 같이 출력)
-- **알아둘 점**: 매번 02_classified **전체**를 처음부터 다시 계산합니다(누적하지 않음) — 그래서
-  실행할 때마다 기존 03_load_ready 날짜 파일을 지우고 새로 씁니다. 필터링 규칙을 바꾸면
-  이 스크립트만 다시 돌리면 전체가 그 새 규칙대로 재계산됩니다.
+- **알아둘 점**: 기본은 **증분 모드**(2026-08-05, 대공사 3단계) — 지난 실행 이후 내용이 바뀐
+  02_classified 날짜 파일만 다시 계산해 그 날짜의 03 파일만 교체합니다(변경 감지는 파일
+  mtime+크기, `data/output/transform_state.json`). 이미 적재된 옛 날짜를 매번 다시 계산하던
+  낭비가 사라졌습니다. **필터링 규칙을 바꿨을 때는 반드시 `--full`로 한 번** 돌리세요 —
+  예전처럼 02 전체를 재계산하고 03을 전부 새로 씁니다.
 
 ### 4. `resolve_links` (패키지) — 링크 해석
 
@@ -371,6 +373,11 @@ grep/head로 한 줄씩 바로 들여다볼 수 있고, classify.py처럼 계속
   python3 -m gonggu._diag_sample            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
   python3 -m gonggu._diag_sample 500 80     # 포스트 500개, 상품 80개
   ```
+- `python3 -m gonggu.maintenance` — 데이터 하우스키핑(2026-08-05, 대공사 3단계). append-only
+  체크포인트(link_resolution/period_backfill) 컴팩션(같은 key의 옛 줄 제거 — last-wins 규약이라
+  의미 보존), 30일 지난 llm_usage 월별 로테이션, 그리고 `ARCHIVE_AFTER_DAYS=30`처럼 지정한
+  경우에만 오래된 01/02 날짜 파일을 `data/archive/`로 gzip 이동. `gonggu.daily`가 마지막
+  단계로 자동 실행하며, resolve/rescan 실행 중에 단독으로 돌리지만 말 것.
 - `gonggu/_backfill_collapse_candidates.py` — 일회성 백필. 2026-07-29 결정("DB의
   `candidate_url`엔 항상 링크 1개만") 이전에 이미 적재되어 세미콜론으로 여러 후보가 남아있는
   기존 행을 한 번 훑어서 대표 URL 1개로 정리한다. 일일 파이프라인에는 포함하지 않음 —

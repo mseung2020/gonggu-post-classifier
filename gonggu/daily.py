@@ -48,6 +48,7 @@ STAGES = [
     ('load',                {}),                          # 5. DB 적재
     ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '100'}),    # 7. 진행중 미해석 재탐색
     ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '50'}),  # 9. 공구기간 백필
+    ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
 ]
 
 
