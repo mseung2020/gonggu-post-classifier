@@ -16,7 +16,8 @@ from gonggu.common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, append_js
                      dump_jsonl_sharded, load_json_dir, load_jsonl, parent_date_key)
 from gonggu.crawl_pool import run_crawl_pool
 
-from .config import HTTP_FAST_PATH, ITEM_DELAY, MAX_BROWSERS, RESOLUTION_FILE, RESOLVE_CONCURRENCY
+from .config import (HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSERS,
+                     RESOLUTION_FILE, RESOLVE_CONCURRENCY)
 from .httpfetch import stats as httpfetch_stats
 from .core import resolve_product
 from .matching import product_key
@@ -94,7 +95,8 @@ def main():
                 append_jsonl(RESOLUTION_FILE, {**res, 'key': key})
 
         run_crawl_pool(pending, handle, concurrency=RESOLVE_CONCURRENCY,
-                       item_delay=ITEM_DELAY, warn_hint='RESOLVE_CONCURRENCY')
+                       item_delay=ITEM_DELAY, delay_only_after_browser=ITEM_DELAY_SMART,
+                       warn_hint='RESOLVE_CONCURRENCY')
 
     build_resolved_file(items, resolutions)
     by_status = {}

@@ -11,9 +11,11 @@ class _FakePage:
         self.save_auth_state = save_auth_state
         self.released = 0
         self.closed = False
+        self.used_since_release = False  # 실제 LazyPage는 페이지 접근 시 True가 됨
 
     def release_if_contended(self):
         self.released += 1
+        self.used_since_release = False
 
     def close(self):
         self.closed = True
@@ -105,3 +107,32 @@ class TestRunCrawlPool:
         cp.run_crawl_pool(list(range(10)), lambda c, i: None, concurrency=10, warn_hint='X_CONCURRENCY')
         out = capsys.readouterr().out
         assert 'X_CONCURRENCY를 낮춰보세요' in out
+
+
+class TestConditionalDelay:
+    """4단계 D1 — delay_only_after_browser: 브라우저를 쓴 항목만 item_delay를 적용."""
+
+    def _run(self, monkeypatch, *, smart, browser_items):
+        pages = []
+        _patch(monkeypatch, pages)
+        sleeps = []
+        monkeypatch.setattr(cp.time, 'sleep', sleeps.append)
+
+        def handle(ctx, item):
+            if item in browser_items:
+                ctx.page.used_since_release = True  # 이 항목에서 브라우저를 썼다고 표시
+
+        cp.run_crawl_pool([0, 1, 2, 3], handle, concurrency=1, item_delay=3.0,
+                          delay_only_after_browser=smart)
+        return sleeps
+
+    def test_smart_skips_fastpath_items(self, monkeypatch):
+        sleeps = self._run(monkeypatch, smart=True, browser_items={1, 3})
+        assert sleeps == [3.0, 3.0]  # 브라우저 쓴 2개 항목만 대기
+
+    def test_legacy_sleeps_every_item(self, monkeypatch):
+        sleeps = self._run(monkeypatch, smart=False, browser_items={1})
+        assert sleeps == [3.0] * 4
+
+    def test_smart_with_no_browser_never_sleeps(self, monkeypatch):
+        assert self._run(monkeypatch, smart=True, browser_items=set()) == []

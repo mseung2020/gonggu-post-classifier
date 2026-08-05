@@ -30,6 +30,13 @@ NON_PRODUCT_TEXT = ('고객센터', '고객센타', '고객상담', 'cs', '문�
                      '이벤트', '공식홈페이지')
 MAX_CANDIDATES = 80  # cafe.naver.com류 커뮤니티 페이지는 게시판 네비게이션까지 다 잡혀서 넘칠 수 있음
 ITEM_DELAY = float(os.environ.get('ITEM_DELAY', '3'))  # 상품 사이 대기(초, 워커별) — 안티봇/레이트리밋 완화
+# ITEM_DELAY를 "이번 항목에서 실제로 브라우저를 쓴 경우"에만 적용(4단계 D1, 2026-08-05).
+# 근거: 이 대기는 무거운 브라우저 접근의 안티봇 완화가 목적인데, requests 패스트패스/링크바이오
+# 캐시로 끝난 항목까지 일괄로 3초씩 쉬면 워커 가용시간의 상당 부분(실측 약 34%)이 대기로 샌다.
+# 민감한 네이버 계열(BROWSER_ONLY_HOSTS)은 애초에 패스트패스를 안 타므로 항상 브라우저 경로
+# = 항상 대기가 유지되고, 가벼운 GET의 도메인 몰림은 MAX_PER_DOMAIN이 따로 막는다.
+# 차단율이 이상해지면 ITEM_DELAY_SMART=0으로 끄면 예전처럼 매 항목 대기로 돌아간다.
+ITEM_DELAY_SMART = os.environ.get('ITEM_DELAY_SMART', '1') != '0'
 # 워커 수만큼 같은 사이트(네이버/인포크 등)에 동시에 몰리는 실제 요청 빈도가 늘어나므로,
 # ITEM_DELAY만으로 완화하던 걸 워커 수까지 감안해서 신중하게 올릴 것 — 진단 라운드로 차단율
 # 확인 후 조정.
@@ -62,6 +69,13 @@ HTTP_FAST_PATH = os.environ.get('HTTP_FAST_PATH', '1') != '0'
 # 요금을 아끼는 게 목적이라면 플래시도 선택지다 — 품질은 같은 40건에서 done 15건(플래시) vs
 # 13건(프로)으로 차이가 없었다(동일 설정 재실행 시 일치율이 88%인 LLM 자체 변동성 범위 안).
 LINK_LLM_MODEL = os.environ.get('LINK_LLM_MODEL', DEEPSEEK_MODEL)
+# LLM#2/#3 꼬리 지연 자르기(4단계 D3, 옵트인) — 위 실측대로 이 단계의 전체 시간은 평균이 아니라
+# 60~117초짜리 꼬리 호출이 정한다. LINK_LLM_TIMEOUT을 예컨대 45로 낮추고
+# LINK_LLM_TIMEOUT_RETRY=1을 주면 타임아웃 시 한 번 다시 시도한다. ⚠ 재시도는 LLM 비결정성
+# 때문에 같은 입력에도 답이 달라질 수 있어(어차피 지금도 타임아웃→error→rescan 재시도로
+# 완전 결정론은 아님) 기본은 꺼져 있고(120초, 재시도 없음 — 기존과 동일) 명시적으로 켜야 한다.
+LINK_LLM_TIMEOUT = float(os.environ.get('LINK_LLM_TIMEOUT', '120'))
+LINK_LLM_TIMEOUT_RETRY = int(os.environ.get('LINK_LLM_TIMEOUT_RETRY', '0'))
 HTTP_FETCH_TIMEOUT = (5, float(os.environ.get('HTTP_FETCH_TIMEOUT', '12')))  # (connect, read)
 # 본문을 전부 JS로 그리는 몰(실측, 2026-08-01 — store.kakao.com은 og 태그는 다 있는데 body
 # 텍스트가 0자)을 걸러내는 최소 본문 길이. LLM#3이 본문 속 "정가/공구가"를 판별 근거로 쓰기

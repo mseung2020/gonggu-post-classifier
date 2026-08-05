@@ -235,6 +235,14 @@ class LazyPage:
         # 이게 진짜 Page인지 지연 생성 래퍼인지 신경 쓸 필요가 없다.
         return getattr(self._ensure(), name)
 
+    @property
+    def used_since_release(self):
+        """마지막 release_if_contended() 이후 이 워커가 실제로 브라우저를 건드렸는지 —
+        crawl_pool의 조건부 ITEM_DELAY(4단계 D1)가 "이번 항목에서 브라우저를 안 썼으면
+        안티봇 대기를 건너뛴다"를 판단할 때 쓴다(읽기만 하고 리셋하지 않음 —
+        리셋은 release_if_contended가 담당)."""
+        return self._used_recently
+
     def release_if_contended(self):
         """상품 하나를 끝낼 때마다 호출 — "대기자가 있는데 나는 방금 이 브라우저를 안 썼다"일
         때만 닫고 허가증을 넘긴다.

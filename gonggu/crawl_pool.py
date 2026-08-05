@@ -26,6 +26,7 @@ from gonggu.resolve_links.config import MAX_BROWSERS
 
 
 def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
+                   delay_only_after_browser=False,
                    worker_setup=None, worker_teardown=None,
                    save_auth_first_worker=True, warn_hint=None):
     """items를 워커 스레드들이 나눠 handle로 처리한다.
@@ -38,6 +39,9 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
     - worker_setup() -> state / worker_teardown(state): 워커당 자원 생성/정리.
     - item_delay: 항목 사이 대기(초, 워커별) — 안티봇/레이트리밋 완화(resolve/rescan은
       ITEM_DELAY, backfill은 0).
+    - delay_only_after_browser: True면 이번 항목에서 실제로 브라우저를 쓴 경우에만
+      item_delay를 적용한다(4단계 D1 — 패스트패스/캐시로 끝난 항목은 안 쉼, 근거는
+      config.ITEM_DELAY_SMART 주석). False(기본)면 예전처럼 매 항목 대기.
     - warn_hint: 워커 수가 MAX_BROWSERS의 3배를 넘을 때 경고에 넣을 환경변수 이름
       (예: 'RESOLVE_CONCURRENCY') — 없으면 경고 생략.
 
@@ -74,9 +78,11 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
                             print(f'  ⚠ (w{wid}) 항목 처리 중 예외 — 이 항목만 건너뜀: {str(e)[:120]}',
                                   flush=True)
                     # 브라우저를 더 안 쓰게 됐는데 기다리는 워커가 있으면 넘겨준다 — sleep 전에
-                    # (어차피 자는 동안 브라우저를 붙잡고 있을 이유가 없다).
+                    # (어차피 자는 동안 브라우저를 붙잡고 있을 이유가 없다). 사용 여부는
+                    # release가 플래그를 리셋하기 전에 읽어둔다.
+                    browser_used = page.used_since_release
                     page.release_if_contended()
-                    if item_delay:
+                    if item_delay and (browser_used or not delay_only_after_browser):
                         time.sleep(item_delay)
                 page.close()
         finally:

@@ -90,31 +90,51 @@ def _is_duplicate_entry(e):
     return isinstance(e, pymysql.err.IntegrityError) and e.args and e.args[0] == 1062
 
 
+def _load_one_committed(conn, cur, item):
+    """한 건 처리 + 즉시 커밋(예전 방식). 반환: 'inserted' | 'skipped' | 'failed'."""
+    key = native_id(item['platform'], item['parent'])
+    try:
+        ok = load_item(cur, item['platform'], item['parent'], item['products'])
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        if _is_duplicate_entry(e):
+            return 'skipped'
+        print(f'  실패: {item["platform"]} {key} — {e}')
+        return 'failed'
+    return 'inserted' if ok else 'skipped'
+
+
+def load_all(conn, items, batch_size):
+    """소배치 커밋(4단계 D2, 2026-08-05) — 예전엔 건당 커밋이라 항목마다 DB 왕복이
+    3~4회였다. 이제 batch_size(기본 50)건을 한 트랜잭션으로 처리하고, 배치 안에서 뭐 하나라도
+    실패하면 그 배치만 롤백한 뒤 예전 방식(건별 커밋)으로 재처리한다 — "한 건의 실패가 다른
+    건의 적재를 막지 않는다"는 기존 보장이 그대로 유지되면서(실패 배치만 건별로 격리),
+    정상 경로의 커밋 왕복이 1/batch_size로 줄어든다. LOAD_BATCH=1이면 사실상 예전과 동일.
+    반환: (inserted, skipped, failed)."""
+    counts = {'inserted': 0, 'skipped': 0, 'failed': 0}
+    with conn.cursor() as cur:
+        for i in range(0, len(items), batch_size):
+            batch = items[i:i + batch_size]
+            try:
+                results = [load_item(cur, it['platform'], it['parent'], it['products'])
+                           for it in batch]
+                conn.commit()
+                counts['inserted'] += sum(1 for ok in results if ok)
+                counts['skipped'] += sum(1 for ok in results if not ok)
+            except Exception:
+                conn.rollback()  # 이 배치에서 이미 실행된 INSERT까지 전부 되돌리고 건별로 재시도
+                for it in batch:
+                    counts[_load_one_committed(conn, cur, it)] += 1
+    return counts['inserted'], counts['skipped'], counts['failed']
+
+
 def main():
     items = load_items()
+    batch_size = max(1, int(os.environ.get('LOAD_BATCH', '50')))
     conn = connect_dst()
-    inserted, skipped, failed = 0, 0, 0
     try:
-        with conn.cursor() as cur:
-            for item in items:
-                key = native_id(item['platform'], item['parent'])
-                # 한 건씩 커밋 — 한 건의 INSERT 실패(예: LLM이 준 값이 컬럼 길이/제약을 벗어남)가
-                # 이미 이번 실행에서 성공적으로 넣은 다른 건들까지 롤백시키지 않도록 함.
-                try:
-                    ok = load_item(cur, item['platform'], item['parent'], item['products'])
-                    conn.commit()
-                except Exception as e:
-                    conn.rollback()
-                    if _is_duplicate_entry(e):
-                        skipped += 1
-                        continue
-                    failed += 1
-                    print(f'  실패: {item["platform"]} {key} — {e}')
-                    continue
-                if ok:
-                    inserted += 1
-                else:
-                    skipped += 1
+        inserted, skipped, failed = load_all(conn, items, batch_size)
     finally:
         conn.close()
     print(f'삽입 {inserted}건 / 이미 존재해서 스킵 {skipped}건 / 실패 {failed}건 (전체 {len(items)}건)')

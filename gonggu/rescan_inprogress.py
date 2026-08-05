@@ -47,7 +47,8 @@ import sys
 from gonggu.common import DEEPSEEK_KEY, append_jsonl, connect_dst
 from gonggu.crawl_pool import run_crawl_pool
 from gonggu.platforms import PLATFORMS, parent_ctx_from_row, product_update_link_sql
-from gonggu.resolve_links.config import HTTP_FAST_PATH, ITEM_DELAY, MAX_BROWSERS, RESOLUTION_FILE
+from gonggu.resolve_links.config import (HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART,
+                                          MAX_BROWSERS, RESOLUTION_FILE)
 from gonggu.resolve_links.core import resolve_product
 from gonggu.resolve_links.httpfetch import stats as httpfetch_stats
 from gonggu.resolve_links.matching import product_key
@@ -172,6 +173,7 @@ def main():
                       f"저장 실패(스킵): {str(e)[:120]}", flush=True)
 
     run_crawl_pool(targets, handle, concurrency=RESCAN_CONCURRENCY, item_delay=ITEM_DELAY,
+                   delay_only_after_browser=ITEM_DELAY_SMART,
                    worker_setup=connect_dst, worker_teardown=lambda db: db.close(),
                    warn_hint='RESCAN_CONCURRENCY')
 
