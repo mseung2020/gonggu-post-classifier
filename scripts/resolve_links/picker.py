@@ -25,7 +25,7 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
         # pick.get('reason')에 LLM#2가 왜 못 골랐는지(예: "아직 오픈 전이라 후보 링크 자체가
         # 없음")가 있는데 이걸 버리고 뭉뚱그려 쓰고 있었음 — 그대로 살려서 진단에 쓴다.
         reason = (pick.get('reason') or '').strip()
-        note = f'LLM#2가 적합한 링크를 못 찾음: {reason[:150]}' if reason else 'LLM#2가 적합한 링크를 못 찾음'
+        note = f'LLM#2가 적합한 링크를 못 찾음: {reason[:60]}' if reason else 'LLM#2가 적합한 링크를 못 찾음'
         return {'status': 'unresolved', 'final_url': None, 'note': note}
     # 검증 홉이 없어진 뒤로는 여기서 확정하면 그대로 DB에 들어간다 — 예전엔 링크모음은
     # 확신도 무관하게 최선의 후보를 채택해도 LLM#3 재검증이 저확신 오판을 걸러줬지만, 이제는
@@ -70,7 +70,7 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
         if not (verdict2.get('page_type') == '상품페이지' and verdict2.get('is_final_product_page')):
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence})를 LLM#3 재검증에서 반려 — '
-                            f'{(verdict2.get("reason") or "")[:150]}'}
+                            f'{(verdict2.get("reason") or "")[:60]}'}
         if looks_discontinued(r2['final_url'] or chosen_href):
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 판매종료로 보임'}
@@ -78,7 +78,7 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 네이버 블로그(몰 아님)라 채택 안 함'}
         chosen_url, verify_note = r2['final_url'], (
-            f"LLM#2 선택(conf={confidence}) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:150]}")
+            f"LLM#2 선택(conf={confidence}) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:60]}")
     elif prefetched_final:
         # linkbio_parser가 이미 최종 목적지까지 리다이렉트를 추적해줬으니(예: inpock
         # /api/r/<토큰> -> 실제 스마트스토어 상품 URL) 다시 열어볼 필요 없다 — URL 문자열
@@ -103,7 +103,7 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
                             f' — {chosen_href[:150]}'}
         chosen_url = chosen_href
         verify_note = (f"LLM#2 선택 채택(conf={confidence}, 링크인바이오 구조화 데이터): "
-                        f"{(pick.get('reason') or '')[:150]}")
+                        f"{(pick.get('reason') or '')[:60]}")
     else:
         # ⚠ "이 링크가 맞는 상품인지" 재검증(LLM#3)은 안 하지만, "이 링크가 실제로 열리는지"는
         # 확인해야 한다 — inpock 등 링크모음 서비스의 버튼 href가 자기네 내부 리다이렉트 API
@@ -116,7 +116,7 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence})를 선택했지만 실제 목적지로 리다이렉트되지 않음'
                             f' — {chosen_href[:150]}'}
-        verify_note = f"LLM#2 선택 채택(conf={confidence}): {(pick.get('reason') or '')[:150]}"
+        verify_note = f"LLM#2 선택 채택(conf={confidence}): {(pick.get('reason') or '')[:60]}"
         if not verified:
             verify_note += ' (⚠ 로그인월/캡차라 URL만 복구했고 내용은 직접 확인 못함)'
     # hint_is_vague는 그대로 적용해서, 상품명이 너무 일반적인 경우(스토어메인 카탈로그에서

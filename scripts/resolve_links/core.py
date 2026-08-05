@@ -115,7 +115,7 @@ def _resolve_one_candidate(page, current_url, product, ctx):
             return {'status': 'hold', 'final_url': r['final_url'],
                     'note': f"상품명(\"{product.get('product_name')}\")이 너무 일반적이라 이 상품페이지"
                             f"({r['title']})와의 일치를 자동으로 확정할 수 없음 — 사람 검토 필요"}
-        return {'status': 'done', 'final_url': r['final_url'], 'note': (verdict.get('reason') or '')[:200]}
+        return {'status': 'done', 'final_url': r['final_url'], 'note': (verdict.get('reason') or '')[:60]}
 
     page_type = verdict.get('page_type')
     if page_type in ('링크모음', '스토어메인'):
@@ -135,8 +135,8 @@ def _resolve_one_candidate(page, current_url, product, ctx):
     if page_type == '무관':
         # "무관"으로 판정된 것 중 일부는 명칭이 달라서 못 알아본 케이스일 수 있어 자동 실패
         # 종료 대신 사람이 검토할 "보류"로 뺀다.
-        return {'status': 'hold', 'final_url': None, 'note': f"무관 — {(verdict.get('reason') or '')[:150]}"}
+        return {'status': 'hold', 'final_url': None, 'note': f"무관 — {(verdict.get('reason') or '')[:60]}"}
 
     # 로그인월_차단 / (상품페이지인데 원본과 불일치)
     return {'status': 'unresolved', 'final_url': None,
-            'note': f"{page_type} — {(verdict.get('reason') or '')[:150]}"}
+            'note': f"{page_type} — {(verdict.get('reason') or '')[:60]}"}

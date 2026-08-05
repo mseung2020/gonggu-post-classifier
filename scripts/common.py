@@ -1,7 +1,9 @@
 """파이프라인 전체가 공유하는 설정/DB 연결/LLM 호출 헬퍼."""
+import datetime
 import json
 import os
 import pathlib
+import threading
 
 import pymysql
 import requests
@@ -96,11 +98,46 @@ def connect_dst():
     return _connect('DST')
 
 
-def call_llm(system_prompt, user_message, timeout=60, model=None):
+# call_llm이 스레드 수십~수백 개에서 동시에 불려서(classify.py는 CONCURRENCY=200까지) 사용량
+# 로그 파일에 append_jsonl을 락 없이 그대로 호출하면 줄이 섞여 깨질 수 있다(같은 이유로
+# classify.py도 자기 체크포인트 append를 lock으로 감쌈, classify.py:99-112 참고) — 이 로그
+# 전용 락을 따로 둔다.
+_usage_lock = threading.Lock()
+LLM_USAGE_FILE = ROOT / 'data/output/llm_usage.jsonl'
+
+
+def _log_usage(model, usage):
+    """DeepSeek 응답의 usage 필드(토큰 수)를 그대로 파일에 남긴다. 단가(원/달러)는 여기서
+    계산하지 않는다 — 이 파이프라인이 쓰는 모델명(deepseek-v4-pro 등)이 DeepSeek 공개 요금표의
+    표준 모델명과 다를 수 있어(내부 게이트웨이/별칭 가능성), 잘못된 단가를 여기 하드코딩해서
+    틀린 비용을 보여주는 것보다 토큰 수만 정확히 남기는 쪽을 택한다 — 비용 계산은
+    llm_usage_report.py에서 단가를 알 때만 선택적으로 한다."""
+    if not usage:
+        return
+    entry = {
+        'ts': datetime.datetime.now().isoformat(timespec='seconds'),
+        'model': model,
+        'prompt_tokens': usage.get('prompt_tokens'),
+        'completion_tokens': usage.get('completion_tokens'),
+        'total_tokens': usage.get('total_tokens'),
+        'cache_hit_tokens': usage.get('prompt_cache_hit_tokens'),
+        'cache_miss_tokens': usage.get('prompt_cache_miss_tokens'),
+    }
+    with _usage_lock:
+        append_jsonl(LLM_USAGE_FILE, entry)
+
+
+def call_llm(system_prompt, user_message, timeout=120, model=None):
     """DeepSeek chat completions 호출 — system/user 메시지 2개를 보내고 응답 텍스트를 JSON으로
     파싱해서 돌려준다. response_format을 json_object로 강제해도 모델이 앞뒤에 여분의 텍스트를
     붙이는 경우가 있어 파싱 폴백을 둔다. model을 안 주면 기본(프로) 모델을 쓴다 — 캐스케이드처럼
-    호출마다 다른 모델을 써야 하는 경우에만 명시적으로 넘긴다."""
+    호출마다 다른 모델을 써야 하는 경우에만 명시적으로 넘긴다.
+
+    ⚠ timeout 기본값 120초(2026-08-04 변경, 원래 60초) — 플래시 모델은 가끔 호출 하나가
+    60~117초까지 걸리는 꼬리 지연이 있다고 이미 실측돼 있는데(resolve_links/config.py의
+    LINK_LLM_MODEL 관련 기록 참고), DEEPSEEK_MODEL을 전부 플래시로 돌리기 시작하면서 60초
+    타임아웃에 대량으로 걸려 'Read timed out' 에러가 쏟아지는 게 실제로 확인됨. 60초 근처에서
+    끝났을 응답까지 억지로 죽이지 않으려고 여유를 둔다."""
     headers = {'Authorization': f'Bearer {DEEPSEEK_KEY}', 'Content-Type': 'application/json'}
     payload = {
         'model': model or DEEPSEEK_MODEL,
@@ -113,6 +150,7 @@ def call_llm(system_prompt, user_message, timeout=60, model=None):
     r = _session.post(f'{DEEPSEEK_URL}/chat/completions', headers=headers, data=json.dumps(payload), timeout=timeout)
     r.raise_for_status()
     data = r.json()
+    _log_usage(payload['model'], data.get('usage'))
     raw = data['choices'][0]['message']['content'] or ''
     try:
         return json.loads(raw)
