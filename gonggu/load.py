@@ -12,12 +12,11 @@ import os
 import pymysql
 
 from gonggu.common import LOAD_READY_DIR, RESOLVED_DIR, connect_dst, load_json_dir
+from gonggu.platforms import PLATFORMS, native_id, parent_exists_sql, parent_insert_sql, product_insert_sql
 
 
 def _item_key(item):
-    parent = item.get('parent') or {}
-    native_id = parent.get('post_id') if item['platform'] == 'ig' else parent.get('video_id')
-    return f"{item['platform']}:{native_id}"
+    return f"{item['platform']}:{native_id(item['platform'], item.get('parent') or {})}"
 
 
 def split_unresolved(resolved, ready):
@@ -61,60 +60,24 @@ def load_items():
                   f'(해석 없이 지금 넣으려면 LOAD_UNRESOLVED=1)')
     return items
 
-INSERT_VIDEO = """
-INSERT INTO gonggu_video
-    (video_id, channel_id, title, video_url, external_url, publishDate, gonggu_start_date,
-     gonggu_end_date, gonggu_stage, classification_note)
-VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(external_url)s, %(publishDate)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s, %(classification_note)s)
-"""
-CHECK_VIDEO_EXISTS = "SELECT id FROM gonggu_video WHERE video_id = %s"
-INSERT_VIDEO_PRODUCT = """
-INSERT INTO gonggu_video_product
-    (video_id, product_name, link_location, url_type, candidate_url, link_status, sort_order)
-VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
-        %(link_status)s, %(sort_order)s)
-"""
-
-INSERT_POST = """
-INSERT INTO gonggu_post
-    (post_id, user_id, url, publish_date, gonggu_start_date, gonggu_end_date, gonggu_stage,
-     classification_note)
-VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s, %(classification_note)s)
-"""
-CHECK_POST_EXISTS = "SELECT id FROM gonggu_post WHERE post_id = %s"
-INSERT_POST_PRODUCT = """
-INSERT INTO gonggu_post_product
-    (post_id, product_name, link_location, url_type, candidate_url, link_status, sort_order)
-VALUES (%(post_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
-        %(link_status)s, %(sort_order)s)
-"""
+# SQL은 전부 platforms.py 메타테이블에서 생성한다(2단계 B4) — post/video용 상수가 두 벌씩
+# 복제되어 있던 구조를 접었다. 생성된 문자열이 리팩터링 전과 동일함은 tests/test_platforms.py가 보증.
 
 
-def load_video(cur, parent, products):
-    cur.execute(CHECK_VIDEO_EXISTS, (parent['video_id'],))
+def load_item(cur, code, parent, products):
+    """부모 1건 + 상품 N건 INSERT. 이미 있으면(자연키 기준) 아무것도 안 하고 False."""
+    p = PLATFORMS[code]
+    key = parent[p.id_col]
+    cur.execute(parent_exists_sql(p), (key,))
     if cur.fetchone():
         return False
-    # 캡션에 링크가 있던 영상은 채널 정보란까지 긁어볼 필요가 없어서 external_url이 없을 수
-    # 있어 기본값 None을 깔아준다.
-    cur.execute(INSERT_VIDEO, {'external_url': None, **parent})
-    video_id = parent['video_id']  # FK 컬럼명이 gonggu_video_product.video_id로 되어있음(자연키)
-    for p in products:
-        # resolve_links를 안 거친 load_ready.json으로 돌아가는 경우 link_status 키가 없을
-        # 수 있어 기본값 None을 깔아준다.
-        cur.execute(INSERT_VIDEO_PRODUCT, {'link_status': None, **p, 'video_id': video_id})
-    return True
-
-
-def load_post(cur, parent, products):
-    cur.execute(CHECK_POST_EXISTS, (parent['post_id'],))
-    if cur.fetchone():
-        return False
-    cur.execute(INSERT_POST, parent)
-    post_id = parent['post_id']  # FK 컬럼명이 gonggu_post_product.post_id로 되어있음(자연키)
-    for p in products:
-        cur.execute(INSERT_POST_PRODUCT, {'link_status': None, **p, 'post_id': post_id})
+    # 유튜브: 캡션에 링크가 있던 영상은 채널 정보란까지 긁어볼 필요가 없어서 external_url이
+    # 없을 수 있어 기본값 None을 깔아준다(인스타 INSERT에는 이 컬럼이 없어 그냥 무시됨).
+    cur.execute(parent_insert_sql(p), {'external_url': None, **parent})
+    for prod in products:
+        # resolve_links를 안 거친 03_load_ready로 돌아가는 경우 link_status 키가 없을 수
+        # 있어 기본값 None을 깔아준다. FK 컬럼명은 부모의 자연키 이름 그대로(id_col).
+        cur.execute(product_insert_sql(p), {'link_status': None, **prod, p.id_col: key})
     return True
 
 
@@ -134,12 +97,11 @@ def main():
     try:
         with conn.cursor() as cur:
             for item in items:
-                fn = load_video if item['platform'] == 'yt' else load_post
-                key = item['parent'].get('video_id') or item['parent'].get('post_id')
+                key = native_id(item['platform'], item['parent'])
                 # 한 건씩 커밋 — 한 건의 INSERT 실패(예: LLM이 준 값이 컬럼 길이/제약을 벗어남)가
                 # 이미 이번 실행에서 성공적으로 넣은 다른 건들까지 롤백시키지 않도록 함.
                 try:
-                    ok = fn(cur, item['parent'], item['products'])
+                    ok = load_item(cur, item['platform'], item['parent'], item['products'])
                     conn.commit()
                 except Exception as e:
                     conn.rollback()

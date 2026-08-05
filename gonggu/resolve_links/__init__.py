@@ -54,6 +54,9 @@ DeepSeek API 키 필요(.env): DEEPSEEK_KEY (LLM#2 "공구왕 링크선택", LLM
 """
 from .core import resolve_product
 from .matching import product_key
-from .runner import main
 
-__all__ = ['main', 'resolve_product', 'product_key']
+# runner(main)는 여기서 임포트하지 않는다 — runner가 공용 crawl_pool을 쓰고 crawl_pool이
+# 이 패키지의 browser를 쓰기 때문에(2단계 B3), 패키지 로드 시점에 runner까지 끌어오면
+# 순환 임포트가 된다. CLI 진입은 __main__.py가 runner를 직접 부른다.
+
+__all__ = ['resolve_product', 'product_key']

@@ -12,12 +12,11 @@ gonggu_stage를 갱신한다. LLM 재호출 없이 순수 날짜 비교 + UPDATE
     python3 scripts/update_gonggu_stage.py
 """
 from gonggu.common import connect_dst
+from gonggu.platforms import PLATFORMS
 from gonggu.transform import _compute_stage
 
-TABLES = [
-    ('gonggu_post', 'post_id'),
-    ('gonggu_video', 'video_id'),
-]
+# 테이블명/자연키 컬럼은 platforms.py 메타테이블이 유일한 정의처(2단계 B4).
+TABLES = [(p.parent_table, p.id_col) for p in PLATFORMS.values()]
 
 
 def _update_table(conn, table, id_col):

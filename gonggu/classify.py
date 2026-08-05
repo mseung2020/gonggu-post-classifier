@@ -1,38 +1,28 @@
 #!/usr/bin/env python3
-"""2단계: posts_raw.json의 각 포스트를 LLM#1(01_gonggu_classify)에 태워 공구 여부/상품명 배열/
-날짜/링크위치를 뽑는다. 체크포인트 저장이라 중간에 죽어도 이어서 실행 가능.
+"""2단계: 01_raw의 각 포스트를 LLM#1(공구 분류)에 태워 공구 여부/상품명 배열/날짜/링크위치를
+뽑는다. 체크포인트 저장이라 중간에 죽어도 이어서 실행 가능.
+
+재시도/스레드풀/진행 로그 배관은 llm_batch.py 공용 러너를 쓴다(2단계 B2) — 이 파일에는
+"무엇을 분류하는가"(프롬프트, 키, 저장 위치)만 남는다.
 
 사용법:
-    CONCURRENCY=4 python3 scripts/classify.py            # 남은 것 전부
-    LIMIT=500 python3 scripts/classify.py                # 이번 실행에 500건만 (체크포인트 이어서)
-    PLATFORM=yt LIMIT=500 python3 scripts/classify.py    # ig/yt 중 하나만 골라서 500건
+    CONCURRENCY=4 python3 -m gonggu.classify            # 남은 것 전부
+    LIMIT=500 python3 -m gonggu.classify                # 이번 실행에 500건만 (체크포인트 이어서)
+    PLATFORM=yt LIMIT=500 python3 -m gonggu.classify    # ig/yt 중 하나만 골라서 500건
 결과: data/02_classified/<발행일>.jsonl (원본 포스트 + classification 필드 추가, 날짜별,
     레코드 1개=1줄)
 """
 import os
 import sys
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import requests
 
 from gonggu.common import CLASSIFIED_DIR, DEEPSEEK_KEY, RAW_DIR, append_jsonl, call_llm, load_json_dir, post_date_key
+from gonggu.llm_batch import retry_llm, run_llm_batch
 from gonggu.prompts import GONGGU_CLASSIFY_SYSTEM, build_gonggu_classify_user
-
-MAX_RETRY = 3
-# 429(레이트리밋)는 코드 버그가 아니라 "잠깐 기다리면 반드시 풀리는" 상태라 훨씬 길게/많이
-# 재시도한다 — 짧게 3번만 시도하고 포기하면 대량 동시 처리 시 전부 영구 실패로 남는다.
-MAX_RETRY_429 = 10
 
 
 def _key(post):
     native_id = post.get('post_id') if post['platform'] == 'ig' else post.get('video_id')
     return f"{post['platform']}:{native_id}"
-
-
-def _is_429(e):
-    return isinstance(e, requests.exceptions.HTTPError) and e.response is not None and e.response.status_code == 429
 
 
 def classify_one(post):
@@ -42,25 +32,8 @@ def classify_one(post):
         publish_date=pub_date or '',
         creator_description=post.get('creator_description') or '',
     )
-    last_err = None
-    rate_limit_attempt = 0
-    generic_attempt = 0
-    while True:
-        try:
-            parsed = call_llm(GONGGU_CLASSIFY_SYSTEM, user_message)
-            return {**post, 'classification': parsed, 'classification_error': None}
-        except Exception as e:
-            last_err = str(e)[:200]
-            if _is_429(e):
-                rate_limit_attempt += 1
-                if rate_limit_attempt > MAX_RETRY_429:
-                    return {**post, 'classification': None, 'classification_error': last_err}
-                time.sleep(min(60, 5 * rate_limit_attempt))
-                continue
-            generic_attempt += 1
-            if generic_attempt >= MAX_RETRY:
-                return {**post, 'classification': None, 'classification_error': last_err}
-            time.sleep(1.5 * generic_attempt)
+    parsed, err = retry_llm(lambda: call_llm(GONGGU_CLASSIFY_SYSTEM, user_message))
+    return {**post, 'classification': parsed, 'classification_error': err}
 
 
 def main():
@@ -90,43 +63,16 @@ def main():
     print(f'전체 {len(posts)} | 완료 {len(done)}{f" (재시도 대기 {skipped}건 제외)" if skipped else ""} | '
           f'이번 실행 {scope}{len(todo)}건 (동시 {concurrency})')
 
-    # 결과 1건 = 그 날짜 파일 끝에 한 줄 추가(append)만 한다 — 예전엔 날짜 버킷이 바뀔 때마다
-    # 그 날짜의 전체 레코드를 다시 직렬화해서 다시 썼는데, 하루치가 몇천 건으로 쌓이면
-    # resolve_links의 link_resolution.json과 같은 문제(건수가 늘수록 저장이 느려지고, 그 저장이
-    # lock 안에서 일어나 다른 워커도 같이 멈춤)가 재현될 수 있다(실측으로 link_resolution에서
-    # 확인, 2026-07-27). append는 건수와 무관하게 항상 거의 즉시 끝난다.
-    REPORT_EVERY = 30
-    lock = threading.Lock()
-    total_done = len(done)
-    ok_total = total_done
-    err_total = 0
-    batch_ok = 0
-    batch_err = 0
-    batch_err_samples = []
+    # 결과 1건 = 그 날짜 파일 끝에 한 줄 추가(append)만 한다 — 건수가 쌓여도 저장 비용이
+    # 늘지 않는다(2026-07-27 실측/전환, 자세한 사연은 common.append_jsonl 참고).
+    counters = run_llm_batch(
+        todo, classify_one,
+        lambda r: append_jsonl(CLASSIFIED_DIR / f'{post_date_key(r)}.jsonl', r),
+        concurrency=concurrency, ok_start=len(done))
 
-    with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futures = {ex.submit(classify_one, p): p for p in todo}
-        for i, fut in enumerate(as_completed(futures), 1):
-            r = fut.result()
-            with lock:
-                append_jsonl(CLASSIFIED_DIR / f'{post_date_key(r)}.jsonl', r)
-                total_done += 1
-                if r.get('classification_error'):
-                    err_total += 1
-                    batch_err += 1
-                    batch_err_samples.append(str(r.get('classification_error'))[:80])
-                else:
-                    ok_total += 1
-                    batch_ok += 1
-                if i % REPORT_EVERY == 0 or i == len(todo):
-                    print(f'  {i}/{len(todo)} 완료 — 이번 배치 성공 {batch_ok} / 실패 {batch_err} '
-                          f'(누적 성공 {ok_total} / 실패 {err_total})')
-                    for s in batch_err_samples[:3]:  # 실패가 났으면 사유를 바로 보여줘서 429 재발 같은 걸 빨리 눈치채게
-                        print(f'    실패 예시: {s}')
-                    batch_ok = batch_err = 0
-                    batch_err_samples = []
-
-    print(f'총 {total_done}건(성공 {ok_total} / 실패 {err_total}) -> {CLASSIFIED_DIR}/*.jsonl (날짜별)')
+    total_done = len(done) + counters['ok'] + counters['err']
+    print(f'총 {total_done}건(성공 {len(done) + counters["ok"]} / 실패 {counters["err"]}) '
+          f'-> {CLASSIFIED_DIR}/*.jsonl (날짜별)')
 
 
 if __name__ == '__main__':

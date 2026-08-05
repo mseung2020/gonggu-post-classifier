@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""build_category_dataset.py가 만든 제품 목록(JSONL)을 LLM#4(04_category_classify)에 태워
+"""build_category_dataset.py가 만든 제품 목록(JSONL)을 LLM#4(카테고리 분류)에 태워
 각 제품에 category/subcategory를 붙인다. 체크포인트 저장이라 중간에 죽어도 이어서 실행 가능.
 입력 파일의 줄 번호(row_id)로 완료 여부를 추적하므로, 입력 파일을 다시 만들지 않는 한
-안전하게 재실행할 수 있다.
+안전하게 재실행할 수 있다. 재시도/스레드풀/진행 로그 배관은 llm_batch.py 공용 러너(2단계 B2).
 
 사용법:
-    python3 scripts/classify_category.py                       # 기본 입출력 경로, 남은 것 전부
-    LIMIT=20 python3 scripts/classify_category.py               # 이번 실행에 20건만(체크포인트 이어서)
-    CONCURRENCY=8 python3 scripts/classify_category.py
-    ESCALATION_THRESHOLD=0.7 python3 scripts/classify_category.py    # 기본값도 0.7
-    python3 scripts/classify_category.py <입력.jsonl> <출력.jsonl>
+    python3 -m gonggu.classify_category                       # 기본 입출력 경로, 남은 것 전부
+    LIMIT=20 python3 -m gonggu.classify_category               # 이번 실행에 20건만(체크포인트 이어서)
+    CONCURRENCY=8 python3 -m gonggu.classify_category
+    ESCALATION_THRESHOLD=0.7 python3 -m gonggu.classify_category    # 기본값도 0.7
+    python3 -m gonggu.classify_category <입력.jsonl> <출력.jsonl>
 
 2단 캐스케이드: 모든 제품을 먼저 DEEPSEEK_MODEL_FLASH(싼 모델)로 분류하고, confidence가
 ESCALATION_THRESHOLD 이상이면 그 결과를 바로 최종으로 쓴다. 미만이면 같은 프롬프트로
@@ -28,27 +28,16 @@ import json
 import os
 import pathlib
 import sys
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import requests
 
 from gonggu.common import CATEGORY_TAXONOMY, DEEPSEEK_KEY, DEEPSEEK_MODEL, DEEPSEEK_MODEL_FLASH, \
     SUBCATEGORY_TO_CATEGORY, call_llm
+from gonggu.llm_batch import retry_llm, run_llm_batch
 from gonggu.prompts import CATEGORY_CLASSIFY_SYSTEM, build_category_classify_user
 
 IN_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'
 OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_result.jsonl'
 
 ESCALATION_THRESHOLD = float(os.environ.get('ESCALATION_THRESHOLD', '0.7'))
-
-MAX_RETRY = 3
-MAX_RETRY_429 = 10
-
-
-def _is_429(e):
-    return isinstance(e, requests.exceptions.HTTPError) and e.response is not None and e.response.status_code == 429
 
 
 def _load_jsonl(path):
@@ -61,23 +50,7 @@ def _load_jsonl(path):
 def _call_stage(model, user_message):
     """한 모델로 한 번 호출 — 429/일시 오류는 그 호출 안에서만 재시도한다(캐스케이드에서
     플래시가 이미 성공했는데 프로 호출 실패로 플래시까지 다시 부르는 낭비를 막기 위해)."""
-    rate_limit_attempt = 0
-    generic_attempt = 0
-    while True:
-        try:
-            return call_llm(CATEGORY_CLASSIFY_SYSTEM, user_message, model=model), None
-        except Exception as e:
-            last_err = str(e)[:200]
-            if _is_429(e):
-                rate_limit_attempt += 1
-                if rate_limit_attempt > MAX_RETRY_429:
-                    return None, last_err
-                time.sleep(min(60, 5 * rate_limit_attempt))
-                continue
-            generic_attempt += 1
-            if generic_attempt >= MAX_RETRY:
-                return None, last_err
-            time.sleep(1.5 * generic_attempt)
+    return retry_llm(lambda: call_llm(CATEGORY_CLASSIFY_SYSTEM, user_message, model=model))
 
 
 def _extract(parsed):
@@ -159,39 +132,15 @@ def main():
         for r in done:
             f.write(json.dumps(r, ensure_ascii=False) + '\n')
 
-    REPORT_EVERY = 30
-    lock = threading.Lock()
-    total_done = len(done)
-    ok_total = total_done
-    err_total = 0
-    batch_ok = 0
-    batch_err = 0
-    batch_err_samples = []
+    def _persist(r):
+        with open(out_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(r, ensure_ascii=False) + '\n')
 
-    with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futures = {ex.submit(classify_one, r): r for r in todo}
-        for i, fut in enumerate(as_completed(futures), 1):
-            r = fut.result()
-            with lock:
-                with open(out_path, 'a', encoding='utf-8') as f:
-                    f.write(json.dumps(r, ensure_ascii=False) + '\n')
-                total_done += 1
-                if r.get('classify_error'):
-                    err_total += 1
-                    batch_err += 1
-                    batch_err_samples.append(str(r.get('classify_error'))[:80])
-                else:
-                    ok_total += 1
-                    batch_ok += 1
-                if i % REPORT_EVERY == 0 or i == len(todo):
-                    print(f'  {i}/{len(todo)} 완료 — 이번 배치 성공 {batch_ok} / 실패 {batch_err} '
-                          f'(누적 성공 {ok_total} / 실패 {err_total})')
-                    for s in batch_err_samples[:3]:
-                        print(f'    실패 예시: {s}')
-                    batch_ok = batch_err = 0
-                    batch_err_samples = []
+    counters = run_llm_batch(todo, classify_one, _persist, concurrency=concurrency,
+                             error_of=lambda r: r.get('classify_error'), ok_start=len(done))
 
-    print(f'총 {total_done}건(성공 {ok_total} / 실패 {err_total}) -> {out_path}')
+    total_done = len(done) + counters['ok'] + counters['err']
+    print(f'총 {total_done}건(성공 {len(done) + counters["ok"]} / 실패 {counters["err"]}) -> {out_path}')
 
 
 if __name__ == '__main__':

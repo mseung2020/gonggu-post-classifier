@@ -22,3 +22,5 @@ data/_migrated_backup/*
 !data/04_resolved/.gitkeep
 data/_backup_*/
 _to_delete/
+data/logs/*
+!data/logs/.gitkeep

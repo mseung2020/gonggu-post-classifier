@@ -25,23 +25,23 @@ gonggu_end_date와 gonggu_stage를 함께 갱신한다.
 
 update_gonggu_stage.py와 마찬가지로 transform.py의 _compute_stage를 재사용해서, 기간을 찾은
 즉시 그 자리에서 gonggu_stage도 같이 갱신한다(다음 날 update_gonggu_stage.py를 기다릴 필요 없음).
+워커 풀 배관은 crawl_pool.py 공용 모듈(2단계 B3 — LazyPage/MAX_BROWSERS 안전판 포함, 예전엔
+이 파일만 워커 수=크롬 수로 돌던 감사 A1 사고 지점), 플랫폼별 SQL은 platforms.py(2단계 B4).
 
 사용법:
-    python3 scripts/backfill_period.py
-    LIMIT=20 python3 scripts/backfill_period.py            # 소규모 테스트
-    BACKFILL_PERIOD_CONCURRENCY=4 python3 scripts/backfill_period.py
+    python3 -m gonggu.backfill_period
+    LIMIT=20 python3 -m gonggu.backfill_period            # 소규모 테스트
+    BACKFILL_PERIOD_CONCURRENCY=4 python3 -m gonggu.backfill_period
 """
 import datetime
 import os
-import queue
 import sys
-import threading
-
-from playwright.sync_api import sync_playwright
 
 from gonggu.common import DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, connect_dst, load_jsonl
+from gonggu.crawl_pool import run_crawl_pool
+from gonggu.platforms import PLATFORMS, parent_update_period_sql
 from gonggu.prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
-from gonggu.resolve_links.browser import LazyPage, fetch
+from gonggu.resolve_links.browser import fetch
 from gonggu.resolve_links.config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS
 from gonggu.transform import _compute_stage
 
@@ -50,41 +50,31 @@ RETRY_COOLDOWN_DAYS = int(os.environ.get('PERIOD_RETRY_COOLDOWN_DAYS', '5'))
 MAX_ATTEMPTS = int(os.environ.get('PERIOD_MAX_ATTEMPTS', '3'))
 CHECKPOINT_FILE = ROOT / 'data/output/period_backfill.jsonl'
 
-# 상품이 정확히 1개인 포스트/영상만 대상으로 한다(위 docstring 참고) — 서브쿼리로 그 포스트/
-# 영상에 달린 상품 총개수를 세서 1인 것만 남긴다.
-SELECT_POST = """
-SELECT p.post_id, p.user_id, p.url, p.publish_date, p.classification_note,
+
+def _select_sql(p):
+    """상품이 정확히 1개인 포스트/영상만 대상(위 docstring 참고) — 서브쿼리로 그 부모에 달린
+    상품 총개수를 세서 1인 것만 남긴다. 테이블/컬럼명은 platforms.py 메타에서(2단계 B4)."""
+    parent_cols = ', '.join(f'p.{c}' for c in p.parent_ctx_cols)
+    return f"""
+SELECT {parent_cols}, p.classification_note,
        pp.product_name, pp.candidate_url
-FROM gonggu_post p
-JOIN gonggu_post_product pp ON pp.post_id = p.post_id
+FROM {p.parent_table} p
+JOIN {p.product_table} pp ON pp.{p.id_col} = p.{p.id_col}
 WHERE p.gonggu_stage = '판단불가' AND pp.link_status = 'done'
-  AND (SELECT COUNT(*) FROM gonggu_post_product pp2 WHERE pp2.post_id = p.post_id) = 1
+  AND (SELECT COUNT(*) FROM {p.product_table} pp2 WHERE pp2.{p.id_col} = p.{p.id_col}) = 1
 """
 
-SELECT_VIDEO = """
-SELECT v.video_id, v.channel_id, v.video_url, v.publishDate, v.classification_note,
-       vp.product_name, vp.candidate_url
-FROM gonggu_video v
-JOIN gonggu_video_product vp ON vp.video_id = v.video_id
-WHERE v.gonggu_stage = '판단불가' AND vp.link_status = 'done'
-  AND (SELECT COUNT(*) FROM gonggu_video_product vp2 WHERE vp2.video_id = v.video_id) = 1
-"""
 
-UPDATE_POST = ('UPDATE gonggu_post SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s '
-               'WHERE post_id=%s')
-UPDATE_VIDEO = ('UPDATE gonggu_video SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s '
-                'WHERE video_id=%s')
+UPDATE_SQL = {code: parent_update_period_sql(p) for code, p in PLATFORMS.items()}
 
 
 def _fetch_targets(conn):
     targets = []
     with conn.cursor() as cur:
-        cur.execute(SELECT_POST)
-        for r in cur.fetchall():
-            targets.append(('ig', f"ig:{r['post_id']}", r))
-        cur.execute(SELECT_VIDEO)
-        for r in cur.fetchall():
-            targets.append(('yt', f"yt:{r['video_id']}", r))
+        for code, p in PLATFORMS.items():
+            cur.execute(_select_sql(p))
+            for r in cur.fetchall():
+                targets.append((code, f"{code}:{r[p.id_col]}", r))
     return targets
 
 
@@ -116,66 +106,6 @@ def _page_text_or_raise(page, url):
     return body_text
 
 
-def _worker(worker_id, work_q, checkpoint, lock, counters, total, save_auth_state):
-    # DB는 워커(스레드)당 1개만 열어서 재사용한다(rescan_inprogress.py와 동일 패턴).
-    db = connect_dst()
-    try:
-        with sync_playwright() as pw:
-            # 브라우저는 LazyPage로 — 실제로 필요해지는 첫 순간까지 미루고, 동시 개수도
-            # MAX_BROWSERS 허가증으로 제한한다. 예전엔 여기서 워커마다 new_context_page()를
-            # 직접 불러서 사실상 "BACKFILL_PERIOD_CONCURRENCY = 크롬 프로세스 수"였다 —
-            # rescan_inprogress.py는 2026-08-04에 LazyPage로 고쳐졌는데 이 파일만 누락돼
-            # 있었다(2026-08-05 감사 A1). CONCURRENCY=50으로 돌리면 크롬 50개가 동시에 뜨는,
-            # 2026-07-30 스왑 32GB 사고와 같은 패턴이었음. 대상 페이지는 requests 패스트패스로
-            # 끝나는 비율이 높아서(fetch가 먼저 시도) 지연 생성의 이득도 크다.
-            page = LazyPage(pw, save_auth_state=save_auth_state)
-            while True:
-                try:
-                    platform, key, r = work_q.get_nowait()
-                except queue.Empty:
-                    break
-
-                try:
-                    page_text = _page_text_or_raise(page, r['candidate_url'])
-                    publish_date = str(r.get('publish_date') or r.get('publishDate'))
-                    verdict = call_llm(
-                        PERIOD_BACKFILL_SYSTEM,
-                        build_period_backfill_user(r['product_name'], r.get('classification_note'),
-                                                    publish_date, page_text))
-                    start, end, note = verdict.get('period_start'), verdict.get('period_end'), verdict.get('reason', '')
-                except Exception as e:
-                    start = end = None
-                    note = f'크롤링/LLM 실패: {str(e)[:160]}'
-
-                prev = checkpoint.get(key)
-                attempts = (prev.get('attempts', 0) if prev else 0) + 1
-                found = bool(start or end)
-                result = {'key': key, 'status': 'found' if found else 'not_found',
-                          'checked_at': datetime.date.today().isoformat(), 'attempts': attempts,
-                          'period_start': start, 'period_end': end, 'note': (note or '')[:200]}
-
-                with lock:
-                    if found:
-                        stage = _compute_stage(start, end)
-                        native_id = r['post_id'] if platform == 'ig' else r['video_id']
-                        update_sql = UPDATE_POST if platform == 'ig' else UPDATE_VIDEO
-                        with db.cursor() as cur:
-                            cur.execute(update_sql, (start, end, stage, native_id))
-                        db.commit()
-                    checkpoint[key] = result
-                    append_jsonl(CHECKPOINT_FILE, result)
-                    counters[result['status']] = counters.get(result['status'], 0) + 1
-                    counters['_done_n'] = counters.get('_done_n', 0) + 1
-                    print(f"  [{counters['_done_n']}/{total}] (w{worker_id}) {key} -> {result['status']} "
-                          f"{start or ''}~{end or ''} {note[:60]}", flush=True)
-                # 브라우저를 더 안 쓰게 됐는데 기다리는 워커가 있으면 넘겨준다(runner/rescan과 동일).
-                page.release_if_contended()
-            # 세션 저장은 LazyPage._teardown이 save_auth_state에 따라 닫는 시점마다 처리한다.
-            page.close()
-    finally:
-        db.close()
-
-
 def main():
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
@@ -196,30 +126,53 @@ def main():
     targets = eligible[:limit]
     limit_skipped = len(eligible) - len(targets)
     print(f'판단불가 + 단일상품 + link_status=done 대상 {len(raw_targets)}건 중 이번 실행 {len(targets)}건 '
-          f'(체크포인트로 스킵 {checkpoint_skipped}건, LIMIT으로 보류 {limit_skipped}건, 동시 워커 {CONCURRENCY}개, '
-          f'브라우저 상한 {MAX_BROWSERS}개)')
+          f'(체크포인트로 스킵 {checkpoint_skipped}건, LIMIT으로 보류 {limit_skipped}건, '
+          f'동시 워커 상한 {CONCURRENCY}개, 브라우저 상한 {MAX_BROWSERS}개)')
     if not targets:
         return
-    n_check = max(1, min(CONCURRENCY, len(targets)))
-    if n_check > MAX_BROWSERS * 3:
-        print(f'  ⚠ 워커({n_check})가 브라우저 상한({MAX_BROWSERS})의 3배를 넘습니다 — 브라우저가 '
-              f'필요한 건이 많으면 재기동 오버헤드로 오히려 느려질 수 있습니다. '
-              f'MAX_BROWSERS를 올리거나 BACKFILL_PERIOD_CONCURRENCY를 낮춰보세요.')
 
-    work_q = queue.Queue()
-    for t in targets:
-        work_q.put(t)
-    lock = threading.Lock()
     counters = {}
-    n_workers = max(1, min(CONCURRENCY, len(targets)))
-    threads = [
-        threading.Thread(target=_worker, args=(wid, work_q, checkpoint, lock, counters, len(targets), wid == 0))
-        for wid in range(n_workers)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+
+    def handle(ctx, target):
+        platform, key, r = target
+        db = ctx.state  # 워커당 DB 커넥션 1개
+        p = PLATFORMS[platform]
+        try:
+            page_text = _page_text_or_raise(ctx.page, r['candidate_url'])
+            publish_date = str(r[p.date_col])
+            verdict = call_llm(
+                PERIOD_BACKFILL_SYSTEM,
+                build_period_backfill_user(r['product_name'], r['classification_note'],
+                                            publish_date, page_text))
+            start, end, note = verdict.get('period_start'), verdict.get('period_end'), verdict.get('reason', '')
+        except Exception as e:
+            start = end = None
+            note = f'크롤링/LLM 실패: {str(e)[:160]}'
+
+        prev = checkpoint.get(key)
+        attempts = (prev.get('attempts', 0) if prev else 0) + 1
+        found = bool(start or end)
+        result = {'key': key, 'status': 'found' if found else 'not_found',
+                  'checked_at': datetime.date.today().isoformat(), 'attempts': attempts,
+                  'period_start': start, 'period_end': end, 'note': (note or '')[:200]}
+
+        with ctx.lock:
+            if found:
+                stage = _compute_stage(start, end)
+                db.ping(reconnect=True)
+                with db.cursor() as cur:
+                    cur.execute(UPDATE_SQL[platform], (start, end, stage, r[p.id_col]))
+                db.commit()
+            checkpoint[key] = result
+            append_jsonl(CHECKPOINT_FILE, result)
+            counters[result['status']] = counters.get(result['status'], 0) + 1
+            counters['_done_n'] = counters.get('_done_n', 0) + 1
+            print(f"  [{counters['_done_n']}/{len(targets)}] (w{ctx.worker_id}) {key} -> {result['status']} "
+                  f"{start or ''}~{end or ''} {note[:60]}", flush=True)
+
+    run_crawl_pool(targets, handle, concurrency=CONCURRENCY, item_delay=0,
+                   worker_setup=connect_dst, worker_teardown=lambda db: db.close(),
+                   warn_hint='BACKFILL_PERIOD_CONCURRENCY')
 
     by_status = {k: v for k, v in counters.items() if not k.startswith('_')}
     print(f'기간 백필 완료 {len(targets)}건 — {by_status}')
