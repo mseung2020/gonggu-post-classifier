@@ -31,12 +31,17 @@ dev_gongguking DB
 ──── 여기서부터는 "이미 DB에 들어간 것"을 매일 다시 손보는 보강 단계 ────
 
    6. update_gonggu_stage.py  — gonggu_stage를 오늘 날짜 기준으로 갱신(시작전→진행중→종료)
-   7. rescan_inprogress.py    — "진행중"인데 아직 링크를 못 찾은(unresolved) 상품만 재탐색
+   7. rescan_inprogress.py    — "진행중"인데 아직 링크를 못 찾은(unresolved/hold/error) 상품만 재탐색
+   9. backfill_period.py      — '판단불가' 중 링크가 확정된 단일상품만 상품페이지를 크롤링해 공구기간 백필
+  10. maintenance.py          — 체크포인트 컴팩션·llm_usage 로테이션 등 데이터 하우스키핑
+
+──── 이 전체(6→1→8→2→3→4→5→7→9→10)를 매일 한 번, python3 -m gonggu.daily 로 실행 ────
 ```
 
-1~5가 "새 포스트를 처음부터 끝까지 처리"하는 본줄기, 6~7은 "이미 처리된 것 중 상태가 바뀐
-것만 골라 다시 손보는" 보강 단계입니다. 아래 "모듈 하나씩 뜯어보기"에서 각 단계를 순서대로
-자세히 설명합니다 — 처음 보신다면 그 순서대로 읽으시는 걸 추천합니다.
+1~5가 "새 포스트를 처음부터 끝까지 처리"하는 본줄기, 6·7·9는 "이미 처리된 것 중 상태가
+바뀐 것만 골라 다시 손보는" 보강 단계, 10은 무한히 자라는 파일들을 관리하는 하우스키핑입니다.
+아래 "모듈 하나씩 뜯어보기"에서 각 단계를 순서대로 자세히 설명합니다 — 처음 보신다면 그
+순서대로 읽으시는 걸 추천합니다.
 
 **8번(`fetch_yt_ppl.py` + `classify_yt_ppl.py`)은 이 본줄기와 별도인 독립 유입 경로입니다**
 — hifen DB의 `brand` 테이블(유튜브 PPL/브랜드 협찬 영상)에서 자체 SQL 쿼리로 가져와
@@ -53,6 +58,13 @@ dev_gongguking DB
 `gonggu/resolve_links/`와 `gonggu/linkbio_parser/`는 파일 하나가 아니라 책임별로 나뉜
 하위 패키지입니다(각각 10개 안팎의 파일, 파일당 200줄 이하) — 구성은 각 패키지의
 `__init__.py` 상단 docstring 참고.
+
+**공통 레이어(2026-08-05 대공사)**: 여러 모듈이 복제해서 쓰던 배관은 세 파일에만 존재합니다 —
+`gonggu/llm_batch.py`(LLM 재시도 정책 + 스레드풀 배치 러너: classify 계열 3개가 공유),
+`gonggu/crawl_pool.py`(크롤링 워커 풀 + LazyPage/MAX_BROWSERS 안전판: resolve/rescan/backfill/_diag가
+공유), `gonggu/platforms.py`(ig/yt 테이블·컬럼·SQL의 유일한 정의처). 이 셋 중 하나를 고치면
+쓰는 모듈 전부에 적용되고, 개별 모듈에는 "무엇을 하는가"만 남아 있습니다.
+`gonggu/daily.py`는 일일 퀘스트 오케스트레이터입니다(아래 "매일 돌리는 순서" 참고).
 
 **실행 규약(2026-08-05 패키지화 이후)**: 모든 모듈은 저장소 루트에서
 `python3 -m gonggu.<모듈>`로 실행합니다(예: `python3 -m gonggu.classify`,
@@ -273,6 +285,18 @@ dev_gongguking DB
   모호해지기 때문). `update_gonggu_stage.py`와 마찬가지로 `transform.py`의
   `_compute_stage`를 재사용합니다.
 
+### 10. `maintenance.py` — 데이터 하우스키핑 (매일 마지막)
+
+- **무엇**: 무한히 자라는 파일들을 관리합니다(2026-08-05, 대공사 3단계). ① append-only
+  체크포인트(link_resolution/period_backfill)가 20MB(COMPACT_MIN_MB)를 넘으면 같은 key의
+  옛 줄을 접어 다시 씀(last-wins 규약이라 의미 완전 보존), ② 30일(USAGE_KEEP_DAYS) 지난
+  llm_usage 기록을 월별 아카이브로 로테이션, ③ `ARCHIVE_AFTER_DAYS=30`처럼 **지정한 경우에만**
+  그 일수 지난 01_raw/01_raw_yt_ppl/02_classified 날짜 파일을 `data/archive/`로 gzip 이동
+  (01을 02보다 먼저 옮겨 재분류 사고를 구조적으로 방지, 복원은 gunzip 후 원위치).
+- **명령**: `python3 -m gonggu.maintenance` (`gonggu.daily`가 마지막 단계로 자동 실행)
+- **알아둘 점**: resolve_links/rescan이 도는 동안 단독으로 실행하지 말 것 — 걔들이 append
+  중인 체크포인트를 컴팩션이 통째로 다시 씁니다(daily 안에서는 순차 실행이라 안전).
+
 ## 설치
 
 ```bash
@@ -334,6 +358,7 @@ RESOLVE_CONCURRENCY=30 python3 -m gonggu.resolve_links          # 4. 링크 해�
 python3 -m gonggu.load                                         # 5. DB 적재
 python3 -m gonggu.rescan_inprogress                           # 7. 진행중인데 못 찾은 링크 재탐색
 python3 -m gonggu.backfill_period                             # 9. 공구기간 판단불가 건 보강 크롤링
+python3 -m gonggu.maintenance                                 # 10. 데이터 하우스키핑
 ```
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
@@ -382,11 +407,6 @@ grep/head로 한 줄씩 바로 들여다볼 수 있고, classify.py처럼 계속
   python3 -m gonggu._diag_sample            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
   python3 -m gonggu._diag_sample 500 80     # 포스트 500개, 상품 80개
   ```
-- `python3 -m gonggu.maintenance` — 데이터 하우스키핑(2026-08-05, 대공사 3단계). append-only
-  체크포인트(link_resolution/period_backfill) 컴팩션(같은 key의 옛 줄 제거 — last-wins 규약이라
-  의미 보존), 30일 지난 llm_usage 월별 로테이션, 그리고 `ARCHIVE_AFTER_DAYS=30`처럼 지정한
-  경우에만 오래된 01/02 날짜 파일을 `data/archive/`로 gzip 이동. `gonggu.daily`가 마지막
-  단계로 자동 실행하며, resolve/rescan 실행 중에 단독으로 돌리지만 말 것.
 - `gonggu/_backfill_collapse_candidates.py` — 일회성 백필. 2026-07-29 결정("DB의
   `candidate_url`엔 항상 링크 1개만") 이전에 이미 적재되어 세미콜론으로 여러 후보가 남아있는
   기존 행을 한 번 훑어서 대표 URL 1개로 정리한다. 일일 파이프라인에는 포함하지 않음 —
