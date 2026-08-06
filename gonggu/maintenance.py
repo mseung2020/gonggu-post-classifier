@@ -40,7 +40,8 @@ import shutil
 from gonggu.common import ROOT, load_jsonl
 
 COMPACT_TARGETS = (ROOT / 'data/output/link_resolution.jsonl',
-                   ROOT / 'data/output/period_backfill.jsonl')
+                   ROOT / 'data/output/period_backfill.jsonl',
+                   ROOT / 'data/output/rescan_state.jsonl')
 USAGE_FILE = ROOT / 'data/output/llm_usage.jsonl'
 USAGE_ARCHIVE_DIR = ROOT / 'data/output/llm_usage_archive'
 # 01을 02보다 먼저(위 docstring의 재분류 폭탄 참고).

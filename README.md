@@ -213,19 +213,27 @@ dev_gongguking DB
 
 - **무엇**: 공구가 "시작전"일 때는 인포크 등에 아직 실제 구매 링크가 안 걸려 있어서
   `link_status='unresolved'`로 남는 경우가 많은데, "진행중"이 되면 그 링크가 채워지는
-  경우가 많습니다. 그래서 **지금 `gonggu_stage='진행중'`인데 아직 `unresolved`인 상품만**
-  골라서 4번(resolve_links)과 똑같은 판단/크롤링 로직(`resolve_product`)으로 다시
-  시도합니다.
+  경우가 많습니다. 그래서 4번(resolve_links)과 똑같은 판단/크롤링 로직(`resolve_product`)으로
+  다시 시도하되, **"전환 즉시 + 지수 백오프 + 은퇴" 스케줄**(2026-08-06 재공사)로 대상을
+  고릅니다: ① 진행중으로 새로 넘어온(한 번도 재탐색 안 해본) 상품은 무조건 당일, ②
+  `link_status='error'`(기술 실패)는 스케줄 무시하고 매일, ③ 그 외는 첫 시도 후 1→2→4→7일
+  간격(RESCAN_BACKOFF_DAYS)으로 상품당 최대 5회까지만 — 다 소진하면 은퇴(보류)합니다.
+  예전처럼 "진행중+미해석 전체"를 매일 다시 열면 풀이 쌓일수록 비용이 선형으로 늘고,
+  재시도 가치는 급감하기 때문("DM으로만 판매" 등은 몇 번을 열어도 안 바뀜)입니다.
+  시도 이력은 `data/output/rescan_state.jsonl` 체크포인트에 남깁니다(DB 스키마 무변경).
 - **입력**: DB에서 직접 조회(파일 안 거침 — `unresolved` 상품의 `candidate_url`엔 LLM이
   뽑은 원본 후보가 그대로 보존되어 있어서 재시도에 필요한 정보가 DB에 다 있음)
 - **출력**: `done`으로 바뀐 상품만 해당 행의 `candidate_url`/`link_status`를 UPDATE.
   여전히 `unresolved`면 그대로 둡니다. 동시에 `link_resolution.jsonl`에도 같은 키로
   결과를 append해서, 나중에 04_resolved를 다시 조립해도 이 재탐색 결과가 안 잊혀지게 합니다.
 - **명령**: `RESCAN_CONCURRENCY=6 python3 -m gonggu.rescan_inprogress` (`LIMIT=50`으로
-  소규모 테스트 가능)
+  소규모 테스트, `RESCAN_FORCE=1`이면 스케줄 무시하고 풀 전체 강제 재시도)
 - **알아둘 점**: **6번(`update_gonggu_stage.py`) 다음에 실행해야 합니다** — 오늘자
   "진행중" 상태가 먼저 확정돼 있어야 그걸 기준으로 대상을 고를 수 있습니다. resolve_links와
-  마찬가지로 동시에 두 개(또는 resolve_links와 동시에) 돌리지 말 것.
+  마찬가지로 동시에 두 개(또는 resolve_links와 동시에) 돌리지 말 것. 재공사 후 **첫 실행은
+  기존 풀 전체가 "신규전환"으로 잡혀 한 번 크게 돌고**, 그 뒤부터는 신규 유입 + 백오프
+  도래분만 돌아 물량이 급감합니다. 실행 시작 시 대상 분류(신규전환/에러/백오프 도래/쿨다운/
+  은퇴 건수)가 출력되므로 스케줄이 어떻게 동작하는지 매일 확인할 수 있습니다.
 
 ### 8. `fetch_yt_ppl.py` + `classify_yt_ppl.py` — 유튜브 PPL 공구 판별 (기존 파이프라인과 완전 독립)
 

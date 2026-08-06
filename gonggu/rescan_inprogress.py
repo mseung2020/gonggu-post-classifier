@@ -1,111 +1,122 @@
 #!/usr/bin/env python3
-"""5단계 보강: gonggu_stage='진행중'인데 link_status가 'unresolved'/'hold'인 상품만 골라 링크
-해석을 다시 시도한다. 시작전 단계에서는 인포크 등에 아직 구매 링크가 없어서 못 찾았을 뿐인데,
-진행중이 되면 실제로 링크가 채워지는 경우가 많아서(원준님 피드백 반영) 이 전이 시점을
-노려 재탐색한다. hold도 unresolved와 동일하게 취급한다(2026-07-29 결정) — hold도 결국
-candidate_url이 허브 URL 하나로 남아있는 경우가 많아서 재확인할 가치가 같다.
+"""5단계 보강: 링크를 아직 못 찾은 상품의 재탐색 — "전환 즉시 + 지수 백오프 + 은퇴" 스케줄
+(2026-08-06 재공사).
 
-link_status='error'는 위 두 상태와 성격이 달라 조건을 따로 둔다(2026-08-04 추가) — unresolved/
-hold는 "아직 링크가 없어서" 못 찾은 것이라 진행중 전환이라는 사업적 신호를 기다릴 이유가
-있지만, error는 크롤링/LLM 호출 자체가 실패한 순수 기술적 문제(예: DeepSeek 타임아웃 폭주)라
-gonggu_stage와 무관하게 재시도할 가치가 있다. 그래서 error는 진행중 여부를 안 따지고 무조건
-대상에 포함한다.
+왜 이렇게 바꿨나: 예전엔 "진행중+unresolved/hold 전체"를 매일 다시 열었는데, 그 풀이 계속
+쌓여서(수천 건) 매일 비용이 선형으로 늘었다. 그런데 재시도 가치는 시간이 지날수록 급감한다 —
+링크가 채워지는 결정적 순간은 '시작전→진행중' 전환 직후이고(원준님 피드백), "DM으로만 판매"
+"후보 전부 다른 상품" 같은 건 몇 번을 다시 열어도 안 바뀐다. 그래서:
 
-resolve_links의 실제 판단/크롤링 로직(resolve_product)과 안티봇 대응(도메인당 동시 접근
-제한 — browser.fetch()/redirect.follow_redirect() 내부의 domain_gate)을 그대로 재사용하고,
-워커 풀 배관은 crawl_pool.py 공용 모듈(2단계 B3), 플랫폼별 SQL은 platforms.py
-메타테이블(2단계 B4)을 쓴다. load_ready/link_resolution 파일을 거치지 않고 DB에서 직접
-대상을 뽑아 DB에 직접 반영한다. candidate_url은 성공/실패와 무관하게 항상 대표 URL 1개다
-(resolve_product가 반환하는 candidate_url 필드 참고) — 원본 다중 후보를 DB에 보존해뒀다가
-다시 꺼내 쓰는 방식이 아니라, 매번 그 시점의 candidate_url(대부분 링크인바이오 허브 URL)
-하나를 다시 열어봐서 "그 사이에 새 링크가 붙었는지"만 확인하는 것이 이 재탐색의 목적이다.
+  1. 신규 전환(한 번도 재탐색 안 해본 진행중 상품)  → 무조건 당일 재탐색
+  2. link_status='error'(크롤링/LLM 기술 실패)      → 스케줄 무시하고 매일 무조건 포함
+  3. 그 외(이미 시도했던 unresolved/hold)           → 백오프: 첫 시도 후 1일 → 2일 → 4일 →
+     7일 간격으로 총 (1+len(백오프))회까지만. 다 소진하면 은퇴(보류) — link_status가 바뀌기
+     전까지 다시 안 건드린다. 기본 백오프로 약 2주(통상 공구 기간)를 커버한다.
 
-link_resolution.jsonl에도 같은 키로 결과를 append해서, 정기 파이프라인이 나중에
-04_resolved를 다시 조립할 때 이 재탐색 결과가 잊히지 않게 한다(파일과 DB가 항상 같은
-진실을 가리키게 유지). 여전히 unresolved/hold면 그대로 둔다.
+상품별 시도 이력은 data/output/rescan_state.jsonl(append-only last-wins, backfill_period와
+같은 검증된 체크포인트 패턴)에 남긴다 — DB 스키마는 안 건드린다(다운스트림 개발자 안전).
+같은 이유로 예전의 updated_at 기반 "오늘 한 번만"(RESCAN_SKIP_TODAY)은 이 스케줄에 흡수되어
+제거됐다. 재공사 후 첫 실행은 기존 풀 전체가 "신규"로 잡혀 한 번 크게 돌고, 그 뒤부터
+스케줄에 따라 물량이 급감한다.
+
+resolve_links의 실제 판단/크롤링 로직(resolve_product)과 안티봇 대응(domain_gate)을 그대로
+재사용하고, 워커 풀 배관은 crawl_pool.py(2단계 B3), 플랫폼별 SQL은 platforms.py(2단계 B4).
+결과는 DB(candidate_url/link_status UPDATE)와 link_resolution.jsonl 양쪽에 반영해 파일과
+DB가 같은 진실을 가리키게 유지한다. candidate_url은 성공/실패와 무관하게 항상 대표 URL
+1개다(2026-07-29 결정).
 
 사용법:
-    python3 -m gonggu.rescan_inprogress            # 전체 대상
-    LIMIT=50 python3 -m gonggu.rescan_inprogress   # 앞에서 50건만(테스트용)
+    python3 -m gonggu.rescan_inprogress             # 스케줄 대상만(신규전환+에러+백오프 도래)
+    LIMIT=50 python3 -m gonggu.rescan_inprogress    # 앞에서 50건만(테스트용)
     RESCAN_CONCURRENCY=40 python3 -m gonggu.rescan_inprogress
-    RESCAN_SKIP_TODAY=0 python3 -m gonggu.rescan_inprogress   # 하루 제한 무시하고 강제로 전체 재시도
+    RESCAN_FORCE=1 python3 -m gonggu.rescan_inprogress      # 스케줄 무시, 풀 전체 강제 재시도
+    RESCAN_BACKOFF_DAYS=1,3,7 python3 -m gonggu.rescan_inprogress   # 백오프 간격 조정(일)
 
 RESCAN_CONCURRENCY는 "동시에 처리 중인 상품 수"지 "동시에 뜨는 크롬 수"가 아니다 — 실제
 브라우저 개수는 MAX_BROWSERS가 따로 제한한다(crawl_pool/browser.py 참고).
-
-RESCAN_SKIP_TODAY(기본 1) — 오늘 날짜 안에 이미 한 번 손댄(updated_at) 행은 대상에서 뺀다
-(2026-08-04 추가). 자정이 지나면 날짜가 바뀌어 자동으로 초기화된다 — 분 단위 쿨다운이 아니라
-"하루에 한 번"이라 계산이 단순하고, 오늘 도중에 이 스크립트를 몇 번을 중간에 멈추고 다시
-돌려도(예: DeepSeek 503 폭주 중 재시작 반복) 오늘 이미 시도했던 건은 다시 안 건드린다. 별도
-체크포인트 파일 없이 이미 있는 updated_at 컬럼(ON UPDATE CURRENT_TIMESTAMP)만 쓴다. 오늘 안에
-꼭 다시 시도해야 하면 RESCAN_SKIP_TODAY=0으로 끄고 돌릴 것.
 """
 import datetime
 import os
 import sys
+from collections import Counter
 
-from gonggu.common import DEEPSEEK_KEY, append_jsonl, connect_dst
+from gonggu.common import DEEPSEEK_KEY, ROOT, append_jsonl, connect_dst, load_jsonl
 from gonggu.crawl_pool import run_crawl_pool
 from gonggu.platforms import PLATFORMS, parent_ctx_from_row, product_update_link_sql
-from gonggu.resolve_links.config import (HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART,
-                                          MAX_BROWSERS, RESOLUTION_FILE)
+from gonggu.resolve_links.config import HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART, \
+    MAX_BROWSERS, RESOLUTION_FILE
 from gonggu.resolve_links.core import resolve_product
 from gonggu.resolve_links.httpfetch import stats as httpfetch_stats
 from gonggu.resolve_links.matching import product_key
 
 RESCAN_CONCURRENCY = int(os.environ.get('RESCAN_CONCURRENCY', '4'))
-RESCAN_SKIP_TODAY = os.environ.get('RESCAN_SKIP_TODAY', '1') != '0'
+RESCAN_FORCE = os.environ.get('RESCAN_FORCE', '0') == '1'
+# 첫 시도(전환 당일) 이후의 재시도 간격(일). 기본 1,2,4,7 → 상품당 최대 5회, 약 2주 커버.
+BACKOFF_DAYS = [int(d) for d in os.environ.get('RESCAN_BACKOFF_DAYS', '1,2,4,7').split(',') if d.strip()]
+STATE_FILE = ROOT / 'data/output/rescan_state.jsonl'
 
 
-def _cutoff_ts():
-    """RESCAN_SKIP_TODAY가 켜져 있으면 '오늘 00:00'을 돌려준다 — updated_at이 이보다 이르면
-    (=오늘 안 건드림) 대상에 포함(조건은 `updated_at < cutoff_ts`). 꺼져 있으면 사실상 모든
-    행이 조건을 통과하도록 아주 먼 미래 시각을 돌려준다(과거를 주면 정반대로 거의 아무것도
-    안 걸림 — 2026-08-04에 실측으로 잡은 버그). MySQL의 CURDATE()/NOW() 대신 파이썬의 오늘
-    날짜를 기준으로 계산해서 나머지 파이프라인(transform.py의 _compute_stage 등)과 같은
-    "오늘"의 기준을 쓴다."""
-    if not RESCAN_SKIP_TODAY:
-        return datetime.datetime(9999, 12, 31)
-    today = datetime.date.today()
-    return datetime.datetime(today.year, today.month, today.day)
+def next_due(attempts, today):
+    """attempts번째 시도를 마친 직후의 다음 예정일(ISO). 백오프를 다 썼으면 None(은퇴)."""
+    if attempts - 1 < len(BACKOFF_DAYS):
+        return (today + datetime.timedelta(days=BACKOFF_DAYS[attempts - 1])).isoformat()
+    return None
+
+
+def classify_target(status, rec, today_iso, force=False):
+    """이 상품을 이번 실행 대상에 넣을지 판단. 반환: (due 여부, 사유 라벨).
+
+    - error는 무조건 포함(기술 실패는 사업 신호를 기다릴 이유가 없음).
+    - 이력 없음 = 진행중이 된 뒤 한 번도 재탐색 안 해봄 → 신규전환, 무조건 포함.
+      (재탐색 이력은 이 스크립트가 실제로 시도했을 때만 생기므로, update_gonggu_stage가
+      오늘 '진행중'으로 넘긴 새 상품은 자동으로 이 분기에 들어온다.)
+    - next_due가 지났으면 백오프 도래, 남았으면 쿨다운, None이면 은퇴(보류)."""
+    if status == 'error':
+        return True, '에러(무조건)'
+    if force:
+        return True, '강제(RESCAN_FORCE)'
+    if rec is None:
+        return True, '신규전환'
+    nd = rec.get('next_due')
+    if nd is None:
+        return False, '은퇴(백오프 소진)'
+    if today_iso >= nd:
+        return True, '백오프 도래'
+    return False, '쿨다운 대기'
 
 
 def _select_sql(p):
-    """재탐색 대상 SELECT — 테이블/컬럼명은 platforms.py 메타에서(2단계 B4), WHERE 조건은
-    이 스크립트 고유(진행중+unresolved/hold, 또는 error 무조건 / 오늘 안 건드린 것만)."""
+    """재탐색 후보 SELECT — 테이블/컬럼명은 platforms.py 메타에서(2단계 B4). 스케줄 필터링은
+    파이썬(체크포인트)에서 하므로 SQL은 후보 풀 전체를 가져온다(SELECT 자체는 싸다 —
+    비싼 건 크롤링이고, 그건 스케줄이 줄여준다)."""
     parent_cols = ', '.join(f'p.{c}' for c in p.parent_ctx_cols)
     return f"""
 SELECT pp.id AS row_id, pp.product_name, pp.link_location, pp.url_type, pp.candidate_url,
-       pp.sort_order, {parent_cols}, p.classification_note
+       pp.sort_order, pp.link_status, {parent_cols}, p.classification_note
 FROM {p.product_table} pp
 JOIN {p.parent_table} p ON p.{p.id_col} = pp.{p.id_col}
-WHERE ((p.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold'))
-   OR pp.link_status = 'error')
-  AND pp.updated_at < %s
+WHERE (p.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold'))
+   OR pp.link_status = 'error'
 """
 
 
-# updated_at을 ON UPDATE CURRENT_TIMESTAMP 자동 트리거에만 맡기지 않고 NOW()로 직접 강제
-# 갱신한다(2026-08-05 추가) — MySQL은 UPDATE 문이 실행돼도 값이 실제로 하나도 안 바뀌면
-# 자동 트리거를 안 태운다. "크롤링할 후보 링크 없음"처럼 이번에도 똑같이 candidate_url=NULL,
-# link_status='unresolved'로 끝나는 항목은 값이 그대로라 updated_at이 안 갱신되고, 그러면
-# RESCAN_SKIP_TODAY가 "오늘 안 건드림"으로 착각해서 매번 다시 대상에 잡힌다(실측 확인 —
-# 실패가 반복되는 항목일수록 이 버그에 잘 걸림). SQL 생성은 platforms.product_update_link_sql.
+# updated_at을 NOW()로 직접 강제 갱신하는 이유(2026-08-05): MySQL은 값이 하나도 안 바뀌면
+# ON UPDATE 트리거를 안 태운다. SQL 생성은 platforms.product_update_link_sql.
 UPDATE_SQL = {code: product_update_link_sql(p) for code, p in PLATFORMS.items()}
 
 
-def _fetch_targets(conn, cutoff_ts):
-    targets = []
+def _fetch_candidates(conn):
+    out = []
     with conn.cursor() as cur:
         for code, p in PLATFORMS.items():
-            cur.execute(_select_sql(p), (cutoff_ts,))
+            cur.execute(_select_sql(p))
             for r in cur.fetchall():
                 parent = parent_ctx_from_row(p, r)
                 product = {'product_name': r['product_name'], 'link_location': r['link_location'],
                            'url_type': r['url_type'], 'candidate_url': r['candidate_url'],
                            'sort_order': r['sort_order']}
-                targets.append((code, parent, product, r['row_id']))
-    return targets
+                out.append((code, parent, product, r['row_id'], r['link_status']))
+    return out
 
 
 def main():
@@ -115,51 +126,69 @@ def main():
 
     conn = connect_dst()
     try:
-        targets = _fetch_targets(conn, _cutoff_ts())
+        candidates = _fetch_candidates(conn)
     finally:
         conn.close()
 
-    limit = int(os.environ.get('LIMIT', '0')) or len(targets)
+    state = load_jsonl(STATE_FILE)
+    today = datetime.date.today()
+    today_iso = today.isoformat()
+
+    targets, reasons = [], Counter()
+    for code, parent, product, row_id, link_status in candidates:
+        key = product_key(code, parent, product['sort_order'])
+        due, reason = classify_target(link_status, state.get(key), today_iso, force=RESCAN_FORCE)
+        reasons[reason] += 1
+        if due:
+            targets.append((code, parent, product, row_id, key))
+
+    due_total = len(targets)
+    limit = int(os.environ.get('LIMIT', '0')) or due_total
     targets = targets[:limit]
-    skip_note = '오늘 이미 시도한 건 제외' if RESCAN_SKIP_TODAY else '하루 제한 없이 전체'
+
+    breakdown = ' / '.join(f'{k} {v}' for k, v in reasons.most_common())
+    limit_note = f' (LIMIT으로 {due_total - len(targets)}건 보류)' if len(targets) < due_total else ''
+    print(f'재탐색 후보 풀 {len(candidates)}건 → 이번 실행 대상 {len(targets)}건{limit_note}')
+    print(f'  분류: {breakdown}')
     if not targets:
-        print(f'진행중+unresolved/hold 또는 error 재탐색 대상 0건 ({skip_note})')
+        print('  오늘은 재탐색할 것이 없습니다(신규 전환·에러·백오프 도래 건 없음).')
         return
 
     counters = {}
-    print(f'진행중+unresolved/hold 또는 error 재탐색 대상 {len(targets)}건({skip_note}) '
-          f'— 동시 워커 상한 {RESCAN_CONCURRENCY}개, 브라우저 상한 {MAX_BROWSERS}개, '
-          f'requests 패스트패스 {"ON" if HTTP_FAST_PATH else "OFF"}')
+    print(f'  — 동시 워커 상한 {RESCAN_CONCURRENCY}개, 브라우저 상한 {MAX_BROWSERS}개, '
+          f'requests 패스트패스 {"ON" if HTTP_FAST_PATH else "OFF"}, '
+          f'백오프 {BACKOFF_DAYS}일 (상품당 최대 {1 + len(BACKOFF_DAYS)}회)')
 
     def handle(ctx, target):
-        platform, parent, product, row_id = target
+        code, parent, product, row_id, key = target
         db = ctx.state  # 워커당 DB 커넥션 1개(pymysql 커넥션은 스레드 간 공유가 안전하지 않음)
         try:
-            res = resolve_product(ctx.page, platform, parent, product)
+            res = resolve_product(ctx.page, code, parent, product)
         except Exception as e:
             res = {'status': 'error', 'final_url': None, 'note': str(e)[:160]}
 
-        # 이 블록에서 뭐가 터지든(DB 접속 끊김, 예상 못 한 None 등) 이 상품 처리만 실패로
-        # 남기고 워커는 죽지 않게 한다(crawl_pool의 마지막 방어선과 별개로, 여기서 잡아야
-        # "저장 실패"를 카운터에 정확히 반영할 수 있다 — 2026-08-04 실측 사연은 위 docstring).
+        # 이 블록에서 뭐가 터지든 이 상품 처리만 실패로 남기고 워커는 죽지 않게 한다(2026-08-04 실측).
         try:
-            key = product_key(platform, parent, product['sort_order'])
-            # candidate_url은 상태와 무관하게 항상 단일 URL이길 기대하지만(2026-07-29 결정),
-            # 애초에 후보 자체가 없어서 res도 product도 둘 다 None인 경우가 있을 수 있다 —
-            # 그럴 땐 값을 지어내지 말고 그대로 NULL로 둔다.
             candidate_url = res.get('candidate_url') or product['candidate_url']
             new_candidate_url = candidate_url[:500] if candidate_url else None
 
             with ctx.lock:
-                # 크롤링/LLM 처리(수 초~수십 초)가 끝난 뒤에야 이 커넥션을 다시 쓰는 구조라,
-                # 그 사이 방화벽/DB의 idle 타임아웃으로 끊겨 있을 수 있다(실측, 2026-08-04 —
-                # "Lost connection to MySQL server during query" 대량 발생). ping으로 끊겼으면
-                # 자동 재연결부터 하고 실행한다.
+                # idle 타임아웃으로 끊긴 커넥션 자동 재연결(2026-08-04 실측 사연은 git 이력 참고)
                 db.ping(reconnect=True)
                 with db.cursor() as cur:
-                    cur.execute(UPDATE_SQL[platform], (new_candidate_url, res['status'], row_id))
+                    cur.execute(UPDATE_SQL[code], (new_candidate_url, res['status'], row_id))
                 db.commit()
                 append_jsonl(RESOLUTION_FILE, {**res, 'key': key})
+                # 스케줄 이력 갱신 — 여전히 못 찾은 상태(unresolved/hold)면 다음 예정일을 잡고,
+                # done이 됐거나 error면 next_due는 의미 없음(done은 후보에서 빠지고, error는
+                # 스케줄 무시 대상). attempts는 실제 크롤링 시도 횟수의 정직한 기록.
+                prev = state.get(key)
+                attempts = (prev.get('attempts', 0) if prev else 0) + 1
+                rec = {'key': key, 'attempts': attempts, 'checked_at': today_iso,
+                       'last_status': res['status'],
+                       'next_due': next_due(attempts, today) if res['status'] in ('unresolved', 'hold') else None}
+                state[key] = rec
+                append_jsonl(STATE_FILE, rec)
                 counters[res['status']] = counters.get(res['status'], 0) + 1
                 counters['_done_n'] = counters.get('_done_n', 0) + 1
                 shown = res.get('final_url') or res.get('note', '')
