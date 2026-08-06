@@ -1,4 +1,5 @@
 """Playwright 페이지 조작/파싱 원시 함수 — 판단(LLM) 없이 "페이지를 열어서 뭐가 있는지 본다"만 담당."""
+import os
 import re
 import threading
 import time
@@ -177,7 +178,11 @@ def _browser_fetch(page, url, wait_extra, referer):
 
 
 def new_context_page(pw):
-    browser = pw.chromium.launch(headless=True, args=[
+    # PW_HEADLESS=0 이면 실제 창을 띄운다(기본은 기존과 동일하게 headless) — 네이버처럼
+    # headless 자체를 탐지하는 의심이 있을 때 진단용(2026-08-06, 스마트스토어 429 조사).
+    # 대량 실행에서 켜면 창이 수십 개 뜨므로 진단/소량에서만 쓸 것.
+    headless = os.environ.get('PW_HEADLESS', '1') != '0'
+    browser = pw.chromium.launch(headless=headless, args=[
         '--disable-blink-features=AutomationControlled',
         '--disable-gpu',  # 스크린샷/렌더링 결과가 필요 없는 스크래핑이라 브라우저마다 따로 뜨는
                           # GPU 프로세스가 순수 낭비다(실측 확인, 2026-07-30 — ps에 브라우저 수만큼
@@ -185,7 +190,11 @@ def new_context_page(pw):
     ])
     ctx_kwargs = dict(user_agent=UA, locale='ko-KR', viewport={'width': 1360, 'height': 900},
                        extra_http_headers={'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'})
-    if AUTH_STATE_FILE.exists():
+    # PW_USE_AUTH=0 이면 저장된 네이버 로그인 세션을 싣지 않는다(익명 크롤링).
+    # 배경(2026-08-06 실측): 로그인 세션을 실은 접근만 스마트스토어가 429로 차단하는
+    # "계정 플래그" 상태가 확인됨 — 익명은 같은 IP·같은 브라우저로도 정상 응답. 이런 때
+    # 세션이 오히려 독이므로 끌 수 있게 한다. 기본은 기존과 동일(세션 사용).
+    if AUTH_STATE_FILE.exists() and os.environ.get('PW_USE_AUTH', '1') != '0':
         ctx_kwargs['storage_state'] = str(AUTH_STATE_FILE)
     ctx = browser.new_context(**ctx_kwargs)
     # 기본값이 Win32/en-US라 UA(Mac)·locale(ko-KR)이랑 안 맞으면 오히려 더 튀어서 맞춰준다.

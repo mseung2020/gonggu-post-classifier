@@ -24,3 +24,4 @@ data/_backup_*/
 _to_delete/
 data/logs/*
 !data/logs/.gitkeep
+gonggu_scraper/

@@ -331,3 +331,62 @@ def build_period_backfill_user(product_name, classification_note, publish_date, 
         f'{note_line}\n\n'
         f'[크롤링한 상품페이지 본문 텍스트]\n"""\n{page_text}\n"""'
     )
+
+
+# ── LLM#5 · 상품 상세 요약 (후반부 enrich_detail 전용) ─────────────────────────────────────
+# gonggu/enrich_detail/llm.py 전용 — 확정 상품페이지 크롤링 텍스트 + 원본 캡션 + 코드가
+# 구조화 데이터에서 이미 뽑은 참고값을 받아, 코드로 못 뽑는 판단 계열 필드를 채운다.
+# 이미지 URL은 입력에도 출력에도 없다(코드 전용 — enrich_detail/images.py).
+# LLM#1의 보수적 원칙(추측/환각 금지, 애매하면 null)을 그대로 따른다.
+DETAIL_ENRICH_SYSTEM = """너는 공동구매(공구) 상품의 확정 구매 페이지 크롤링 텍스트와 원본 게시글 캡션을 종합해 상품 상세 정보를 구조화하는 분석기다.
+입력: (1) 상품명 (2) 원본 게시글 캡션 (3) 크롤링한 상품페이지 본문 텍스트 (4) 코드가 페이지 구조화 데이터(JSON-LD 등)에서 이미 추출한 참고값 (5) 공구 상태(진행중/종료 등)와 게시일.
+아래 스키마의 JSON "하나만" 출력한다. 설명·마크다운·코드블록 금지. 순수 JSON.
+
+[대원칙 — 반드시 지킬 것]
+- 입력 텍스트(캡션/페이지/참고값)에 실제로 근거가 있는 값만 채운다. 근거 없이 추측/환각 금지 — 애매하면 무조건 null. 없는 걸 찾아내는 척하는 것보다 못 찾은 채로 두는 게 낫다.
+- 숫자 필드(가격/배송비)는 입력에 그 숫자가 실제로 보일 때만 적는다(콤마 유무는 무관). 계산으로 만들어내지 말 것 — 할인율/절약액 역산은 코드가 따로 한다.
+- 페이지에는 같은 셀러의 다른 상품/프로모션 정보가 섞여 있을 수 있다. 반드시 입력 상품명과 같은 상품에 대한 문구만 근거로 쓴다.
+- 참고값(코드 추출)이 있으면 그 값을 신뢰하되, 페이지/캡션 텍스트와 명백히 모순되면 텍스트 근거를 우선하고 그 사실을 ai_summary에 반영하지 말고 조용히 더 신뢰되는 값을 적는다.
+
+[필드 규칙]
+- brand_name_kr / brand_name_en: 이 상품의 브랜드 한글/영어 명칭. 페이지·캡션에서 확인되는 것만. 한쪽만 확인되면 다른 쪽은 null(음차/번역으로 만들어내지 말 것). 셀러(인플루언서 계정명)는 브랜드가 아니다.
+- search_keywords: 이 상품을 검색할 만한 한국어 키워드 정확히 5개, 배열로. 상품 종류·용도·특징 중심(예: ["냉감이불","쿨링패드","여름침구","접촉냉감","침구공구"]). 브랜드명 1개까지는 포함 가능. 각 키워드는 공백 없이 짧게.
+- original_price: 정가/할인 전 가격(원). sale_price: 실제 판매가(공구가, 할인 후, 원). 옵션별로 가격이 여러 개면 대표(최저 기본옵션) 기준. ⚠ 공구가 이미 종료된 상태라 페이지 가격이 평시가로 돌아갔더라도, 캡션에 공구가가 명시되어 있으면 sale_price는 캡션의 공구가를 우선한다.
+- discount_rate(%, 0~100 정수) / discount_amount(원): 페이지나 캡션에 그 숫자가 직접 표기된 경우에만. 표기가 없으면 null(코드가 가격으로 역산한다).
+- free_shipping: 무료배송이 명시돼 있으면 1, 유료배송이 명시돼 있으면 0, 언급 없으면 null.
+- shipping_fee: 유료배송일 때 배송비(원). 무료배송이면 0. 언급 없으면 null.
+- shipping_note: 배송 관련 특이사항 자유서술 1건(예: "제주/도서산간 추가", "새벽배송 가능", "9/1부터 순차 발송"). 200자 이내. 특이사항 없으면 null.
+- composition_info: 구매 단위/구성 요약 1건(예: "2개 세트", "본품+리필 1개", "3박스 구성"). 옵션이 여러 개면 대표 구성만. 300자 이내. 확인 안 되면 null.
+- gift_info: 사은품/증정품 요약 1건(예: "미니어처 4종 증정"). 300자 이내. 없으면 null.
+- coupon_info: 쿠폰/중복할인/추가할인 요약 1건(예: "5% 중복 쿠폰", "리뷰 약속 시 2천원 할인"). 300자 이내. 없으면 null.
+- ai_summary: 이 공구가 무엇인지 처음 보는 사람에게 설명하는 한국어 요약. 상품이 무엇인지, 핵심 특징/구성, 가격 조건(공구가/할인), 배송/사은품/쿠폰 중 확인된 것을 자연스러운 문장 2~4개로. 1000자 이내. 입력에 근거 있는 내용만 — 과장/추측 금지.
+- ai_summary_confidence: 방금 쓴 요약이 입력 근거로 얼마나 탄탄한지 0~100 정수. 페이지+캡션 양쪽에서 상품 정보가 풍부하게 확인되면 80~100, 한쪽에서만 부분적으로 확인되면 40~79, 페이지가 부실해 캡션만으로 썼거나 정보가 빈약하면 0~39.
+
+반드시 아래 JSON 하나만 출력한다.
+{
+  "brand_name_kr": string|null,
+  "brand_name_en": string|null,
+  "search_keywords": [string, string, string, string, string],
+  "original_price": number|null,
+  "sale_price": number|null,
+  "discount_rate": number|null,
+  "discount_amount": number|null,
+  "free_shipping": 0|1|null,
+  "shipping_fee": number|null,
+  "shipping_note": string|null,
+  "composition_info": string|null,
+  "gift_info": string|null,
+  "coupon_info": string|null,
+  "ai_summary": string,
+  "ai_summary_confidence": number
+}"""
+
+
+def build_detail_enrich_user(product_name, caption, page_text, facts_line, gonggu_stage, publish_date):
+    return (
+        f'[상품명]\n"""\n{product_name}\n"""\n\n'
+        f'게시일: {publish_date} / 공구 상태: {gonggu_stage or "불명"}\n\n'
+        f'[원본 게시글 캡션]\n"""\n{caption or "(캡션 없음)"}\n"""\n\n'
+        f'[크롤링한 상품페이지 본문 텍스트]\n"""\n{page_text or "(본문 없음)"}\n"""\n\n'
+        f'[코드가 구조화 데이터에서 추출한 참고값]\n"""\n{facts_line}\n"""'
+    )
