@@ -30,9 +30,11 @@ def select_targets_sql(p):
     """이번 실행 대상 상품 SELECT. 유튜브는 부모에 title 컬럼이 있어 LLM#4 입력으로 같이
     가져온다(인스타는 그 컬럼이 없어 빈 문자열로 통일)."""
     title_col = 'p.title AS parent_title,' if p.code == 'yt' else "'' AS parent_title,"
+    # gonggu_stage는 상품 단위로 이전됨(2026-08-06) → pp(상품)에서 읽는다. LLM#5에 "이 상품이
+    # 진행중/종료인지" 컨텍스트로 넘겨 종료 공구의 가격 판단 등에 쓴다.
     return f"""
 SELECT pp.id AS product_row_id, pp.product_name, pp.candidate_url,
-       p.{p.id_col} AS native_id, p.gonggu_stage, p.classification_note,
+       p.{p.id_col} AS native_id, pp.gonggu_stage, p.classification_note,
        {title_col} p.{p.date_col} AS publish_date,
        d.detail_status AS prev_status
 FROM {p.product_table} pp

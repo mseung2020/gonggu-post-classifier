@@ -84,10 +84,11 @@ def product_update_link_sql(p):
     return f'UPDATE {p.product_table} SET candidate_url = %s, link_status = %s, updated_at = NOW() WHERE id = %s'
 
 
-def parent_update_period_sql(p):
-    """backfill_period가 쓰는 UPDATE — 공구기간과 stage를 함께 갱신."""
-    return (f'UPDATE {p.parent_table} SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s '
-            f'WHERE {p.id_col}=%s')
+def product_update_period_sql(p):
+    """backfill_period가 쓰는 UPDATE — 상품의 공구기간과 stage를 함께 갱신(상품 이전, 2026-08-06).
+    기간/스테이지가 상품 단위로 옮겨졌으므로 product 테이블의 PK(id) 기준으로 UPDATE한다."""
+    return (f'UPDATE {p.product_table} SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s '
+            f'WHERE id=%s')
 
 
 def parent_ctx_from_row(p, row):

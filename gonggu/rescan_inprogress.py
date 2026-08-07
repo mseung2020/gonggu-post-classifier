@@ -90,12 +90,14 @@ def _select_sql(p):
     파이썬(체크포인트)에서 하므로 SQL은 후보 풀 전체를 가져온다(SELECT 자체는 싸다 —
     비싼 건 크롤링이고, 그건 스케줄이 줄여준다)."""
     parent_cols = ', '.join(f'p.{c}' for c in p.parent_ctx_cols)
+    # 진행중 판정을 상품(pp) 기준으로 — 기간/스테이지가 상품 단위로 이전됨(2026-08-06).
+    # 예고 달력처럼 같은 포스트라도 상품마다 진행 상태가 다르므로 상품 stage로 골라야 정확하다.
     return f"""
 SELECT pp.id AS row_id, pp.product_name, pp.link_location, pp.url_type, pp.candidate_url,
        pp.sort_order, pp.link_status, {parent_cols}, p.classification_note
 FROM {p.product_table} pp
 JOIN {p.parent_table} p ON p.{p.id_col} = pp.{p.id_col}
-WHERE (p.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold'))
+WHERE (pp.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold'))
    OR pp.link_status = 'error'
 """
 

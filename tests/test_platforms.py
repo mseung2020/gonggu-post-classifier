@@ -5,8 +5,8 @@ backfill_period.py에서 그대로 복사해온 것 — 이 테스트가 깨지�
 import re
 
 from gonggu.platforms import (PLATFORMS, native_id, parent_ctx_from_row, parent_exists_sql,
-                              parent_insert_sql, parent_update_period_sql, product_insert_sql,
-                              product_update_link_sql)
+                              parent_insert_sql, product_insert_sql, product_update_link_sql,
+                              product_update_period_sql)
 
 
 def norm(sql):
@@ -65,11 +65,12 @@ class TestEnrichSql:
         assert product_update_link_sql(PLATFORMS['yt']) == (
             'UPDATE gonggu_video_product SET candidate_url = %s, link_status = %s, updated_at = NOW() WHERE id = %s')
 
-    def test_backfill_parent_update(self):
-        assert parent_update_period_sql(PLATFORMS['ig']) == (
-            'UPDATE gonggu_post SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s WHERE post_id=%s')
-        assert parent_update_period_sql(PLATFORMS['yt']) == (
-            'UPDATE gonggu_video SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s WHERE video_id=%s')
+    def test_backfill_product_update(self):
+        # 기간/스테이지 상품 이전(2026-08-06): backfill이 parent가 아니라 product를 PK(id)로 UPDATE.
+        assert product_update_period_sql(PLATFORMS['ig']) == (
+            'UPDATE gonggu_post_product SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s WHERE id=%s')
+        assert product_update_period_sql(PLATFORMS['yt']) == (
+            'UPDATE gonggu_video_product SET gonggu_start_date=%s, gonggu_end_date=%s, gonggu_stage=%s WHERE id=%s')
 
 
 class TestHelpers:

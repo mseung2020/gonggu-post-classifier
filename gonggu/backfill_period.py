@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""보강: 캡션에 공구기간이 없어 gonggu_stage='판단불가'로 남은 건 중, 상품이 정확히 1개이고
-그 상품의 링크가 이미 link_status='done'으로 확정된 것만 골라 그 확정 상품페이지를 크롤링해서
-페이지 안에 이 상품의 공구기간이 명시되어 있는지 LLM으로 찾는다. 찾으면 gonggu_start_date/
+"""보강: 캡션에 공구기간이 없어 상품 gonggu_stage='판단불가'로 남은 상품 중, 그 상품의 링크가
+이미 link_status='done'으로 확정된 것을 골라 그 확정 상품페이지를 크롤링해서 페이지 안에 이
+상품의 공구기간이 명시되어 있는지 LLM으로 찾는다. 찾으면 그 상품의 gonggu_start_date/
 gonggu_end_date와 gonggu_stage를 함께 갱신한다.
 
 ⚠ 보수적 원칙(기존 데이터 절대 훼손 안 함):
-- 대상 자체가 '판단불가'(gonggu_start_date/end_date 둘 다 NULL)뿐이라, 이미 날짜가 하나라도
-  있는 행(시작전/진행중/종료)은 조회조차 되지 않는다 — 기존 값을 덮어쓸 여지가 구조적으로 없다.
-- 상품이 2개 이상인 포스트/영상은 스코프 밖이다. gonggu_start_date/end_date는 상품이 아니라
-  포스트/영상(parent) 단위 컬럼인데, 상품이 여럿이면 원칙적으로 "정말 서로 무관한 공구가
-  병렬로 나열된" 경우라(README 참고) 그중 한 상품 페이지의 기간을 포스트 전체 기간에 넣는 게
-  개념적으로 틀리기 때문이다.
+- 대상 자체가 상품 stage='판단불가'(그 상품의 gonggu_start_date/end_date 둘 다 NULL)뿐이라, 이미
+  날짜가 있는 상품은 조회조차 되지 않는다 — 기존 값을 덮어쓸 여지가 구조적으로 없다.
+- 기간/스테이지가 상품 단위로 이전됨(2026-08-06) → 상품마다 개별 기간을 갖는다. 예전엔 "상품이
+  정확히 1개인 포스트만" 대상으로 제한했는데(기간이 포스트 단위라 다중상품에서 어느 상품 기준인지
+  모호했음), 이제 상품 단위라 그 제약이 필요 없다 — 예고 달력처럼 다중상품인 게시물의 각 상품도
+  자기 확정 페이지에서 기간을 따로 찾을 수 있다.
 - candidate_url은 링크인바이오 허브가 아니라 resolve_links가 이미 "이 상품이 맞다"고 LLM#3로
   검증한 최종 상품페이지다(link_status='done'이 되는 순간 candidate_url이 final_url로 교체됨 —
   resolve_links/core.py 참고). 허브 페이지보다 오매칭 위험이 훨씬 적어서 이 페이지를 쓴다.
@@ -39,7 +39,7 @@ import sys
 
 from gonggu.common import DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, connect_dst, load_jsonl
 from gonggu.crawl_pool import run_crawl_pool
-from gonggu.platforms import PLATFORMS, parent_update_period_sql
+from gonggu.platforms import PLATFORMS, product_update_period_sql
 from gonggu.prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
 from gonggu.resolve_links.browser import fetch
 from gonggu.resolve_links.config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS
@@ -52,20 +52,18 @@ CHECKPOINT_FILE = ROOT / 'data/output/period_backfill.jsonl'
 
 
 def _select_sql(p):
-    """상품이 정확히 1개인 포스트/영상만 대상(위 docstring 참고) — 서브쿼리로 그 부모에 달린
-    상품 총개수를 세서 1인 것만 남긴다. 테이블/컬럼명은 platforms.py 메타에서(2단계 B4)."""
+    """상품 stage='판단불가' & link_status='done'인 상품. 기간이 상품 단위로 이전돼(2026-08-06)
+    '상품 1개' 제약이 사라졌다 — 상품마다 개별 기간을 갖기 때문. 테이블/컬럼명은 platforms.py에서."""
     parent_cols = ', '.join(f'p.{c}' for c in p.parent_ctx_cols)
     return f"""
-SELECT {parent_cols}, p.classification_note,
-       pp.product_name, pp.candidate_url
-FROM {p.parent_table} p
-JOIN {p.product_table} pp ON pp.{p.id_col} = p.{p.id_col}
-WHERE p.gonggu_stage = '판단불가' AND pp.link_status = 'done'
-  AND (SELECT COUNT(*) FROM {p.product_table} pp2 WHERE pp2.{p.id_col} = p.{p.id_col}) = 1
+SELECT pp.id AS row_id, pp.product_name, pp.candidate_url, {parent_cols}, p.classification_note
+FROM {p.product_table} pp
+JOIN {p.parent_table} p ON p.{p.id_col} = pp.{p.id_col}
+WHERE pp.gonggu_stage = '판단불가' AND pp.link_status = 'done'
 """
 
 
-UPDATE_SQL = {code: parent_update_period_sql(p) for code, p in PLATFORMS.items()}
+UPDATE_SQL = {code: product_update_period_sql(p) for code, p in PLATFORMS.items()}
 
 
 def _fetch_targets(conn):
@@ -74,7 +72,8 @@ def _fetch_targets(conn):
         for code, p in PLATFORMS.items():
             cur.execute(_select_sql(p))
             for r in cur.fetchall():
-                targets.append((code, f"{code}:{r[p.id_col]}", r))
+                # 체크포인트 key는 상품 단위(native_id#row_id) — 같은 포스트라도 상품마다 따로.
+                targets.append((code, f"{code}:{r[p.id_col]}#{r['row_id']}", r))
     return targets
 
 
@@ -125,7 +124,7 @@ def main():
     limit = int(os.environ.get('LIMIT', '0')) or len(eligible)
     targets = eligible[:limit]
     limit_skipped = len(eligible) - len(targets)
-    print(f'판단불가 + 단일상품 + link_status=done 대상 {len(raw_targets)}건 중 이번 실행 {len(targets)}건 '
+    print(f'판단불가 상품(link_status=done) 대상 {len(raw_targets)}건 중 이번 실행 {len(targets)}건 '
           f'(체크포인트로 스킵 {checkpoint_skipped}건, LIMIT으로 보류 {limit_skipped}건, '
           f'동시 워커 상한 {CONCURRENCY}개, 브라우저 상한 {MAX_BROWSERS}개)')
     if not targets:
@@ -161,7 +160,7 @@ def main():
                 stage = _compute_stage(start, end)
                 db.ping(reconnect=True)
                 with db.cursor() as cur:
-                    cur.execute(UPDATE_SQL[platform], (start, end, stage, r[p.id_col]))
+                    cur.execute(UPDATE_SQL[platform], (start, end, stage, r['row_id']))
                 db.commit()
             checkpoint[key] = result
             append_jsonl(CHECKPOINT_FILE, result)
