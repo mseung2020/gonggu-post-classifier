@@ -13,31 +13,34 @@ def norm(sql):
     return re.sub(r'\s+', ' ', sql).strip()
 
 
+# 기간/스테이지를 포스트→상품 단위로 이전(대공사 2026-08-06): parent INSERT에서 gonggu_start/
+# end/stage 빠지고 is_calendar_feed 추가, product INSERT에 gonggu_start/end/stage 추가.
 LEGACY_INSERT_VIDEO = """
 INSERT INTO gonggu_video
-    (video_id, channel_id, title, video_url, external_url, publishDate, gonggu_start_date,
-     gonggu_end_date, gonggu_stage, classification_note)
+    (video_id, channel_id, title, video_url, external_url, publishDate, is_calendar_feed,
+     classification_note)
 VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(external_url)s, %(publishDate)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s, %(classification_note)s)
+        %(is_calendar_feed)s, %(classification_note)s)
 """
 LEGACY_INSERT_POST = """
 INSERT INTO gonggu_post
-    (post_id, user_id, url, publish_date, gonggu_start_date, gonggu_end_date, gonggu_stage,
-     classification_note)
+    (post_id, user_id, url, publish_date, is_calendar_feed, classification_note)
 VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
-        %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s, %(classification_note)s)
+        %(is_calendar_feed)s, %(classification_note)s)
 """
 LEGACY_INSERT_VIDEO_PRODUCT = """
 INSERT INTO gonggu_video_product
-    (video_id, product_name, link_location, url_type, candidate_url, link_status, sort_order)
+    (video_id, product_name, link_location, url_type, candidate_url, link_status, sort_order,
+     gonggu_start_date, gonggu_end_date, gonggu_stage)
 VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
-        %(link_status)s, %(sort_order)s)
+        %(link_status)s, %(sort_order)s, %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s)
 """
 LEGACY_INSERT_POST_PRODUCT = """
 INSERT INTO gonggu_post_product
-    (post_id, product_name, link_location, url_type, candidate_url, link_status, sort_order)
+    (post_id, product_name, link_location, url_type, candidate_url, link_status, sort_order,
+     gonggu_start_date, gonggu_end_date, gonggu_stage)
 VALUES (%(post_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
-        %(link_status)s, %(sort_order)s)
+        %(link_status)s, %(sort_order)s, %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s)
 """
 
 

@@ -72,17 +72,25 @@ def _valid_date(s):
         return None
 
 
-def _product_row(p, sort_order):
+def _product_row(p, sort_order, fallback_start=None, fallback_end=None):
     loc = p.get('link_location')
     if loc not in VALID_LINK_LOCATIONS:
         loc = '링크없음_불명'
     urls = [u for u in (p.get('urls') or []) if u]
+    # 공구기간/스테이지는 상품(product) 단위로 이전됨(대공사 2026-08-06). 상품별 기간(신 스키마)을
+    # 우선 읽고, 없으면 포스트 전체 기간(구 스키마 classification.period_*)을 폴백으로 각 상품에
+    # 적용한다 — 단일상품은 정확하고, 기존 02_classified를 --full로 재계산할 때도 호환된다.
+    start = _valid_date(p.get('period_start')) or fallback_start
+    end = _valid_date(p.get('period_end')) or fallback_end
     return {
         'product_name': (p.get('name') or '').strip()[:300],
         'link_location': loc,
         'url_type': p.get('url_type') if p.get('url_type') and p.get('url_type') != '없음' else None,
         'candidate_url': ';'.join(urls)[:500] if urls else None,
         'sort_order': sort_order,
+        'gonggu_start_date': start,
+        'gonggu_end_date': end,
+        'gonggu_stage': _compute_stage(start, end),
     }
 
 
@@ -103,11 +111,14 @@ def transform_one(post):
     if is_affiliate_ranking(post.get('description'), all_urls):
         return None, None, '제휴 광고성 다중 링크(TOP N 리뷰)'
 
-    product_rows = [_product_row(p, i) for i, p in enumerate(raw_products)]
+    # 상품별 기간(신 스키마) 우선, 포스트 전체 기간(구 스키마)은 폴백으로 각 상품에 적용.
+    fb_start = _valid_date(lc.get('period_start'))
+    fb_end = _valid_date(lc.get('period_end'))
+    product_rows = [_product_row(p, i, fb_start, fb_end) for i, p in enumerate(raw_products)]
 
-    gonggu_start = _valid_date(lc.get('period_start'))
-    gonggu_end = _valid_date(lc.get('period_end'))
-    gonggu_stage = _compute_stage(gonggu_start, gonggu_end)
+    # 기간/스테이지는 parent가 아니라 product에 있다(완전 이전). parent에는 이 게시물이 여러
+    # 공구를 나열한 예고 달력인지(is_calendar_feed)만 둔다.
+    is_calendar = 1 if lc.get('is_calendar_feed') else 0
     note = (lc.get('pattern_note') or '').strip()[:500] or None
 
     if post['platform'] == 'ig':
@@ -116,9 +127,7 @@ def transform_one(post):
             'user_id': post['user_id'],
             'url': post.get('url'),
             'publish_date': post['publish_date'],
-            'gonggu_start_date': gonggu_start,
-            'gonggu_end_date': gonggu_end,
-            'gonggu_stage': gonggu_stage,
+            'is_calendar_feed': is_calendar,
             'classification_note': note,
         }
     else:
@@ -128,9 +137,7 @@ def transform_one(post):
             'title': post.get('title'),
             'video_url': post.get('video_url'),
             'publishDate': post['publishDate'],
-            'gonggu_start_date': gonggu_start,
-            'gonggu_end_date': gonggu_end,
-            'gonggu_stage': gonggu_stage,
+            'is_calendar_feed': is_calendar,
             'classification_note': note,
         }
     return parent, product_rows, None

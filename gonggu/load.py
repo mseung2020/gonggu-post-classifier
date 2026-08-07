@@ -73,11 +73,15 @@ def load_item(cur, code, parent, products):
         return False
     # 유튜브: 캡션에 링크가 있던 영상은 채널 정보란까지 긁어볼 필요가 없어서 external_url이
     # 없을 수 있어 기본값 None을 깔아준다(인스타 INSERT에는 이 컬럼이 없어 그냥 무시됨).
-    cur.execute(parent_insert_sql(p), {'external_url': None, **parent})
+    # is_calendar_feed도 스키마 개편 전(2026-08-06)에 만들어진 옛 03 파일엔 없을 수 있어 기본 0.
+    cur.execute(parent_insert_sql(p), {'external_url': None, 'is_calendar_feed': 0, **parent})
     for prod in products:
-        # resolve_links를 안 거친 03_load_ready로 돌아가는 경우 link_status 키가 없을 수
-        # 있어 기본값 None을 깔아준다. FK 컬럼명은 부모의 자연키 이름 그대로(id_col).
-        cur.execute(product_insert_sql(p), {'link_status': None, **prod, p.id_col: key})
+        # resolve_links를 안 거친 03_load_ready로 돌아가는 경우 link_status 키가 없을 수 있고,
+        # 스키마 개편 전 옛 03 파일엔 상품별 기간 필드가 없을 수 있어 기본값 None을 깔아준다.
+        # FK 컬럼명은 부모의 자연키 이름 그대로(id_col).
+        cur.execute(product_insert_sql(p),
+                    {'link_status': None, 'gonggu_start_date': None, 'gonggu_end_date': None,
+                     'gonggu_stage': None, **prod, p.id_col: key})
     return True
 
 

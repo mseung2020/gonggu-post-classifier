@@ -35,8 +35,7 @@ PLATFORMS = {
         id_col='post_id',
         date_col='publish_date',
         parent_insert_cols=('post_id', 'user_id', 'url', 'publish_date',
-                            'gonggu_start_date', 'gonggu_end_date', 'gonggu_stage',
-                            'classification_note'),
+                            'is_calendar_feed', 'classification_note'),
         parent_ctx_cols=('post_id', 'user_id', 'url', 'publish_date'),
     ),
     'yt': Platform(
@@ -46,15 +45,16 @@ PLATFORMS = {
         id_col='video_id',
         date_col='publishDate',
         parent_insert_cols=('video_id', 'channel_id', 'title', 'video_url', 'external_url',
-                            'publishDate', 'gonggu_start_date', 'gonggu_end_date', 'gonggu_stage',
-                            'classification_note'),
+                            'publishDate', 'is_calendar_feed', 'classification_note'),
         parent_ctx_cols=('video_id', 'channel_id', 'video_url', 'publishDate'),
     ),
 }
 
 # 상품 테이블 컬럼은 두 플랫폼이 완전히 같다(FK 컬럼명만 id_col로 다름).
+# 공구기간/스테이지는 포스트가 아니라 상품 단위로 이전됨(대공사 2026-08-06).
 PRODUCT_INSERT_COLS = ('product_name', 'link_location', 'url_type', 'candidate_url',
-                       'link_status', 'sort_order')
+                       'link_status', 'sort_order',
+                       'gonggu_start_date', 'gonggu_end_date', 'gonggu_stage')
 
 
 def native_id(code, parent):

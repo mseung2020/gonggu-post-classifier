@@ -96,12 +96,42 @@ class TestTransformOneGates:
         _, _, reject = transform_one(post)
         assert reject and '제휴' in reject
 
-    def test_accepted_builds_parent_and_stage(self):
-        post = self._post(is_gonggu=True, period_start='2026-08-01', period_end='2026-08-07',
+    def test_accepted_builds_parent_and_product_stage(self):
+        # 기간/스테이지는 상품 단위로 이전됨 — 상품에 period, parent엔 is_calendar_feed.
+        post = self._post(is_gonggu=True, is_calendar_feed=False,
                           products=[{'name': '냄비', 'link_location': '설명_프로필안내',
-                                     'url_type': '링크모음', 'urls': ['https://litt.ly/x']}])
+                                     'url_type': '링크모음', 'urls': ['https://litt.ly/x'],
+                                     'period_start': '2026-08-01', 'period_end': '2026-08-07'}])
         parent, products, reject = transform_one(post)
         assert reject is None
         assert parent['post_id'] == 'P1'
-        assert parent['gonggu_stage'] == '진행중'
+        assert parent['is_calendar_feed'] == 0
+        assert 'gonggu_stage' not in parent          # parent엔 더 이상 기간/스테이지 없음
+        assert products[0]['gonggu_stage'] == '진행중'
+        assert products[0]['gonggu_start_date'] == '2026-08-01'
+        assert products[0]['gonggu_end_date'] == '2026-08-07'
         assert products[0]['candidate_url'] == 'https://litt.ly/x'
+
+    def test_calendar_feed_products_have_own_periods(self):
+        # 달력 피드: 상품마다 다른 기간. is_calendar_feed=1.
+        post = self._post(is_gonggu=True, is_calendar_feed=True, products=[
+            {'name': '마이키즈', 'link_location': '링크없음_불명', 'urls': [],
+             'period_start': '2026-08-01', 'period_end': '2026-08-15'},
+            {'name': '라무르', 'link_location': '링크없음_불명', 'urls': [],
+             'period_start': '2026-08-04', 'period_end': '2026-08-14'}])
+        parent, products, reject = transform_one(post)
+        assert reject is None
+        assert parent['is_calendar_feed'] == 1
+        assert products[0]['gonggu_end_date'] == '2026-08-15'
+        assert products[1]['gonggu_start_date'] == '2026-08-04'
+        assert products[0]['gonggu_stage'] == '진행중' and products[1]['gonggu_stage'] == '진행중'
+
+    def test_product_period_falls_back_to_post_level(self):
+        # 구 스키마(포스트 전체 period, 상품에 period 없음)도 폴백으로 각 상품에 적용.
+        post = self._post(is_gonggu=True, period_start='2026-08-01', period_end='2026-08-07',
+                          products=[{'name': '냄비', 'link_location': '설명_직접링크',
+                                     'url_type': '없음', 'urls': []}])
+        _, products, reject = transform_one(post)
+        assert reject is None
+        assert products[0]['gonggu_start_date'] == '2026-08-01'
+        assert products[0]['gonggu_stage'] == '진행중'
