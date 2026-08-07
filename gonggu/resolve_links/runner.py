@@ -49,6 +49,12 @@ def build_resolved_file(items, resolutions):
             np['link_status'] = res.get('status') if res else None
             if res and res.get('candidate_url'):
                 np['candidate_url'] = res['candidate_url'][:500]
+            # link_note = 이 상태가 왜 나왔는지(LLM#3의 reason 또는 "후보 링크 없음/로그인월
+            # 차단/상품명 너무 일반적" 같은 결정적 사유). 이미 core.py가 상품별로 만들어 두는
+            # 것을 DB 상품 행까지 실어 나른다(파일에만 있던 걸 건바이건으로 보존). VARCHAR(255)
+            # 안전하게 자른다(core.py에서 이미 짧게 잘리지만 방어적).
+            note = res.get('note') if res else None
+            np['link_note'] = note[:255] if note else None
             new_products.append(np)
         out.append({**item, 'products': new_products})
     # items+resolutions로 매번 전체를 다시 조립하므로, 재계산 후 특정 날짜에 남는 레코드가

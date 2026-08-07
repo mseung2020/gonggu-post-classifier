@@ -14,16 +14,17 @@
      전까지 다시 안 건드린다. 기본 백오프로 약 2주(통상 공구 기간)를 커버한다.
 
 상품별 시도 이력은 data/output/rescan_state.jsonl(append-only last-wins, backfill_period와
-같은 검증된 체크포인트 패턴)에 남긴다 — DB 스키마는 안 건드린다(다운스트림 개발자 안전).
+같은 검증된 체크포인트 패턴)에 남긴다 — 시도 이력 때문에 DB 스키마에 컬럼을 더하지 않는다
+(마이그레이션 없이 파일 체크포인트로 끝내는 편이 안전하고, DB엔 확정 결과만 쓴다).
 같은 이유로 예전의 updated_at 기반 "오늘 한 번만"(RESCAN_SKIP_TODAY)은 이 스케줄에 흡수되어
 제거됐다. 재공사 후 첫 실행은 기존 풀 전체가 "신규"로 잡혀 한 번 크게 돌고, 그 뒤부터
 스케줄에 따라 물량이 급감한다.
 
 resolve_links의 실제 판단/크롤링 로직(resolve_product)과 안티봇 대응(domain_gate)을 그대로
 재사용하고, 워커 풀 배관은 crawl_pool.py(2단계 B3), 플랫폼별 SQL은 platforms.py(2단계 B4).
-결과는 DB(candidate_url/link_status UPDATE)와 link_resolution.jsonl 양쪽에 반영해 파일과
-DB가 같은 진실을 가리키게 유지한다. candidate_url은 성공/실패와 무관하게 항상 대표 URL
-1개다(2026-07-29 결정).
+결과는 DB(candidate_url/link_status/link_note UPDATE)와 link_resolution.jsonl 양쪽에 반영해
+파일과 DB가 같은 진실을 가리키게 유지한다(link_note = 왜 이 상태인지, 상품 이전 2026-08-07로
+DB 상품 행에도 남긴다). candidate_url은 성공/실패와 무관하게 항상 대표 URL 1개다(2026-07-29 결정).
 
 사용법:
     python3 -m gonggu.rescan_inprogress             # 스케줄 대상만(신규전환+에러+백오프 도래)
@@ -178,7 +179,9 @@ def main():
                 # idle 타임아웃으로 끊긴 커넥션 자동 재연결(2026-08-04 실측 사연은 git 이력 참고)
                 db.ping(reconnect=True)
                 with db.cursor() as cur:
-                    cur.execute(UPDATE_SQL[code], (new_candidate_url, res['status'], row_id))
+                    note = res.get('note')
+                    cur.execute(UPDATE_SQL[code],
+                                (new_candidate_url, res['status'], note[:255] if note else None, row_id))
                 db.commit()
                 append_jsonl(RESOLUTION_FILE, {**res, 'key': key})
                 # 스케줄 이력 갱신 — 여전히 못 찾은 상태(unresolved/hold)면 다음 예정일을 잡고,

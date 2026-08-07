@@ -81,7 +81,7 @@ def load_item(cur, code, parent, products):
         # FK 컬럼명은 부모의 자연키 이름 그대로(id_col).
         cur.execute(product_insert_sql(p),
                     {'link_status': None, 'gonggu_start_date': None, 'gonggu_end_date': None,
-                     'gonggu_stage': None, **prod, p.id_col: key})
+                     'gonggu_stage': None, 'link_note': None, **prod, p.id_col: key})
     return True
 
 

@@ -54,7 +54,8 @@ PLATFORMS = {
 # 공구기간/스테이지는 포스트가 아니라 상품 단위로 이전됨(대공사 2026-08-06).
 PRODUCT_INSERT_COLS = ('product_name', 'link_location', 'url_type', 'candidate_url',
                        'link_status', 'sort_order',
-                       'gonggu_start_date', 'gonggu_end_date', 'gonggu_stage')
+                       'gonggu_start_date', 'gonggu_end_date', 'gonggu_stage',
+                       'link_note')
 
 
 def native_id(code, parent):
@@ -79,9 +80,10 @@ def product_insert_sql(p):
 
 
 def product_update_link_sql(p):
-    """rescan이 쓰는 UPDATE — updated_at을 NOW()로 강제 갱신하는 이유는
-    rescan_inprogress.py 상단 주석 참고(값이 안 바뀌면 자동 트리거가 안 탐)."""
-    return f'UPDATE {p.product_table} SET candidate_url = %s, link_status = %s, updated_at = NOW() WHERE id = %s'
+    """rescan이 쓰는 UPDATE — 재탐색으로 상태가 바뀌면 candidate_url/link_status와 함께
+    link_note(왜 이 상태인지, LLM#3/결정적 사유)도 같이 갱신한다. updated_at을 NOW()로
+    강제 갱신하는 이유는 rescan_inprogress.py 상단 주석 참고(값이 안 바뀌면 자동 트리거가 안 탐)."""
+    return f'UPDATE {p.product_table} SET candidate_url = %s, link_status = %s, link_note = %s, updated_at = NOW() WHERE id = %s'
 
 
 def product_update_period_sql(p):

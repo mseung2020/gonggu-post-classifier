@@ -15,6 +15,7 @@ def norm(sql):
 
 # 기간/스테이지를 포스트→상품 단위로 이전(대공사 2026-08-06): parent INSERT에서 gonggu_start/
 # end/stage 빠지고 is_calendar_feed 추가, product INSERT에 gonggu_start/end/stage 추가.
+# link_note(링크 판단 이유) product INSERT/UPDATE에 추가(2026-08-07).
 LEGACY_INSERT_VIDEO = """
 INSERT INTO gonggu_video
     (video_id, channel_id, title, video_url, external_url, publishDate, is_calendar_feed,
@@ -31,16 +32,18 @@ VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
 LEGACY_INSERT_VIDEO_PRODUCT = """
 INSERT INTO gonggu_video_product
     (video_id, product_name, link_location, url_type, candidate_url, link_status, sort_order,
-     gonggu_start_date, gonggu_end_date, gonggu_stage)
+     gonggu_start_date, gonggu_end_date, gonggu_stage, link_note)
 VALUES (%(video_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
-        %(link_status)s, %(sort_order)s, %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s)
+        %(link_status)s, %(sort_order)s, %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s,
+        %(link_note)s)
 """
 LEGACY_INSERT_POST_PRODUCT = """
 INSERT INTO gonggu_post_product
     (post_id, product_name, link_location, url_type, candidate_url, link_status, sort_order,
-     gonggu_start_date, gonggu_end_date, gonggu_stage)
+     gonggu_start_date, gonggu_end_date, gonggu_stage, link_note)
 VALUES (%(post_id)s, %(product_name)s, %(link_location)s, %(url_type)s, %(candidate_url)s,
-        %(link_status)s, %(sort_order)s, %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s)
+        %(link_status)s, %(sort_order)s, %(gonggu_start_date)s, %(gonggu_end_date)s, %(gonggu_stage)s,
+        %(link_note)s)
 """
 
 
@@ -60,10 +63,11 @@ class TestLoadSql:
 
 class TestEnrichSql:
     def test_rescan_product_update(self):
+        # link_note 추가(2026-08-07): 재탐색으로 상태가 바뀌면 이유도 같이 갱신.
         assert product_update_link_sql(PLATFORMS['ig']) == (
-            'UPDATE gonggu_post_product SET candidate_url = %s, link_status = %s, updated_at = NOW() WHERE id = %s')
+            'UPDATE gonggu_post_product SET candidate_url = %s, link_status = %s, link_note = %s, updated_at = NOW() WHERE id = %s')
         assert product_update_link_sql(PLATFORMS['yt']) == (
-            'UPDATE gonggu_video_product SET candidate_url = %s, link_status = %s, updated_at = NOW() WHERE id = %s')
+            'UPDATE gonggu_video_product SET candidate_url = %s, link_status = %s, link_note = %s, updated_at = NOW() WHERE id = %s')
 
     def test_backfill_product_update(self):
         # 기간/스테이지 상품 이전(2026-08-06): backfill이 parent가 아니라 product를 PK(id)로 UPDATE.
