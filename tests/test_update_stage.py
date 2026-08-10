@@ -1,4 +1,5 @@
-"""update_gonggu_stage — '시작 후 N일 경과 & 종료일 없음 → 강제 종료' 규칙(2026-08-06)."""
+"""update_gonggu_stage — '시작 후 N일 경과 & 종료일 없음 → 강제 종료' 규칙(2026-08-06 도입,
+c9e8146 상품 이전 리팩터링에서 유실 → 2026-08-07 복원)."""
 import pytest
 
 import gonggu.update_gonggu_stage as us

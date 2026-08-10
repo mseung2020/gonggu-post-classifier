@@ -31,17 +31,12 @@ dev_gongguking DB
 ──── 여기서부터는 "이미 DB에 들어간 것"을 매일 다시 손보는 보강 단계 ────
 
    6. update_gonggu_stage.py  — gonggu_stage를 오늘 날짜 기준으로 갱신(시작전→진행중→종료)
-   7. rescan_inprogress.py    — "진행중"인데 아직 링크를 못 찾은(unresolved/hold/error) 상품만 재탐색
-   9. backfill_period.py      — '판단불가' 중 링크가 확정된 단일상품만 상품페이지를 크롤링해 공구기간 백필
-  10. maintenance.py          — 체크포인트 컴팩션·llm_usage 로테이션 등 데이터 하우스키핑
-
-──── 이 전체(6→1→8→2→3→4→5→7→9→10)를 매일 한 번, python3 -m gonggu.daily 로 실행 ────
+   7. rescan_inprogress.py    — "진행중"인데 아직 링크를 못 찾은(unresolved) 상품만 재탐색
 ```
 
-1~5가 "새 포스트를 처음부터 끝까지 처리"하는 본줄기, 6·7·9는 "이미 처리된 것 중 상태가
-바뀐 것만 골라 다시 손보는" 보강 단계, 10은 무한히 자라는 파일들을 관리하는 하우스키핑입니다.
-아래 "모듈 하나씩 뜯어보기"에서 각 단계를 순서대로 자세히 설명합니다 — 처음 보신다면 그
-순서대로 읽으시는 걸 추천합니다.
+1~5가 "새 포스트를 처음부터 끝까지 처리"하는 본줄기, 6~7은 "이미 처리된 것 중 상태가 바뀐
+것만 골라 다시 손보는" 보강 단계입니다. 아래 "모듈 하나씩 뜯어보기"에서 각 단계를 순서대로
+자세히 설명합니다 — 처음 보신다면 그 순서대로 읽으시는 걸 추천합니다.
 
 **8번(`fetch_yt_ppl.py` + `classify_yt_ppl.py`)은 이 본줄기와 별도인 독립 유입 경로입니다**
 — hifen DB의 `brand` 테이블(유튜브 PPL/브랜드 협찬 영상)에서 자체 SQL 쿼리로 가져와
@@ -58,13 +53,6 @@ dev_gongguking DB
 `gonggu/resolve_links/`와 `gonggu/linkbio_parser/`는 파일 하나가 아니라 책임별로 나뉜
 하위 패키지입니다(각각 10개 안팎의 파일, 파일당 200줄 이하) — 구성은 각 패키지의
 `__init__.py` 상단 docstring 참고.
-
-**공통 레이어(2026-08-05 대공사)**: 여러 모듈이 복제해서 쓰던 배관은 세 파일에만 존재합니다 —
-`gonggu/llm_batch.py`(LLM 재시도 정책 + 스레드풀 배치 러너: classify 계열 3개가 공유),
-`gonggu/crawl_pool.py`(크롤링 워커 풀 + LazyPage/MAX_BROWSERS 안전판: resolve/rescan/backfill/_diag가
-공유), `gonggu/platforms.py`(ig/yt 테이블·컬럼·SQL의 유일한 정의처). 이 셋 중 하나를 고치면
-쓰는 모듈 전부에 적용되고, 개별 모듈에는 "무엇을 하는가"만 남아 있습니다.
-`gonggu/daily.py`는 일일 퀘스트 오케스트레이터입니다(아래 "매일 돌리는 순서" 참고).
 
 **실행 규약(2026-08-05 패키지화 이후)**: 모든 모듈은 저장소 루트에서
 `python3 -m gonggu.<모듈>`로 실행합니다(예: `python3 -m gonggu.classify`,
@@ -200,45 +188,38 @@ dev_gongguking DB
 
 - **무엇**: `gonggu_start_date`/`gonggu_end_date`를 **오늘 날짜**와 비교해서 `gonggu_stage`
   (`시작전`/`진행중`/`종료`/`판단불가`)를 갱신합니다. LLM 재호출 없이 순수 날짜 비교 +
-  UPDATE만 하는 정적 배치라 빠릅니다.
-- **입력/출력**: `gonggu_post`/`gonggu_video` 테이블 자체(파일 관여 없음)
+  UPDATE만 하는 정적 배치라 빠릅니다. 기간/스테이지가 상품 단위로 이전됨(2026-08-06)에 따라
+  상품 행(`gonggu_post_product`/`gonggu_video_product`)을 PK(`id`) 기준으로 갱신합니다.
+- **입력/출력**: `gonggu_post_product`/`gonggu_video_product` 테이블 자체(파일 관여 없음)
 - **명령**: `python3 -m gonggu.update_gonggu_stage`
 - **알아둘 점**: 이미 `종료`인 행은 다시 열릴 일이 없으므로 조회 대상에서 아예 제외합니다 —
   그래서 실제로 확인하는 전이는 `시작전 → 진행중/종료`, `진행중 → 종료` 두 가지뿐입니다.
-  **강제 종료 규칙(2026-08-06)**: 시작일만 있고 종료일이 없는 공구는 날짜 비교만으로는 영원히
-  '진행중'으로 남으므로, 이 케이스에 한해 시작일로부터 10일(FORCE_END_AFTER_DAYS, 0이면 끔)이
-  지나면 '종료'로 강제 전환합니다. gonggu_end_date는 지어내지 않고 NULL 그대로 둡니다 —
-  "종료인데 end_date가 NULL" = 기간 미상으로 추정 종료된 행. 종료일이 명시된 공구는 며칠짜리든
-  절대 건드리지 않습니다.
-  매일 실행해도 이미 맞게 계산된 행은 그대로 두므로(idempotent) 하루에 여러 번 돌려도
-  안전합니다. transform.py의 날짜 비교 로직(`_compute_stage`)을 그대로 재사용해서 적재
-  시점 계산과 어긋나지 않습니다.
+  **강제 종료 규칙(2026-08-06 도입, 상품 이전 리팩터링에서 유실됐다가 2026-08-07 복원)**:
+  시작일만 있고 종료일이 없는 공구는 날짜 비교만으로는 영원히 '진행중'으로 남으므로, 이
+  케이스에 한해 시작일로부터 10일(`FORCE_END_AFTER_DAYS`, 0이면 끔)이 지나면 '종료'로 강제
+  전환합니다. `gonggu_end_date`는 지어내지 않고 NULL 그대로 둡니다 — "종료인데 end_date가
+  NULL" = 기간 미상으로 추정 종료된 행. 종료일이 명시된 공구는 며칠짜리든 절대 건드리지
+  않습니다. 매일 실행해도 이미 맞게 계산된 행은 그대로 두므로(idempotent) 하루에 여러 번
+  돌려도 안전합니다. transform.py의 날짜 비교 로직(`_compute_stage`)을 그대로 재사용해서
+  적재 시점 계산과 어긋나지 않습니다.
 
 ### 7. `rescan_inprogress.py` — 진행중 공구 링크 재탐색 (매일 보강)
 
 - **무엇**: 공구가 "시작전"일 때는 인포크 등에 아직 실제 구매 링크가 안 걸려 있어서
   `link_status='unresolved'`로 남는 경우가 많은데, "진행중"이 되면 그 링크가 채워지는
-  경우가 많습니다. 그래서 4번(resolve_links)과 똑같은 판단/크롤링 로직(`resolve_product`)으로
-  다시 시도하되, **"전환 즉시 + 지수 백오프 + 은퇴" 스케줄**(2026-08-06 재공사)로 대상을
-  고릅니다: ① 진행중으로 새로 넘어온(한 번도 재탐색 안 해본) 상품은 무조건 당일, ②
-  `link_status='error'`(기술 실패)는 스케줄 무시하고 매일, ③ 그 외는 첫 시도 후 1→2→4→7일
-  간격(RESCAN_BACKOFF_DAYS)으로 상품당 최대 5회까지만 — 다 소진하면 은퇴(보류)합니다.
-  예전처럼 "진행중+미해석 전체"를 매일 다시 열면 풀이 쌓일수록 비용이 선형으로 늘고,
-  재시도 가치는 급감하기 때문("DM으로만 판매" 등은 몇 번을 열어도 안 바뀜)입니다.
-  시도 이력은 `data/output/rescan_state.jsonl` 체크포인트에 남깁니다(DB 스키마 무변경).
+  경우가 많습니다. 그래서 **지금 `gonggu_stage='진행중'`인데 아직 `unresolved`인 상품만**
+  골라서 4번(resolve_links)과 똑같은 판단/크롤링 로직(`resolve_product`)으로 다시
+  시도합니다.
 - **입력**: DB에서 직접 조회(파일 안 거침 — `unresolved` 상품의 `candidate_url`엔 LLM이
   뽑은 원본 후보가 그대로 보존되어 있어서 재시도에 필요한 정보가 DB에 다 있음)
 - **출력**: `done`으로 바뀐 상품만 해당 행의 `candidate_url`/`link_status`를 UPDATE.
   여전히 `unresolved`면 그대로 둡니다. 동시에 `link_resolution.jsonl`에도 같은 키로
   결과를 append해서, 나중에 04_resolved를 다시 조립해도 이 재탐색 결과가 안 잊혀지게 합니다.
 - **명령**: `RESCAN_CONCURRENCY=6 python3 -m gonggu.rescan_inprogress` (`LIMIT=50`으로
-  소규모 테스트, `RESCAN_FORCE=1`이면 스케줄 무시하고 풀 전체 강제 재시도)
+  소규모 테스트 가능)
 - **알아둘 점**: **6번(`update_gonggu_stage.py`) 다음에 실행해야 합니다** — 오늘자
   "진행중" 상태가 먼저 확정돼 있어야 그걸 기준으로 대상을 고를 수 있습니다. resolve_links와
-  마찬가지로 동시에 두 개(또는 resolve_links와 동시에) 돌리지 말 것. 재공사 후 **첫 실행은
-  기존 풀 전체가 "신규전환"으로 잡혀 한 번 크게 돌고**, 그 뒤부터는 신규 유입 + 백오프
-  도래분만 돌아 물량이 급감합니다. 실행 시작 시 대상 분류(신규전환/에러/백오프 도래/쿨다운/
-  은퇴 건수)가 출력되므로 스케줄이 어떻게 동작하는지 매일 확인할 수 있습니다.
+  마찬가지로 동시에 두 개(또는 resolve_links와 동시에) 돌리지 말 것.
 
 ### 8. `fetch_yt_ppl.py` + `classify_yt_ppl.py` — 유튜브 PPL 공구 판별 (기존 파이프라인과 완전 독립)
 
@@ -282,33 +263,23 @@ dev_gongguking DB
 
 ### 9. `backfill_period.py` — 공구기간 보강 크롤링 (매일 보강)
 
-- **무엇**: 캡션에 명시적 날짜가 없어 `gonggu_stage='판단불가'`로 남은 것 중, 상품이
-  정확히 1개이고 그 상품 링크가 이미 `link_status='done'`으로 확정된 것만 골라 그 확정
-  상품페이지를 크롤링해서 페이지 안에 공구기간이 적혀 있는지 LLM(`prompts.PERIOD_BACKFILL_SYSTEM`)으로
-  찾습니다. 찾으면 `gonggu_start_date`/`gonggu_end_date`와 `gonggu_stage`를 그 자리에서
-  같이 갱신합니다.
-- **입력/출력**: `gonggu_post`/`gonggu_video` 테이블 자체(파일 관여 없음) +
+- **무엇**: 캡션에 명시적 날짜가 없어 상품 `gonggu_stage='판단불가'`로 남은 상품 중, 그 상품
+  링크가 이미 `link_status='done'`으로 확정된 것을 골라 그 확정 상품페이지를 크롤링해서
+  페이지 안에 그 상품의 공구기간이 적혀 있는지 LLM(`prompts.PERIOD_BACKFILL_SYSTEM`)으로
+  찾습니다. 찾으면 그 상품의 `gonggu_start_date`/`gonggu_end_date`와 `gonggu_stage`를 그
+  자리에서 같이 갱신합니다.
+- **입력/출력**: `gonggu_post_product`/`gonggu_video_product` 테이블 자체(파일 관여 없음) +
   `data/output/period_backfill.jsonl`(체크포인트 — 찾았으면 영구 스킵, 못 찾았으면
   `PERIOD_RETRY_COOLDOWN_DAYS`일 쿨다운 후 재시도, `PERIOD_MAX_ATTEMPTS`회 넘으면 영구 스킵)
 - **명령**: `python3 -m gonggu.backfill_period` (`LIMIT=20`으로 소규모 테스트,
   `BACKFILL_PERIOD_CONCURRENCY=4`로 동시성 조절)
-- **알아둘 점**: 이미 날짜가 하나라도 있는 행(시작전/진행중/종료)은 조회 대상에서 아예
-  빠지므로 기존 값을 덮어쓸 여지가 구조적으로 없고, 상품이 2개 이상인 포스트/영상도
-  스코프 밖입니다(날짜가 상품이 아니라 포스트/영상 단위 컬럼이라 어느 상품 기준인지
-  모호해지기 때문). `update_gonggu_stage.py`와 마찬가지로 `transform.py`의
-  `_compute_stage`를 재사용합니다.
-
-### 10. `maintenance.py` — 데이터 하우스키핑 (매일 마지막)
-
-- **무엇**: 무한히 자라는 파일들을 관리합니다(2026-08-05, 대공사 3단계). ① append-only
-  체크포인트(link_resolution/period_backfill)가 20MB(COMPACT_MIN_MB)를 넘으면 같은 key의
-  옛 줄을 접어 다시 씀(last-wins 규약이라 의미 완전 보존), ② 30일(USAGE_KEEP_DAYS) 지난
-  llm_usage 기록을 월별 아카이브로 로테이션, ③ `ARCHIVE_AFTER_DAYS=30`처럼 **지정한 경우에만**
-  그 일수 지난 01_raw/01_raw_yt_ppl/02_classified 날짜 파일을 `data/archive/`로 gzip 이동
-  (01을 02보다 먼저 옮겨 재분류 사고를 구조적으로 방지, 복원은 gunzip 후 원위치).
-- **명령**: `python3 -m gonggu.maintenance` (`gonggu.daily`가 마지막 단계로 자동 실행)
-- **알아둘 점**: resolve_links/rescan이 도는 동안 단독으로 실행하지 말 것 — 걔들이 append
-  중인 체크포인트를 컴팩션이 통째로 다시 씁니다(daily 안에서는 순차 실행이라 안전).
+- **알아둘 점**: 대상 자체가 상품 stage='판단불가'(그 상품의 시작일/종료일 둘 다 NULL)뿐이라
+  이미 날짜가 있는 상품은 조회조차 안 돼 기존 값을 덮어쓸 여지가 구조적으로 없습니다.
+  기간/스테이지가 상품 단위로 이전된 뒤(2026-08-06)로는 상품이 2개 이상인 게시물도
+  스코프에 포함됩니다 — 예고 달력처럼 다중상품인 게시물의 각 상품도 자기 확정 페이지에서
+  기간을 따로 찾습니다(예전엔 기간이 포스트 단위라 다중상품에서 어느 상품 기준인지
+  모호해 단일상품만 대상으로 제한했는데, 그 제약이 사라졌습니다).
+  `update_gonggu_stage.py`와 마찬가지로 `transform.py`의 `_compute_stage`를 재사용합니다.
 
 ## 설치
 
@@ -371,7 +342,6 @@ RESOLVE_CONCURRENCY=30 python3 -m gonggu.resolve_links          # 4. 링크 해�
 python3 -m gonggu.load                                         # 5. DB 적재
 python3 -m gonggu.rescan_inprogress                           # 7. 진행중인데 못 찾은 링크 재탐색
 python3 -m gonggu.backfill_period                             # 9. 공구기간 판단불가 건 보강 크롤링
-python3 -m gonggu.maintenance                                 # 10. 데이터 하우스키핑
 ```
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
@@ -420,6 +390,11 @@ grep/head로 한 줄씩 바로 들여다볼 수 있고, classify.py처럼 계속
   python3 -m gonggu._diag_sample            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
   python3 -m gonggu._diag_sample 500 80     # 포스트 500개, 상품 80개
   ```
+- `python3 -m gonggu.maintenance` — 데이터 하우스키핑(2026-08-05, 대공사 3단계). append-only
+  체크포인트(link_resolution/period_backfill) 컴팩션(같은 key의 옛 줄 제거 — last-wins 규약이라
+  의미 보존), 30일 지난 llm_usage 월별 로테이션, 그리고 `ARCHIVE_AFTER_DAYS=30`처럼 지정한
+  경우에만 오래된 01/02 날짜 파일을 `data/archive/`로 gzip 이동. `gonggu.daily`가 마지막
+  단계로 자동 실행하며, resolve/rescan 실행 중에 단독으로 돌리지만 말 것.
 - `gonggu/_backfill_collapse_candidates.py` — 일회성 백필. 2026-07-29 결정("DB의
   `candidate_url`엔 항상 링크 1개만") 이전에 이미 적재되어 세미콜론으로 여러 후보가 남아있는
   기존 행을 한 번 훑어서 대표 URL 1개로 정리한다. 일일 파이프라인에는 포함하지 않음 —
