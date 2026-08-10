@@ -199,3 +199,22 @@ def try_http_fetch(url, referer=None):
     _bump('hit')
     return {'status': r.status_code, 'final_url': r.url, 'title': title, 'og_image': og_image,
             'jsonld': jsonld, 'body_text': body_text, 'error': None, 'via': 'http'}
+
+
+def rec_from_html(html, final_url, via='uc'):
+    """이미 확보한 HTML 문자열을 browser.fetch()와 같은 모양의 rec로 파싱한다.
+
+    uc 엔진(gonggu.uc_engine)이 돌려준 html을 resolve 판별 로직(picker/core)이 그대로 먹을 수
+    있게, requests 경로와 완전히 같은 파싱 규칙(_meta/_strip_hidden/_snippet/extract_jsonld_blocks)을
+    재사용한다 — 두 경로가 다른 결과를 내면 "엔진 바꾸면 판정이 뒤집히는" 재현 불가 버그가 되므로
+    파싱은 반드시 한 곳에서만. status는 uc가 실제 코드를 안 주므로 성공 시 200으로 채운다."""
+    soup = BeautifulSoup(html or '', 'lxml')
+    jsonld = extract_jsonld_blocks(
+        s.string or '' for s in soup.find_all('script', attrs={'type': re.compile(r'ld\+json', re.I)}))
+    og_image = _meta(soup, 'og:image')
+    title = _meta(soup, 'og:title') or (soup.title.get_text(strip=True) if soup.title else None)
+    _strip_hidden(soup)
+    body = soup.body or soup
+    body_text = _snippet(body.get_text(' ', strip=True))
+    return {'status': 200, 'final_url': final_url, 'title': title, 'og_image': og_image,
+            'jsonld': jsonld, 'body_text': body_text, 'error': None, 'via': via}

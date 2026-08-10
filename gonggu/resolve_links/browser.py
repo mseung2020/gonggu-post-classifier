@@ -7,8 +7,9 @@ from contextlib import contextmanager
 
 from playwright_stealth import Stealth
 
-from .config import AUTH_STATE_FILE, MAX_BROWSERS, MAX_PER_DOMAIN, SLOW_REDIRECT_DOMAINS, UA
-from .httpfetch import extract_jsonld, try_http_fetch
+from .config import (AUTH_STATE_FILE, BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS,
+                     MAX_PER_DOMAIN, SLOW_REDIRECT_DOMAINS, UA)
+from .httpfetch import extract_jsonld, rec_from_html, try_http_fetch
 from .urlutil import host_of
 
 # 도메인당 동시 접근 상한을 "어느 상품이 이 도메인을 먼저 후보로 들고 있었나"가 아니라
@@ -107,18 +108,65 @@ def _extract_once(page):
     return title, og_image, jsonld, body_text
 
 
+def _uc_enabled_for(url):
+    """uc 옵트인 폴백 대상인지 — RESOLVE_UC=1이고 호스트가 RESOLVE_UC_HOSTS(기본 naver.)에
+    걸릴 때만. 환경변수를 호출 시점에 읽어서(import 시점 아님) reverify_uc가 런타임에 켜도
+    반영되게 한다. 기본은 꺼짐 → 대량·무인 resolve 본 경로는 완전히 그대로(골든 무풍)."""
+    if os.environ.get('RESOLVE_UC', '0') != '1':
+        return False
+    hosts = [h for h in os.environ.get('RESOLVE_UC_HOSTS', 'naver.').split(',') if h]
+    h = host_of(url)
+    return any(k in h for k in hosts)
+
+
+def _looks_blocked(rec):
+    """재검증 페이지가 로그인월/캡차/봇차단으로 막힌 낌새인지 — picker의 차단 판정과 같은 기준
+    (BLOCKED_STATUS_CODES / BLOCKED_TEXT_MARKERS)에 네이버 로그인 리다이렉트(nid.naver.com)를 더한다."""
+    if rec.get('status') in BLOCKED_STATUS_CODES:
+        return True
+    if 'nid.naver.com' in (rec.get('final_url') or ''):
+        return True
+    bt = (rec.get('body_text') or '').lower()
+    return any(m.lower() in bt for m in BLOCKED_TEXT_MARKERS)
+
+
+def _uc_fetch(url):
+    """uc 엔진(gonggu.uc_engine)으로 재시도해 browser.fetch()와 같은 모양의 rec를 만든다.
+    실패하거나 여전히 로그인월/캡차면 error를 담은 rec를 돌려준다(호출부가 원래 차단 rec를
+    유지하도록 — _uc_fetch 성공 시에만 교체)."""
+    try:
+        from gonggu.uc_engine import fetch_sync, looks_challenged
+        final_url, html = fetch_sync(url)
+    except Exception as e:
+        return {'status': None, 'final_url': None, 'title': None, 'og_image': None,
+                'jsonld': {}, 'body_text': '', 'error': f'uc 실패: {str(e)[:140]}', 'via': 'uc'}
+    if not html or 'nid.naver.com' in (final_url or '') or looks_challenged(html[:8000]):
+        return {'status': None, 'final_url': final_url, 'title': None, 'og_image': None,
+                'jsonld': {}, 'body_text': '', 'error': 'uc 차단/로그인월/캡차 통과 못함', 'via': 'uc'}
+    return rec_from_html(html, final_url, via='uc')
+
+
 def fetch(page, url, wait_extra=1.5, referer=None):
     """판별에 필요한 정보를 얻는 기본 진입점 — requests로 충분하면 그걸로 끝내고(0.1~0.3초),
     모자라거나 차단되면 브라우저로 넘어간다(3~4초). rec['via']로 어느 쪽이었는지 알 수 있다.
 
     ⚠ requests 경로를 탄 경우 page는 아무 데도 이동하지 않은 상태다 — 그 뒤에 DOM이
     필요하면(extract_collection_links 등) 반드시 fetch_with_browser()로 다시 열어야 한다.
-    core.py의 링크모음/스토어메인 분기 참고."""
+    core.py의 링크모음/스토어메인 분기 참고.
+
+    uc 옵트인 폴백(2026-08-07): 위 경로가 로그인월/캡차로 막혔고 RESOLVE_UC=1 & 대상 호스트면
+    undetected_chromedriver로 한 번 더 열어본다(reverify_uc 2단 패스 전용). uc가 통과하면 그
+    결과로 교체, 못 뚫으면 원래 차단 rec를 그대로 둔다. 기본 OFF → 본 경로 무변경."""
     with domain_gate(url):
         rec = try_http_fetch(url, referer)
-        if rec is not None:
-            return rec
-        return _browser_fetch(page, url, wait_extra, referer)
+        if rec is None:
+            rec = _browser_fetch(page, url, wait_extra, referer)
+    # 도메인 게이트 밖에서 uc 재시도 — uc는 자체 락으로 전역 직렬화하므로 게이트를 겹쳐 잡지 않는다.
+    if _uc_enabled_for(url) and _looks_blocked(rec):
+        uc_rec = _uc_fetch(url)
+        if not uc_rec.get('error'):
+            return uc_rec
+    return rec
 
 
 def fetch_with_browser(page, url, wait_extra=1.5, referer=None):
