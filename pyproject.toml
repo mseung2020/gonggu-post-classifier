@@ -40,6 +40,7 @@ gonggu-maintenance = "gonggu.maintenance:main"
 gonggu-check-db = "gonggu.check_db:main"
 gonggu-login-naver = "gonggu.login_naver:main"
 gonggu-llm-usage = "gonggu.llm_usage_report:main"
+gonggu-board = "gonggu.unresolved_board:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
