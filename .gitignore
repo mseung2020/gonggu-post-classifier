@@ -11,6 +11,7 @@ data/01_raw_yt_ppl/*
 data/02_classified/*
 data/03_load_ready/*
 data/04_resolved/*
+data/linkbio/*
 data/_migrated_backup/*
 !data/raw/.gitkeep
 !data/output/.gitkeep
@@ -20,6 +21,7 @@ data/_migrated_backup/*
 !data/02_classified/.gitkeep
 !data/03_load_ready/.gitkeep
 !data/04_resolved/.gitkeep
+!data/linkbio/.gitkeep
 data/_backup_*/
 _to_delete/
 data/logs/*

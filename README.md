@@ -281,6 +281,24 @@ dev_gongguking DB
   모호해 단일상품만 대상으로 제한했는데, 그 제약이 사라졌습니다).
   `update_gonggu_stage.py`와 마찬가지로 `transform.py`의 `_compute_stage`를 재사용합니다.
 
+### 9-2. `crawl_linkbio.py` — 인포크 허브 크롤 (매일 보강, load 이후)
+
+- **무엇**: 우리가 수집한 공구 포스트/영상의 캡션·프로필에서 인포크 허브 URL
+  (`link.inpock.co.kr/<username>` / `inpk.link/<username>`)을 찾아, `linkbio_parser`로
+  파싱한 정보 전체(링크/스토어/상품/텍스트/bio 등)를 게시일별 JSONL로 저장합니다. 허브 텍스트에
+  섞여 있는 크리에이터 연락 이메일 같은 정보도 파싱 결과 안에 그대로 담깁니다(이메일만 따로
+  추출하지는 않음 — 저장분에서 나중에 뽑아 씁니다). `/api/r/<토큰>`(버튼 리다이렉트)은 허브가
+  아니라 개별 상품 링크라 제외합니다.
+- **입력/출력**: 대상은 `gonggu_post`/`gonggu_video`(그래서 `load` 이후에 실행), 캡션·프로필은
+  hifen(SRC)에서 조회. 출력은 `data/linkbio/<게시일>.jsonl`(포스트별 레코드) +
+  `data/linkbio/_hub_cache.jsonl`(허브당 1회만 크롤하는 캐시) +
+  `data/linkbio/_processed.jsonl`(스캔한 포스트 체크포인트).
+- **명령**: `python3 -m gonggu.crawl_linkbio` (`LIMIT=200` 소규모, `LINKBIO_CONCURRENCY=8`,
+  `RESOLVE_INNER=1`이면 허브 내부 `/api/r/` 링크의 최종 주소까지 추적 — 파이프라인 parse와 동일하나 느림)
+- **알아둘 점**: DB/파일 상태가 곧 증분 기준이라(idempotent) 첫 실행은 백로그 전수, 이후 실행은
+  아직 스캔 안 한 새 포스트만 처리합니다 — 그래서 이 모듈 하나가 "백로그 크롤"과 "데일리 편입"을
+  겸합니다. 같은 크리에이터 허브를 여러 포스트가 공유하므로 고유 허브당 한 번만 크롤합니다.
+
 ## 설치
 
 ```bash

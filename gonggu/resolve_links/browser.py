@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from playwright_stealth import Stealth
 
+from .antibot import is_linkbio_hub
 from .config import (AUTH_STATE_FILE, BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS,
                      MAX_PER_DOMAIN, SLOW_REDIRECT_DOMAINS, UA)
 from .httpfetch import extract_jsonld, rec_from_html, try_http_fetch
@@ -133,16 +134,21 @@ def _looks_blocked(rec):
 def _uc_fetch(url):
     """uc 엔진(gonggu.uc_engine)으로 재시도해 browser.fetch()와 같은 모양의 rec를 만든다.
     실패하거나 여전히 로그인월/캡차면 error를 담은 rec를 돌려준다(호출부가 원래 차단 rec를
-    유지하도록 — _uc_fetch 성공 시에만 교체)."""
+    유지하도록 — _uc_fetch 성공 시에만 교체). 진행 상황을 stdout에 남긴다 — uc 경로는 사람이
+    지켜보는 2단 패스에서만 켜지므로 "지금 uc가 실제로 뭘 하고 있나"가 보여야 디버깅이 된다."""
+    print(f'    · uc 재시도: {url[:100]}', flush=True)
     try:
         from gonggu.uc_engine import fetch_sync, looks_challenged
         final_url, html = fetch_sync(url)
     except Exception as e:
+        print(f'      ✗ uc 엔진 실패: {str(e)[:140]}', flush=True)
         return {'status': None, 'final_url': None, 'title': None, 'og_image': None,
                 'jsonld': {}, 'body_text': '', 'error': f'uc 실패: {str(e)[:140]}', 'via': 'uc'}
     if not html or 'nid.naver.com' in (final_url or '') or looks_challenged(html[:8000]):
+        print(f'      ✗ uc 통과 못함(로그인월/캡차/빈응답): {(final_url or "")[:100]}', flush=True)
         return {'status': None, 'final_url': final_url, 'title': None, 'og_image': None,
                 'jsonld': {}, 'body_text': '', 'error': 'uc 차단/로그인월/캡차 통과 못함', 'via': 'uc'}
+    print(f'      ✓ uc 통과: {(final_url or "")[:100]} (html {len(html)}자)', flush=True)
     return rec_from_html(html, final_url, via='uc')
 
 
@@ -154,16 +160,34 @@ def fetch(page, url, wait_extra=1.5, referer=None):
     필요하면(extract_collection_links 등) 반드시 fetch_with_browser()로 다시 열어야 한다.
     core.py의 링크모음/스토어메인 분기 참고.
 
-    uc 옵트인 폴백(2026-08-07): 위 경로가 로그인월/캡차로 막혔고 RESOLVE_UC=1 & 대상 호스트면
+    uc 옵트인 폴백(2026-08-07): 위 경로가 로그인월/캡차로 막혔고 RESOLVE_UC=1이면
     undetected_chromedriver로 한 번 더 열어본다(reverify_uc 2단 패스 전용). uc가 통과하면 그
-    결과로 교체, 못 뚫으면 원래 차단 rec를 그대로 둔다. 기본 OFF → 본 경로 무변경."""
+    결과로 교체, 못 뚫으면 원래 차단 rec를 그대로 둔다. 기본 OFF → 본 경로 무변경.
+
+    ⚠ 대상 호스트 판정은 url뿐 아니라 **최종 도착지(final_url)**로도 한다 — 링크인바이오
+    버튼은 chosen_href가 인포크(link.inpock…)라서 호스트만 보면 네이버가 아니지만, 실제 차단은
+    그게 리다이렉트되는 네이버 페이지에서 난다(2026-08-07 첫 실행에서 uc가 아예 안 걸린 원인:
+    인포크 호스트만 보고 스킵했음). 그리고 네이버 최종 상품 URL이 깔끔하면 그 URL을 직접 열고,
+    로그인 리다이렉트(nid.naver.com)면 원본을 열어 uc가 쿠키 실은 채 새로 리다이렉트를 따라가게 한다."""
     with domain_gate(url):
         rec = try_http_fetch(url, referer)
         if rec is None:
             rec = _browser_fetch(page, url, wait_extra, referer)
     # 도메인 게이트 밖에서 uc 재시도 — uc는 자체 락으로 전역 직렬화하므로 게이트를 겹쳐 잡지 않는다.
-    if _uc_enabled_for(url) and _looks_blocked(rec):
-        uc_rec = _uc_fetch(url)
+    final = rec.get('final_url') or ''
+    uc_on = os.environ.get('RESOLVE_UC', '0') == '1'
+    blocked = _looks_blocked(rec)
+    hub = is_linkbio_hub(url)   # 인포크 등 허브 URL(resolved 실패로 href가 허브로 남은 경우) — 네이버로 리다이렉트됨
+    if uc_on and blocked:
+        # 진단(RESOLVE_UC일 때만) — uc가 왜 걸렸/안 걸렸는지 근거를 그대로 보여준다.
+        print(f'    · 차단감지 url={host_of(url)} final={host_of(final)} status={rec.get("status")} '
+              f'err={(rec.get("error") or "")[:40]} ucURL={_uc_enabled_for(url)} '
+              f'ucFinal={_uc_enabled_for(final)} hub={hub}', flush=True)
+    # uc 발동: 차단 + (url/final이 uc 대상 호스트 OR url이 링크인바이오 허브). 허브면 uc가
+    # 리다이렉트를 쿠키 싣고 따라가 네이버 상품에 도달한다(인포크 버튼 케이스 커버).
+    if uc_on and blocked and (_uc_enabled_for(url) or _uc_enabled_for(final) or hub):
+        target = final if (_uc_enabled_for(final) and 'nid.naver.com' not in final) else url
+        uc_rec = _uc_fetch(target)
         if not uc_rec.get('error'):
             return uc_rec
     return rec

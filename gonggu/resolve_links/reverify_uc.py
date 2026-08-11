@@ -34,10 +34,17 @@ import os
 # uc 폴백을 이 패스 한정으로 강제한다 — browser.fetch가 차단 시 uc로 재시도하도록. 다른
 # import보다 먼저 세팅해야(browser._uc_enabled_for는 호출 시점에 읽지만, 명시적으로 앞에 둔다).
 os.environ.setdefault('RESOLVE_UC', '1')
+# 차단으로 포기한 건의 대부분이 네이버 로그인월이 아니라 오픈마켓 403(G마켓·옥션·오늘의집·
+# 11번가)이라(2026-08-07 진단), uc 대상 호스트 기본값을 이 블로커들로 넓힌다. 특정 몰만 하고
+# 싶으면 RESOLVE_UC_HOSTS로 덮어쓰면 된다(예: 네이버만 → RESOLVE_UC_HOSTS=naver.).
+# ⚠ 쿠팡/알리/테무는 정책상 공구 대상에서 제외(config.EXCLUDED_MARKETPLACE_DOMAINS)라 여기서도
+# uc 대상에 넣지 않는다 — resolve가 애초에 후보로 안 쓰므로 reverify 대상으로도 안 잡힌다(2026-08-11).
+os.environ.setdefault('RESOLVE_UC_HOSTS',
+                      'naver.,gmarket.co.kr,auction.co.kr,ohou.se,11st.co.kr')
 
 import sys  # noqa: E402
 
-from gonggu.common import DEEPSEEK_KEY, connect_dst  # noqa: E402
+from gonggu.common import DEEPSEEK_KEY, acquire_lock, connect_dst  # noqa: E402
 from gonggu.crawl_pool import run_crawl_pool  # noqa: E402
 from gonggu.platforms import PLATFORMS, parent_ctx_from_row, product_update_link_sql  # noqa: E402
 from gonggu.resolve_links.config import ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSERS  # noqa: E402
@@ -76,6 +83,7 @@ def _fetch_targets(conn):
 
 
 def main():
+    acquire_lock('reverify_uc')
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)

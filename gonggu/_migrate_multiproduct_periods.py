@@ -12,6 +12,11 @@ UPDATE한다. candidate_url/link_status(resolve·상세수집까지 진행된 �
 손도 대지 않는다. 매칭이 애매하면(이름이 0개 또는 2개 이상 걸리면) 그 상품은 건너뛴다 — NULL로
 남겨두고 나중에 backfill_period가 확정 페이지에서 기간을 찾게 한다.
 
+덤으로 parent의 is_calendar_feed도 소급 채운다: load가 INSERT-only(기존 행 스킵)라 스키마
+추가 이전에 적재된 포스트는 전부 0으로 남아 있었다. 달력 피드는 본질적으로 다중상품이므로,
+이 다중상품 재분류 때 LLM#1이 판정한 is_calendar_feed(0/1)를 parent에 UPDATE한다. 기간과
+달리 상품명 매칭이 필요 없어 분류만 성공하면 항상 반영한다(링크와 무관한 parent 속성).
+
 체크포인트(data/output/multiproduct_period_backfill.jsonl)로 재실행 안전(포스트 단위 완료 스킵).
 
 사용법(저장소 루트에서):
@@ -32,6 +37,9 @@ from gonggu.transform import _compute_stage, _valid_date
 
 CHECKPOINT_FILE = ROOT / 'data/output/multiproduct_period_backfill.jsonl'
 UPDATE_SQL = {code: product_update_period_sql(p) for code, p in PLATFORMS.items()}
+# 달력 피드 플래그 소급 — LLM#1이 판정한 is_calendar_feed를 parent에 UPDATE(기간/링크와 별개).
+CALENDAR_SQL = {code: f'UPDATE {p.parent_table} SET is_calendar_feed = %s WHERE {p.id_col} = %s'
+                for code, p in PLATFORMS.items()}
 _CHUNK = 300
 
 
@@ -145,33 +153,41 @@ def main():
             key = f'{code}:{nid}'
             cap = captions.get((code, nid))
             if not cap:
-                return {'code': code, 'key': key, 'error': '캡션 없음', 'updates': []}
+                return {'code': code, 'key': key, 'native_id': nid, 'is_calendar': None,
+                        'error': '캡션 없음', 'updates': []}
             parsed, err = retry_llm(lambda: call_llm(
                 GONGGU_CLASSIFY_SYSTEM, build_gonggu_classify_user(cap, pubdate, '')))
             if err or not parsed:
-                return {'code': code, 'key': key, 'error': err or '분류 실패', 'updates': []}
+                return {'code': code, 'key': key, 'native_id': nid, 'is_calendar': None,
+                        'error': err or '분류 실패', 'updates': []}
             updates = match_periods(parsed.get('products') or [], db_products)
-            return {'code': code, 'key': key, 'error': None, 'updates': updates,
-                    'n_products': len(db_products)}
+            return {'code': code, 'key': key, 'native_id': nid, 'error': None,
+                    'is_calendar': 1 if parsed.get('is_calendar_feed') else 0,
+                    'updates': updates, 'n_products': len(db_products)}
 
         def persist(r):
-            if r['updates'] and not r['error']:
+            if not r['error']:
                 dst.ping(reconnect=True)
                 with dst.cursor() as cur:
+                    # 달력 피드 플래그: 분류 성공 시 항상 parent에 소급 반영(0/1).
+                    cur.execute(CALENDAR_SQL[r['code']], (r['is_calendar'], r['native_id']))
+                    # 상품별 기간: 이름이 유일하게 매칭된 것만.
                     for pid, start, end in r['updates']:
                         cur.execute(UPDATE_SQL[r['code']],
                                     (start, end, _compute_stage(start, end), pid))
                 dst.commit()
             append_jsonl(CHECKPOINT_FILE, {'key': r['key'], 'n_updated': len(r['updates']),
-                                           'error': r['error']})
+                                           'is_calendar': r['is_calendar'], 'error': r['error']})
 
         counters = run_llm_batch(todo, process_one, persist,
                                  concurrency=int(os.environ.get('CONCURRENCY', '4')),
                                  error_of=lambda r: r['error'])
         cp = load_jsonl(CHECKPOINT_FILE)
         updated = sum(rec.get('n_updated', 0) for rec in cp.values())
+        calendars = sum(1 for rec in cp.values() if rec.get('is_calendar') == 1)
         print(f'완료 — 이번 배치 성공 {counters["ok"]} / 실패 {counters["err"]}, '
-              f'누적 갱신 상품 {updated}개 (체크포인트 {len(cp)}개 포스트)')
+              f'누적 갱신 상품 {updated}개, 달력 피드 {calendars}개 '
+              f'(체크포인트 {len(cp)}개 포스트)')
     finally:
         dst.close()
 

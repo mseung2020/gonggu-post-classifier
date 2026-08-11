@@ -5,12 +5,21 @@ from urllib.parse import parse_qs, urlparse
 
 from gonggu import linkbio_parser
 
-from .config import BROKEN_PATH_SEGMENTS, DISCONTINUED_MARKERS, NON_MALL_DOMAINS
+from .config import (BROKEN_PATH_SEGMENTS, DISCONTINUED_MARKERS, EXCLUDED_MARKETPLACE_DOMAINS,
+                     NON_MALL_DOMAINS)
 from .urlutil import host_of
 
 
 def is_non_mall(url):
     return host_of(url) in NON_MALL_DOMAINS
+
+
+def is_excluded_marketplace(url):
+    """쿠팡/알리익스프레스/테무 — 제휴·오픈마켓이라 공구 대상에서 원천 제외(2026-08-11 정책).
+    host가 도메인과 정확히 같거나 서브도메인(.으로 끝나는 매칭)일 때 True — 예: link.coupang.com,
+    s.click.aliexpress.com. purge_marketplace_links와 같은 매칭 규칙."""
+    h = host_of(url or '')
+    return any(h == d or h.endswith('.' + d) for d in EXCLUDED_MARKETPLACE_DOMAINS)
 
 
 def is_linkbio_hub(url):

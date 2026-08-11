@@ -10,17 +10,51 @@ release_if_contended)는 crawl_pool.py와 browser.py의 docstring 참고.
 가벼운 단계(캐시된 requests 호출)만 묶어두는 문제가 있었다(실측 확인, 2026-07-27). 대신
 browser.fetch()/redirect.follow_redirect() 안에서 "실제로 page.goto()를 여는 그 순간" 목적지
 도메인 기준으로 게이팅한다(domain_gate 참고)."""
+import re
 import sys
 
-from gonggu.common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, append_jsonl, clear_json_dir,
-                     dump_jsonl_sharded, load_json_dir, load_jsonl, parent_date_key)
+from gonggu.common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, acquire_lock, append_jsonl,
+                     clear_json_dir, dump_jsonl_sharded, load_json_dir, load_jsonl, parent_date_key)
 from gonggu.crawl_pool import run_crawl_pool
 
 from .config import (HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSERS,
                      RESOLUTION_FILE, RESOLVE_CONCURRENCY)
 from .httpfetch import stats as httpfetch_stats
 from .core import resolve_product
+from .links import cached_linkbio_data, normalize_url
 from .matching import product_key
+
+
+def _dump_linkbio(items):
+    """resolve 중 파싱해 캐시에 남은 인포크 허브 원본을 포스트별로 모아 게시일별 JSONL로 저장한다.
+    ⚠ 재크롤 없음 — resolve가 이미 파싱한 캐시(cached_linkbio_data)만 꺼내 쓰므로, crawl_linkbio의
+    독립 크롤을 데일리에서 대체한다. 이번 실행에 인포크가 실제로 파싱된 포스트만 기록된다(증분).
+    이미 적재된 옛 포스트의 소급은 여전히 standalone `python3 -m gonggu.crawl_linkbio`가 담당."""
+    from gonggu.crawl_linkbio import OUT_DIR, extract_inpock_hubs  # 지연 import(순환참조 회피)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for item in items:
+        parent, code = item.get('parent') or {}, item.get('platform')
+        nid = parent.get('post_id') if code == 'ig' else parent.get('video_id')
+        if not nid:
+            continue
+        date = str(parent.get('publish_date') or parent.get('publishDate') or '')[:10]
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date or ''):
+            date = 'unknown'
+        cand_text = ' '.join((p.get('candidate_url') or '') for p in item.get('products') or [])
+        linkbio = []
+        for h in extract_inpock_hubs(cand_text):
+            data = cached_linkbio_data(normalize_url(h)) or cached_linkbio_data(h)
+            if data:
+                linkbio.append({'hub_url': h, 'parsed': data, 'error': None})
+        if linkbio:
+            append_jsonl(OUT_DIR / f'{date}.jsonl',
+                         {'key': f'{code}:{nid}', 'platform': code, 'post_id': nid,
+                          'publish_date': date, 'hub_urls': [x['hub_url'] for x in linkbio],
+                          'linkbio': linkbio})
+            written += 1
+    if written:
+        print(f'  인포크 파싱본 저장: {written}개 포스트 -> data/linkbio/<게시일>.jsonl (재크롤 없음)')
 
 
 def load_resolutions():
@@ -64,6 +98,7 @@ def build_resolved_file(items, resolutions):
 
 
 def main():
+    acquire_lock('resolve_links')
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)
@@ -105,6 +140,7 @@ def main():
                        warn_hint='RESOLVE_CONCURRENCY')
 
     build_resolved_file(items, resolutions)
+    _dump_linkbio(items)   # 인포크 파싱본을 게시일별 JSON으로(재크롤 없이 캐시에서)
     by_status = {}
     for r in resolutions.values():
         by_status[r['status']] = by_status.get(r['status'], 0) + 1

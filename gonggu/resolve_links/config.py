@@ -20,6 +20,12 @@ BAD_DOMAINS = ('nid.naver.com', 'accounts.kakao.com', 'account.kakao.com', 'mkt.
 # 중 발견, 2026-07-20 — 블로그 글이 그대로 done 확정됨).
 NON_MALL_DOMAINS = ('blog.naver.com', 'm.blog.naver.com')
 
+# 쿠팡/알리익스프레스/테무 — 제휴·오픈마켓 링크라 공구 대상에서 원천 제외한다(2026-08-11 정책).
+# resolve 후보 단계에서 걸러 done이 되지 않게 하고, uc 재검증 대상 호스트에서도 뺀다. 이미
+# 적재된 마켓플레이스 링크의 사후 정리는 일회성 purge_marketplace_links가 담당(같은 도메인 기준).
+EXCLUDED_MARKETPLACE_DOMAINS = ('coupang.com', 'coupa.ng', 'aliexpress.com', 'aliexpress.us',
+                                'temu.com')
+
 # 버튼 텍스트에 이런 말이 있으면 애초에 상품 구매 링크가 아니니 LLM#2한테 보여주지도 않고
 # 후보에서 뺀다 — LLM#2 프롬프트에도 같은 취지의 지침이 있지만, 다른 후보가 다 별로면 그중
 # "제일 나은" 걸로 고객센터/문의 링크를 골라버리는 경우가 실제로 있어서(확신도 낮게라도)
@@ -52,7 +58,20 @@ RESOLVE_CONCURRENCY = int(os.environ.get('RESOLVE_CONCURRENCY', '1'))
 # 대기자가 값싼 건조차 처리하지 못했고, 지금은 release_if_contended로 놓아준다.
 # 허가증 쟁탈이 잦으면 재기동(3.9초)이 반복되므로 워커 수와 이 값의 차이가 너무 벌어지지 않게
 # 두는 게 좋다(runner가 시작 시 경고).
-MAX_BROWSERS = int(os.environ.get('MAX_BROWSERS', str(min(40, (os.cpu_count() or 4) * 4))))
+def _default_max_browsers():
+    """브라우저 동시 개수 기본값 — CPU뿐 아니라 RAM도 본다(2026-08-11). 크롬 하나가 수백 MB~1GB를
+    먹어서, 16GB 맥에서 CPU 기준 40개를 띄우면 스왑으로 넘어가 시스템이 먹통이 된다(실측 사고).
+    RAM 1.5GB당 브라우저 1개를 여유로 잡고, 하드 상한 16·최소 4로 클램프. MAX_BROWSERS 환경변수로 덮어쓸 수 있다."""
+    cpu_cap = (os.cpu_count() or 4) * 4
+    try:
+        ram_gb = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') / (1024 ** 3)
+        ram_cap = int(ram_gb // 1.5)
+    except (ValueError, OSError, AttributeError):
+        ram_cap = 8
+    return max(4, min(cpu_cap, ram_cap, 16))
+
+
+MAX_BROWSERS = int(os.environ.get('MAX_BROWSERS', str(_default_max_browsers())))
 # 브라우저를 띄우기 전에 requests로 먼저 시도할지(httpfetch.py 참고). 판별에 쓰는 정보가
 # 충분히 나오면 그대로 쓰고, 모자라거나 차단되면 자동으로 브라우저 경로로 넘어간다 —
 # 판정이 이상해지면 HTTP_FAST_PATH=0으로 끄고 예전 동작(항상 브라우저)으로 되돌릴 수 있다.

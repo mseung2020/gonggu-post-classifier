@@ -12,7 +12,7 @@ ITEM_DELAY(_SMART) 값을 그대로 공유한다. 진행 로그/카운터 스타
 import os
 import sys
 
-from gonggu.common import DEEPSEEK_KEY, connect_dst
+from gonggu.common import DEEPSEEK_KEY, acquire_lock, connect_dst
 from gonggu.crawl_pool import run_crawl_pool
 from gonggu.resolve_links.config import ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSERS
 from gonggu.resolve_links.urlutil import host_of
@@ -59,6 +59,7 @@ def process_target(page, code, row, caption):
 
 
 def main():
+    acquire_lock('enrich_detail')
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)

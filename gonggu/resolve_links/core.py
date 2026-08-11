@@ -1,6 +1,6 @@
 """링크 해석의 핵심 상태 기계 — 후보 URL 하나하나를 시도하며 done/hold/unresolved/error를
 가른다(post -> 프로필/링크모음 -> 상품 흐름의 오케스트레이션 본체)."""
-from .antibot import is_non_mall
+from .antibot import is_excluded_marketplace, is_non_mall
 from .browser import fetch, fetch_with_browser
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
 from .links import extract_collection_links, linkbio_candidates, normalize_url
@@ -26,7 +26,10 @@ def resolve_product(page, platform, parent, product):
     반환: {status, final_url, candidate_url, note, tried_urls}."""
     raw_urls = [u for u in (product.get('candidate_url') or '').split(';') if u]
     handle = parent.get('user_id') if platform == 'ig' else None
-    candidates = rank_candidates(raw_urls, handle)
+    # 쿠팡/알리/테무는 후보 단계에서 원천 제외 — done이 되지 않게(2026-08-11 정책).
+    ranked = rank_candidates(raw_urls, handle)
+    candidates = [c for c in ranked if not is_excluded_marketplace(c)]
+    dropped_marketplace = len(candidates) != len(ranked)
 
     if not candidates and platform == 'yt' and parent.get('video_id'):
         # candidate_url이 있었는데 전부 '...'로 잘려서 못 쓰게 된 경우, 유튜브 원문 설명에서
@@ -50,6 +53,12 @@ def resolve_product(page, platform, parent, product):
     if not raw_urls and not candidates:
         return {'status': 'unresolved', 'final_url': None, 'candidate_url': None,
                 'note': '크롤링할 후보 링크 없음', 'tried_urls': []}
+    if not candidates and dropped_marketplace:
+        # 후보가 있었지만 전부 쿠팡/알리/테무라 다 빠진 경우 — candidate_url을 비워 재시도(rescan)
+        # 때도 크롤 대상이 안 되게 한다(제휴 마켓플레이스는 공구 대상 아님).
+        return {'status': 'unresolved', 'final_url': None, 'candidate_url': None,
+                'note': '쿠팡/알리익스프레스/테무 마켓플레이스 링크뿐이라 공구 대상에서 제외',
+                'tried_urls': []}
     if not candidates:
         return {'status': 'unresolved', 'final_url': None, 'candidate_url': None,
                 'note': f"실제 구매 링크(url_type={product.get('url_type')})가 원본부터 잘려서 확인 불가",

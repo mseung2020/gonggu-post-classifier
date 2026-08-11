@@ -1,4 +1,5 @@
 """파이프라인 전체가 공유하는 설정/DB 연결/LLM 호출 헬퍼."""
+import atexit
 import datetime
 import json
 import os
@@ -11,6 +12,33 @@ from dotenv import load_dotenv
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / '.env')
+
+
+def acquire_lock(name):
+    """중복 실행 방지 락 — 이미 살아있는 동일 이름 실행이 있으면 SystemExit로 시작을 거부한다.
+
+    크롤 무거운 단계(rescan/resolve/backfill/enrich/reverify/crawl_linkbio)를 실수로 겹쳐
+    돌리면 브라우저가 배수로 떠 메모리·안티봇 과부하가 난다(2026-08-11 rescan 5중첩으로 크롬
+    수백 개·스왑 소진, uc 크롬까지 못 뜬 사고). daily는 자체 lock이 있지만 개별 단계를 수동/
+    --from으로 다시 돌리면 이전 것이 고아로 살아있는 채 새로 쌓인다 — 이 락이 그 두 번째를 막는다.
+
+    인터프리터 정상 종료(예외·Ctrl-C 포함) 시 atexit로 lock을 지운다. -9로 강제 종료돼 lock이
+    남으면 다음 실행이 pid 생존(os.kill 0)을 확인해 죽은 lock은 덮어쓴다(daily._acquire_lock 패턴)."""
+    lock = ROOT / f'data/output/.{name}.lock'
+    if lock.exists():
+        try:
+            pid = int(lock.read_text().strip())
+            os.kill(pid, 0)  # 살아있으면 예외 없음
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # 죽은 프로세스의 잔여 lock — 덮어쓴다
+        else:
+            raise SystemExit(
+                f'⚠ 이미 {name}이(가) 실행 중입니다(pid {pid}). 중복 실행은 브라우저·메모리·'
+                f'안티봇 과부하를 유발하므로 시작을 거부합니다. 그 실행이 끝난 뒤 다시 시도하세요'
+                f'(멈춘 것 같으면: pkill -f "{name}" 로 정리 후 재시도).')
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()))
+    atexit.register(lambda: lock.unlink() if lock.exists() else None)
 
 # 각 단계 산출물을 발행일(YYYY-MM-DD.json)별로 쪼개서 폴더에 저장한다 — 폴더 이름 자체가
 # "이 파일이 몇 번째 단계에서 나왔는지"를 보여주고, 날짜 파일 하나만 열어도 그날 무슨 포스트가

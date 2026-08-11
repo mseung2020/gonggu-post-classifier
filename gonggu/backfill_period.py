@@ -37,7 +37,8 @@ import datetime
 import os
 import sys
 
-from gonggu.common import DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, connect_dst, load_jsonl
+from gonggu.common import (DEEPSEEK_KEY, ROOT, acquire_lock, append_jsonl, call_llm, connect_dst,
+                           load_jsonl)
 from gonggu.crawl_pool import run_crawl_pool
 from gonggu.platforms import PLATFORMS, product_update_period_sql
 from gonggu.prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
@@ -106,6 +107,7 @@ def _page_text_or_raise(page, url):
 
 
 def main():
+    acquire_lock('backfill_period')
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)

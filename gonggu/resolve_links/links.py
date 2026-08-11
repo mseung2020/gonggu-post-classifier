@@ -4,6 +4,7 @@ import threading
 
 from gonggu import linkbio_parser
 
+from .antibot import is_excluded_marketplace
 from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT
 
 # 같은 인플루언서의 링크인바이오 페이지(예: 인포크 계정 하나)를 형제 상품 여러 개가 그대로
@@ -41,6 +42,8 @@ def _filter_link_pairs(pairs):
     for href, text, source in pairs:
         if not href or href in seen or any(d in href for d in BAD_DOMAINS):
             continue
+        if is_excluded_marketplace(href):   # 쿠팡/알리/테무 링크는 후보에서 원천 제외(2026-08-11)
+            continue
         text_norm = re.sub(r'\s+', '', text or '').lower()
         if text_norm and any(kw in text_norm for kw in NON_PRODUCT_TEXT):
             continue
@@ -73,11 +76,13 @@ def extract_collection_links(page):
 
 def linkbio_candidates(url):
     """_fetch_linkbio_candidates의 URL 단위 캐시 래퍼. 같은 URL을 여러 상품이 동시에 요청하면
-    첫 요청만 실제로 계산하고 나머지는 그 결과를 기다렸다가 재사용한다."""
+    첫 요청만 실제로 계산하고 나머지는 그 결과를 기다렸다가 재사용한다.
+    파싱 원본(data)도 캐시에 함께 남겨, resolve가 끝난 뒤 cached_linkbio_data로 꺼내 날짜별
+    JSON으로 저장한다(인포크를 두 번 크롤하지 않기 위함)."""
     with _linkbio_cache_lock:
         entry = _linkbio_cache.get(url)
         if entry is None:
-            entry = {'event': threading.Event(), 'result': None}
+            entry = {'event': threading.Event(), 'result': None, 'data': None}
             _linkbio_cache[url] = entry
             is_new = True
         else:
@@ -86,10 +91,19 @@ def linkbio_candidates(url):
         entry['event'].wait()
         return entry['result']
     try:
-        entry['result'] = _fetch_linkbio_candidates(url)
+        entry['result'], entry['data'] = _fetch_linkbio_candidates(url)
     finally:
         entry['event'].set()
     return entry['result']
+
+
+def cached_linkbio_data(url):
+    """resolve 중 이미 파싱해 둔 인포크 허브의 **원본 파싱 결과(dict)**를 캐시에서 꺼낸다.
+    아직 파싱 안 됐거나 미지원/실패면 None. resolve 끝에 이걸 모아 날짜별 JSON으로 저장한다
+    — 인포크를 다시 크롤하지 않고(메모리에만 있던 파싱을 파일로) 보존하기 위함."""
+    with _linkbio_cache_lock:
+        entry = _linkbio_cache.get(url)
+    return entry.get('data') if entry else None
 
 
 def _fetch_linkbio_candidates(url):
@@ -97,16 +111,17 @@ def _fetch_linkbio_candidates(url):
     대신 개발자가 공유해준 linkbio_parser로 requests 기반 구조화 데이터(상품명/가격/실제
     URL)를 직접 뽑아온다 — 브라우저 없이 훨씬 빠르고, 버튼 텍스트 추측 대신 실제 상품 목록을
     쓰니 더 정확하다(실측: viki105 계정 56개 상품을 2.5초에 정확한 이름+URL로 추출, 2026-07-20).
-    지원 안 하는 플랫폼이거나 파싱 실패(페이지 구조 변경 등)면 None을 반환해 호출부가 기존
-    Playwright 경로로 자연스럽게 넘어가게 한다."""
+    지원 안 하는 플랫폼이거나 파싱 실패(페이지 구조 변경 등)면 (None, None)을 반환해 호출부가 기존
+    Playwright 경로로 자연스럽게 넘어가게 한다.
+    반환: (후보 리스트, 파싱 원본 dict) — 원본은 cached_linkbio_data로 노출돼 날짜별 JSON 저장에 쓰인다."""
     try:
         linkbio_parser.detect_platform(url)
     except ValueError:
-        return None
+        return None, None
     try:
         data = linkbio_parser.parse(url, resolve_links=True)
     except Exception:
-        return None
+        return None, None
 
     def _absolute(href):
         # resolved_url이 없으면(리다이렉트 추적 실패) url 원본으로 대체하는데, 인포크
@@ -131,4 +146,4 @@ def _fetch_linkbio_candidates(url):
             price = p.get('price')
             text = f"{p.get('name') or ''} {price}원".strip() if price else (p.get('name') or '')
             pairs.append((href, text, 'product'))
-    return _filter_link_pairs(pairs)
+    return _filter_link_pairs(pairs), data

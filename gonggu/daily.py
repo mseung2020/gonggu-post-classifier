@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """일일 퀘스트 오케스트레이터(대공사 2단계 B6, 2026-08-05) — 손으로 치던 명령 10개를 하나로.
 
-    python3 -m gonggu.daily              # 6→1→8-1→2→8-2→3→4→5→7→9 전체 실행
+    python3 -m gonggu.daily              # 6→1→8-1→2→8-2→3→4→5→7→9 전체 실행(인포크 JSON은 4=resolve에 흡수)
     python3 -m gonggu.daily --list       # 실행 순서와 각 단계의 동시성 기본값만 출력
     python3 -m gonggu.daily --from resolve_links   # 이 단계부터 이어서(그 앞은 건너뜀)
     python3 -m gonggu.daily --only load            # 이 단계 하나만
@@ -44,11 +44,14 @@ STAGES = [
     ('classify',            {'CONCURRENCY': '200'}),      # 2. LLM#1 공구 분류
     ('classify_yt_ppl',     {'CONCURRENCY': '200'}),      # 8-2. 유튜브 PPL 공구 판별(독립)
     ('transform',           {}),                          # 3. 보수적 게이트링
-    ('resolve_links',       {'RESOLVE_CONCURRENCY': '100'}),   # 4. 링크 해석
+    ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),    # 4. 링크 해석
     ('load',                {}),                          # 5. DB 적재
-    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '100'}),    # 7. 진행중 미해석 재탐색
-    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '50'}),  # 9. 공구기간 백필
+    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '40'}),     # 7. 진행중 미해석 재탐색
+    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '20'}),  # 9. 공구기간 백필
     ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
+    # 인포크 허브 JSON 저장은 resolve_links 단계에서 파싱본을 그대로 떨구는 방식으로 흡수됐다
+    # (2026-08-11, 중복 크롤 제거) — 별도 crawl_linkbio 단계는 데일리에서 제외. 예전에 이미 적재된
+    # 포스트의 소급이 필요하면 standalone으로 `python3 -m gonggu.crawl_linkbio`를 한 번 돌린다.
 ]
 
 

@@ -41,7 +41,7 @@ import os
 import sys
 from collections import Counter
 
-from gonggu.common import DEEPSEEK_KEY, ROOT, append_jsonl, connect_dst, load_jsonl
+from gonggu.common import DEEPSEEK_KEY, ROOT, acquire_lock, append_jsonl, connect_dst, load_jsonl
 from gonggu.crawl_pool import run_crawl_pool
 from gonggu.platforms import PLATFORMS, parent_ctx_from_row, product_update_link_sql
 from gonggu.resolve_links.config import HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART, \
@@ -123,6 +123,7 @@ def _fetch_candidates(conn):
 
 
 def main():
+    acquire_lock('rescan_inprogress')
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)

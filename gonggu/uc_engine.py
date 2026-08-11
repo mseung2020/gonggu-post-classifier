@@ -104,6 +104,8 @@ _WARMUP = {
     'gmarket.co.kr': ['https://www.gmarket.co.kr/'],
     'auction.co.kr': ['https://www.auction.co.kr/'],
     'coupang.com': ['https://www.coupang.com/'],
+    'ohou.se': ['https://ohou.se/', 'https://store.ohou.se/'],
+    '11st.co.kr': ['https://www.11st.co.kr/'],
 }
 _warmed_hosts = set()
 
