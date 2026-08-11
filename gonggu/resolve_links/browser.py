@@ -109,6 +109,32 @@ def _extract_once(page):
     return title, og_image, jsonld, body_text
 
 
+# ── 호스트별 적응형 쿨다운(2026-08-11) — 429/403을 준 호스트만 잠깐 쉬어 레이트리밋 폭발을 막는다.
+# 어떤 호스트가 차단으로 응답하면 그 호스트로 가는 다음 요청들을 HOST_COOLDOWN_SEC초 뒤로 미룬다
+# (전역 도메인이 아니라 그 호스트만 — 정상 호스트는 영향 없음). uc를 기본 tier로 돌리기 시작하면서
+# 네이버/오픈마켓을 두들겨 IP가 눌리는 걸 예방하는 안전망. 정상 응답이 오면 쿨다운은 자연 만료된다.
+_host_cooldown = {}
+_host_cooldown_lock = threading.Lock()
+_HOST_COOLDOWN_SEC = float(os.environ.get('HOST_COOLDOWN_SEC', '20'))
+
+
+def _cooldown_wait(host):
+    if not host or _HOST_COOLDOWN_SEC <= 0:
+        return
+    with _host_cooldown_lock:
+        until = _host_cooldown.get(host, 0)
+    remaining = until - time.time()
+    if remaining > 0:
+        time.sleep(min(remaining, _HOST_COOLDOWN_SEC))
+
+
+def _mark_blocked(host):
+    if not host or _HOST_COOLDOWN_SEC <= 0:
+        return
+    with _host_cooldown_lock:
+        _host_cooldown[host] = time.time() + _HOST_COOLDOWN_SEC
+
+
 def _uc_enabled_for(url):
     """uc 옵트인 폴백 대상인지 — RESOLVE_UC=1이고 호스트가 RESOLVE_UC_HOSTS(기본 naver.)에
     걸릴 때만. 환경변수를 호출 시점에 읽어서(import 시점 아님) reverify_uc가 런타임에 켜도
@@ -169,6 +195,7 @@ def fetch(page, url, wait_extra=1.5, referer=None):
     그게 리다이렉트되는 네이버 페이지에서 난다(2026-08-07 첫 실행에서 uc가 아예 안 걸린 원인:
     인포크 호스트만 보고 스킵했음). 그리고 네이버 최종 상품 URL이 깔끔하면 그 URL을 직접 열고,
     로그인 리다이렉트(nid.naver.com)면 원본을 열어 uc가 쿠키 실은 채 새로 리다이렉트를 따라가게 한다."""
+    _cooldown_wait(host_of(url))  # 이 호스트가 최근 차단으로 쿨다운 중이면 잠깐 기다린다
     with domain_gate(url):
         rec = try_http_fetch(url, referer)
         if rec is None:
@@ -177,6 +204,8 @@ def fetch(page, url, wait_extra=1.5, referer=None):
     final = rec.get('final_url') or ''
     uc_on = os.environ.get('RESOLVE_UC', '0') == '1'
     blocked = _looks_blocked(rec)
+    if blocked:  # 차단한 호스트에 쿨다운 등록 — 다음 요청들이 몰려가 429가 폭발하지 않게
+        _mark_blocked(host_of(final) or host_of(url))
     hub = is_linkbio_hub(url)   # 인포크 등 허브 URL(resolved 실패로 href가 허브로 남은 경우) — 네이버로 리다이렉트됨
     if uc_on and blocked:
         # 진단(RESOLVE_UC일 때만) — uc가 왜 걸렸/안 걸렸는지 근거를 그대로 보여준다.

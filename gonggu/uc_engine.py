@@ -80,6 +80,14 @@ def build_driver():
     opts.add_argument('--no-first-run')
     profile = os.environ.get('UC_PROFILE') or str(DEFAULT_PROFILE)
     os.makedirs(profile, exist_ok=True)
+    # 스테일 프로필 락 청소 — 이전 uc 프로세스가 비정상 종료(크래시/-9)하면 SingletonLock이 남아
+    # 다음 실행이 "cannot connect to chrome / 흰 창"으로 죽는다(2026-08-11 실측). 데일리는 uc
+    # 단계를 순차로만 돌리므로(동시 uc 없음) 여기서 지워도 안전하다.
+    for _lockname in ('SingletonLock', 'SingletonCookie', 'SingletonSocket'):
+        try:
+            os.unlink(os.path.join(profile, _lockname))
+        except OSError:
+            pass
     opts.add_argument(f'--user-data-dir={profile}')
     if os.environ.get('UC_HEADLESS', '0') == '1':
         opts.add_argument('--headless=new')

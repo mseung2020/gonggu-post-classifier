@@ -36,6 +36,18 @@ from gonggu.common import ROOT
 LOG_DIR = ROOT / 'data/logs'
 LOCK_FILE = ROOT / 'data/output/.daily.lock'
 
+# resolve/rescan에 uc tier를 상시 적용하는 환경변수 묶음(2026-08-11) — 네이버/오픈마켓이
+# Playwright에 막히면 undetected_chromedriver로 재시도해 done을 처음부터 최대화한다.
+# UC_LOGIN_WAIT=0: 무인 데일리라 캡차에서 사람을 기다리지 않는다(못 뚫으면 unresolved로 두고
+# 다음날 재시도 — 신뢰 만료는 uc_healthcheck 단계가 미리 경고). 쿠팡/알리/테무는 정책상 제외라
+# uc 대상에도 없다(config.EXCLUDED_MARKETPLACE_DOMAINS).
+_UC_HOSTS = 'naver.,gmarket.co.kr,auction.co.kr,ohou.se,11st.co.kr'
+
+
+def _UC_ENV(conc_key, conc_val):
+    return {conc_key: conc_val, 'RESOLVE_UC': '1', 'RESOLVE_UC_HOSTS': _UC_HOSTS, 'UC_LOGIN_WAIT': '0'}
+
+
 # (모듈명, 이 단계 전용 동시성/기간 기본값) — 환경변수로 이미 지정돼 있으면 그 값이 이긴다.
 STAGES = [
     ('update_gonggu_stage', {}),                          # 6. 공구 상태 갱신
@@ -44,10 +56,12 @@ STAGES = [
     ('classify',            {'CONCURRENCY': '200'}),      # 2. LLM#1 공구 분류
     ('classify_yt_ppl',     {'CONCURRENCY': '200'}),      # 8-2. 유튜브 PPL 공구 판별(독립)
     ('transform',           {}),                          # 3. 보수적 게이트링
-    ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),    # 4. 링크 해석
+    ('uc_healthcheck',      {}),                          # 3-5. 네이버 uc 신뢰 점검(비대화형, 경고만)
+    ('resolve_links',       _UC_ENV('RESOLVE_CONCURRENCY', '40')),   # 4. 링크 해석(uc tier 상시)
     ('load',                {}),                          # 5. DB 적재
-    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '40'}),     # 7. 진행중 미해석 재탐색
-    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '20'}),  # 9. 공구기간 백필
+    ('rescan_inprogress',   _UC_ENV('RESCAN_CONCURRENCY', '40')),    # 7. 진행중 미해석 재탐색(uc tier 상시)
+    ('backfill_period_inpock', {'CONCURRENCY': '8'}),          # 9-0. 기간 백필(인포크 우선, 크롤 없음)
+    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '20'}),  # 9. 공구기간 백필(몰 크롤, 인포크로 못 채운 것만)
     ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
     # 인포크 허브 JSON 저장은 resolve_links 단계에서 파싱본을 그대로 떨구는 방식으로 흡수됐다
     # (2026-08-11, 중복 크롤 제거) — 별도 crawl_linkbio 단계는 데일리에서 제외. 예전에 이미 적재된
