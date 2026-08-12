@@ -36,17 +36,13 @@ from gonggu.common import ROOT
 LOG_DIR = ROOT / 'data/logs'
 LOCK_FILE = ROOT / 'data/output/.daily.lock'
 
-# resolve/rescan에 uc tier를 상시 적용하는 환경변수 묶음(2026-08-11) — 네이버/오픈마켓이
-# Playwright에 막히면 undetected_chromedriver로 재시도해 done을 처음부터 최대화한다.
-# UC_LOGIN_WAIT=0: 무인 데일리라 캡차에서 사람을 기다리지 않는다(못 뚫으면 unresolved로 두고
-# 다음날 재시도 — 신뢰 만료는 uc_healthcheck 단계가 미리 경고). 쿠팡/알리/테무는 정책상 제외라
-# uc 대상에도 없다(config.EXCLUDED_MARKETPLACE_DOMAINS).
-_UC_HOSTS = 'naver.,gmarket.co.kr,auction.co.kr,ohou.se,11st.co.kr'
-
-
-def _UC_ENV(conc_key, conc_val):
-    return {conc_key: conc_val, 'RESOLVE_UC': '1', 'RESOLVE_UC_HOSTS': _UC_HOSTS, 'UC_LOGIN_WAIT': '0'}
-
+# ⚠ uc를 데일리 대량 resolve/rescan에 상시 넣는 건 철회했다(2026-08-12). 이유: 이 맥의 최신
+# 크롬(v151) + undetected_chromedriver 조합이 동시성 높은 대량 경로에서 반복 크래시("Chrome이
+# 예기치 않게 종료")를 내 데일리가 정지·불안정해졌다. uc는 무겁고 단일 드라이버 직렬이라 대량
+# 무인 경로엔 부적합 — 대신 데일리는 안정적인 Playwright로 돌리고, 네이버/오픈마켓 구제는 사람이
+# 곁에서 낮은 동시성으로 돌리는 별도 패스(python3 -m gonggu.resolve_links.reverify_uc)로 한다.
+# 다시 데일리에 uc를 켜고 싶으면 아래 resolve_links/rescan_inprogress 단계 env에
+# RESOLVE_UC=1, RESOLVE_UC_HOSTS=..., UC_LOGIN_WAIT=0 을 넣으면 된다(권장하지 않음).
 
 # (모듈명, 이 단계 전용 동시성/기간 기본값) — 환경변수로 이미 지정돼 있으면 그 값이 이긴다.
 STAGES = [
@@ -56,10 +52,9 @@ STAGES = [
     ('classify',            {'CONCURRENCY': '200'}),      # 2. LLM#1 공구 분류
     ('classify_yt_ppl',     {'CONCURRENCY': '200'}),      # 8-2. 유튜브 PPL 공구 판별(독립)
     ('transform',           {}),                          # 3. 보수적 게이트링
-    ('uc_healthcheck',      {}),                          # 3-5. 네이버 uc 신뢰 점검(비대화형, 경고만)
-    ('resolve_links',       _UC_ENV('RESOLVE_CONCURRENCY', '40')),   # 4. 링크 해석(uc tier 상시)
+    ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),   # 4. 링크 해석(Playwright — 안정)
     ('load',                {}),                          # 5. DB 적재
-    ('rescan_inprogress',   _UC_ENV('RESCAN_CONCURRENCY', '40')),    # 7. 진행중 미해석 재탐색(uc tier 상시)
+    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '40'}),    # 7. 진행중 미해석 재탐색(Playwright)
     ('backfill_period_inpock', {'CONCURRENCY': '8'}),          # 9-0. 기간 백필(인포크 우선, 크롤 없음)
     ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '20'}),  # 9. 공구기간 백필(몰 크롤, 인포크로 못 채운 것만)
     ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
@@ -95,7 +90,10 @@ def _release_lock():
 def _run_stage(module, extra_env, log):
     """한 단계를 서브프로세스로 실행 — stdout은 콘솔+로그, stderr는 로그에만.
     반환: (exit code, stderr 마지막 20줄)."""
-    env = {**extra_env, **os.environ}  # 사용자가 넘긴 환경변수가 기본값을 이긴다
+    # PYTHONUNBUFFERED=1: 서브프로세스 stdout이 파이프로 갈 때 블록버퍼링돼 진행 로그가 한참 안
+    # 보이는 문제 방지(2026-08-11 — backfill_period_inpock가 flush 없이 돌아 "멈춘 듯" 보였음).
+    # 사용자 지정 환경변수가 기본값을 이기되, 언버퍼링은 항상 강제한다.
+    env = {**extra_env, **os.environ, 'PYTHONUNBUFFERED': '1'}
     proc = subprocess.Popen([sys.executable, '-m', f'gonggu.{module}'],
                             cwd=ROOT, env=env, text=True, encoding='utf-8', errors='replace',
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
