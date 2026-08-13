@@ -20,10 +20,14 @@ DDL은 queries/create_detail_tables.sql 참고.
     writeback.py detail UPSERT + image 전체 교체(상품 단위 트랜잭션).
                  error/gone은 상태 컬럼만 갱신 — 기존 done 데이터를 NULL로 덮지 않음
 
-실행(저장소 루트에서):
-    python3 -m gonggu.enrich_detail                # 대상 전부(첫 실행 = 백로그 전수)
+실행(저장소 루트에서) — 2단 백필(2026-08-12, 데일리 편입 전 단계):
+    python3 -m gonggu.enrich_detail                # 1단계 fast: 자사몰 대량(무인·병렬), 막힌 건 blocked
+    DETAIL_MODE=uc python3 -m gonggu.enrich_detail # 2단계 uc: blocked만 uc로 재시도(warmup 먼저)
     LIMIT=10 python3 -m gonggu.enrich_detail       # 소량 테스트
     PLATFORM=ig DETAIL_CONCURRENCY=8 python3 -m gonggu.enrich_detail
+  fast는 안티봇에 막힌 상품을 detail_status='blocked'로 남기고, uc는 그 blocked만 골라(호스트
+  무관) 실제 크롬으로 다시 뚫는다. 두 패스는 순서 barrier 없이 DB 상태로 결합된다. 아직
+  데일리(gonggu.daily)에는 넣지 않았다 — 소급(백로그) 테스트 단계.
 
 이미지 URL은 LLM 입출력에서 완전히 배제한다(코드만 다룸) — LLM이 URL을 한 글자만 틀려도
 검증 불가능한 깨진 링크가 DB에 들어가기 때문. 상세 원리/결정 기록은 README와

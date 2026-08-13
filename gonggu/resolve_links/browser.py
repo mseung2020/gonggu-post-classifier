@@ -7,11 +7,24 @@ from contextlib import contextmanager
 
 from playwright_stealth import Stealth
 
-from .antibot import is_linkbio_hub
+from .antibot import is_linkbio_hub, is_uc_host
 from .config import (AUTH_STATE_FILE, BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS,
                      MAX_PER_DOMAIN, SLOW_REDIRECT_DOMAINS, UA)
 from .httpfetch import extract_jsonld, rec_from_html, try_http_fetch
 from .urlutil import host_of
+
+# fast(무인) resolve/rescan가 uc 호스트를 만나 브라우저를 생략할 때 남기는 노트 — 반드시
+# '재검증 중 차단'을 포함해야 reverify_uc(LIKE '%재검증 중 차단%')가 2단 uc 대상으로 주워간다.
+UC_SKIP_NOTE = '재검증 중 차단(네이버/오픈마켓 로그인월 호스트) — fast에서 브라우저 생략, uc 패스 대상'
+
+
+def fast_skip_uc_host(url):
+    """이 URL을 fast(무인) 경로에서 브라우저로 열지 말고 uc 패스(reverify_uc)로 넘길지 판단.
+    RESOLVE_UC=1(reverify_uc 2단 패스)이면 False라 그 패스에선 실제로 uc로 연다. 환경변수를
+    호출 시점에 읽어(import 시점 아님) 런타임 토글이 반영되게 한다(browser._uc_enabled_for와 동일 규약)."""
+    if os.environ.get('RESOLVE_UC', '0') == '1':
+        return False
+    return is_uc_host(url)
 
 # 도메인당 동시 접근 상한을 "어느 상품이 이 도메인을 먼저 후보로 들고 있었나"가 아니라
 # "지금 실제로 이 도메인에 Playwright 네비게이션을 여는 순간"에 건다 — 예전엔 runner.py가

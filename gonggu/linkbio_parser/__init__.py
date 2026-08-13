@@ -23,12 +23,14 @@
   platforms/    : 플랫폼별 파서(전략 패턴) — 각각 parse(url, resolve_links) -> dict
   registry.py   : 플랫폼 이름 -> 파서 dispatch table + 공개 진입점(parse/fetch_raw/save)
   batch.py      : URL 목록 일괄 처리(수동 테스트/진단용, 메인 파이프라인은 안 씀)
+  emails.py     : parse() 결과 dict에서 연락 이메일 찾기(플랫폼 무관, 재귀 텍스트 스캔)
 
 [공개 API — 이 패키지 밖에서는 이것만 쓰면 됨]
   detect_platform(url) -> str        # 지원 안 하는 도메인이면 ValueError
   parse(url, resolve_links=True) -> dict
   fetch_raw(url) -> dict             # 가공 전 원본 데이터(진단용)
   save(data, out_dir=..., suffix=...) -> str
+  extract_emails(parsed) -> list[str]  # parse() 결과에서 이메일만 뽑기
 
 [결과 dict의 공통 형태]
   {
@@ -39,7 +41,8 @@
   }
 ================================================================================
 """
+from .emails import extract_emails
 from .hosts import detect_platform
 from .registry import PARSERS, fetch_raw, parse, save
 
-__all__ = ["detect_platform", "parse", "fetch_raw", "save", "PARSERS"]
+__all__ = ["detect_platform", "parse", "fetch_raw", "save", "PARSERS", "extract_emails"]

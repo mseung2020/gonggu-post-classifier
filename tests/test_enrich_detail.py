@@ -235,9 +235,18 @@ def test_table_and_fk_derivation():
 
 
 def test_select_sql_targets_done_and_pending_or_error():
-    sql = select_targets_sql(PLATFORMS['ig'])
+    sql = select_targets_sql(PLATFORMS['ig'])           # 기본 = fast 모드
     assert "pp.link_status = 'done'" in sql
     assert "detail_status IN ('pending', 'error')" in sql and 'd.id IS NULL' in sql
+    assert 'blocked' not in sql                          # fast는 blocked를 다시 안 건드림
+
+
+def test_select_sql_uc_mode_targets_blocked_only():
+    """uc 모드는 detail_status='blocked'인 것만(fast가 막아 넘긴 집합) — 호스트 무관."""
+    sql = select_targets_sql(PLATFORMS['ig'], 'uc')
+    assert "pp.link_status = 'done'" in sql
+    assert "d.detail_status = 'blocked'" in sql
+    assert "IN ('pending', 'error')" not in sql and 'd.id IS NULL' not in sql
 
 
 def test_upsert_sql_shapes():
@@ -421,3 +430,68 @@ def test_shipping_text_fallback_rejects_junk():
     facts = extract_facts(html, 'https://item.gmarket.co.kr/Item?goodscode=1', 2000)
     assert facts['shipping_note'] is None and facts['shipping_fee'] is None
     assert facts['free_shipping'] is None
+
+
+# ── fast/uc 2단 백필 + blocked 라우팅 (2026-08-12) ───────────────────────────
+
+def test_presumed_block_host_matching():
+    """fast 모드가 곧장 blocked로 넘길 '사전 차단 호스트' 판정 — 네이버/오픈마켓은 참, 자사몰 거짓."""
+    from gonggu.enrich_detail.fetchpage import _is_presumed_block_host
+    assert _is_presumed_block_host('https://smartstore.naver.com/x/products/1')
+    assert _is_presumed_block_host('https://item.gmarket.co.kr/Item?goodscode=1')
+    assert _is_presumed_block_host('https://store.ohou.se/products/1')
+    assert not _is_presumed_block_host('https://shop.cafe24.com/product/1')
+    assert not _is_presumed_block_host('https://brand.co.kr/goods/2')
+
+
+def test_fast_mode_presumed_host_short_circuits_to_blocked(monkeypatch):
+    """fast 모드: 사전 차단 호스트는 크롤 시도(Playwright/uc) 없이 곧장 blocked rec을 돌려준다."""
+    from gonggu.enrich_detail import fetchpage
+    monkeypatch.setattr(fetchpage, 'DETAIL_MODE', 'fast')
+    monkeypatch.delenv('DETAIL_NAVER_ENGINE', raising=False)
+    # page=None을 넘겨도 브라우저 경로로 안 가야 함(지름길) — 안 그러면 여기서 터진다.
+    rec = fetchpage.fetch_detail_page(None, 'https://smartstore.naver.com/x/products/1')
+    assert rec['blocked'] is True and rec['via'] == 'skip' and rec['gone'] is None
+
+
+def test_uc_mode_enables_engine_for_all_hosts(monkeypatch):
+    """uc 모드: 엔진 on + 모든 호스트가 uc 대상(대상 자체가 이미 blocked 집합이므로)."""
+    from gonggu.enrich_detail import fetchpage
+    monkeypatch.setattr(fetchpage, 'DETAIL_MODE', 'uc')
+    assert fetchpage._uc_enabled() is True
+    assert fetchpage._is_uc_host('https://shop.cafe24.com/p/1') is True   # 호스트 무관
+    assert fetchpage._is_uc_host('https://smartstore.naver.com/x') is True
+
+
+def test_uc_mode_routes_to_uc_not_skip(monkeypatch):
+    """uc 모드에선 사전 차단 지름길을 타지 않고 실제 uc 경로로 간다."""
+    from gonggu.enrich_detail import fetchpage
+    monkeypatch.setattr(fetchpage, 'DETAIL_MODE', 'uc')
+    sentinel = {'via': 'uc', 'html': '<html>ok</html>', 'final_url': 'https://x',
+                'status': 200, 'error': None, 'gone': None, 'blocked': False}
+    monkeypatch.setattr(fetchpage, '_uc_fetch', lambda url: sentinel)
+    rec = fetchpage.fetch_detail_page(None, 'https://smartstore.naver.com/x/products/1')
+    assert rec is sentinel
+
+
+def test_process_target_blocked_returns_blocked(monkeypatch):
+    """rec.blocked면 process_target은 gone/error가 아니라 'blocked'로 라우팅(LLM 호출 없이 조기 반환)."""
+    from gonggu.enrich_detail import runner
+    monkeypatch.setattr(runner, 'fetch_detail_page', lambda page, url: {
+        'via': 'skip', 'html': '', 'final_url': url, 'status': None,
+        'error': '사전 차단 호스트', 'gone': None, 'blocked': True})
+    status, fields, images, err, dbg = runner.process_target(
+        None, 'ig', {'candidate_url': 'https://smartstore.naver.com/x', 'product_name': 'p'}, '')
+    assert status == 'blocked' and fields is None and images == []
+    assert '차단' in err
+
+
+def test_gone_precedence_over_blocked(monkeypatch):
+    """gone(영구 소멸)은 blocked보다 우선 — 죽은 페이지를 uc로 재시도해봐야 소용없다."""
+    from gonggu.enrich_detail import runner
+    monkeypatch.setattr(runner, 'fetch_detail_page', lambda page, url: {
+        'via': 'http', 'html': '', 'final_url': url, 'status': 404,
+        'error': None, 'gone': 'HTTP 404', 'blocked': False})
+    status, *_ = runner.process_target(
+        None, 'ig', {'candidate_url': 'https://x.co.kr/p', 'product_name': 'p'}, '')
+    assert status == 'gone'

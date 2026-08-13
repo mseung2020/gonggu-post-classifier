@@ -1,7 +1,9 @@
-"""resolve가 인포크 파싱본을 게시일별 JSON으로 떨구는지(2026-08-11 중복 크롤 제거) — 캐시에
-이미 있는 파싱 결과만 꺼내 쓰고 재크롤하지 않는다."""
+"""resolve가 링크인바이오 파싱본을 게시일별 JSON으로 떨구는지(2026-08-11 중복 크롤 제거,
+인포크 한정 해제) — 캐시에 이미 있는 파싱 결과만 꺼내 쓰고 재크롤하지 않는다. 곁다리 이메일
+수집(HIFEN_EMAIL_FILE)도 여기서 같이 검증한다."""
 import json
 
+from gonggu.common import HIFEN_EMAIL_FILE
 from gonggu.crawl_linkbio import OUT_DIR
 from gonggu.resolve_links import links, runner
 
@@ -34,6 +36,43 @@ def test_dump_linkbio_from_cache(monkeypatch):
             out_file.unlink(missing_ok=True)
         else:
             out_file.write_text(before)
+
+
+def test_dump_linkbio_non_inpock_platform_and_email_sync_file(monkeypatch):
+    # 인포크가 아닌 링크인바이오 플랫폼(링크트리)도 파싱본/이메일 추출 대상이어야 한다.
+    hub = 'https://linktr.ee/_pytest_dump2'
+    monkeypatch.setitem(links._linkbio_cache, hub,
+                        {'data': {'platform': 'linktree', 'username': '_pytest_dump2',
+                                  'bio': '문의 contact@brand.com', 'links': []}})
+    item = {'platform': 'ig',
+            'parent': {'post_id': '_PYTEST_POST2', 'publish_date': '2026-08-06',
+                       'user_id': '_pytest_user2'},
+            'products': [{'candidate_url': hub}]}
+    out_file = OUT_DIR / '2026-08-06.jsonl'
+    before_out = out_file.read_text() if out_file.exists() else None
+    before_email = HIFEN_EMAIL_FILE.read_text() if HIFEN_EMAIL_FILE.exists() else None
+    try:
+        runner._dump_linkbio([item])
+        recs = [json.loads(x) for x in out_file.read_text().splitlines() if x.strip()]
+        mine = [r for r in recs if r.get('key') == 'ig:_PYTEST_POST2']
+        assert mine, '링크트리 허브를 가진 포스트도 게시일 파일에 남아야'
+        rec = mine[-1]
+        assert rec['hub_urls'] == [hub]
+        assert rec['emails'] == 'contact@brand.com'
+
+        email_recs = [json.loads(x) for x in HIFEN_EMAIL_FILE.read_text().splitlines() if x.strip()]
+        mine_email = [r for r in email_recs if r.get('key') == '_pytest_user2']
+        assert mine_email, '이메일이 발견된 ig 계정은 HIFEN_EMAIL_FILE에도 남아야'
+        assert mine_email[-1]['emails'] == ['contact@brand.com']
+    finally:
+        if before_out is None:
+            out_file.unlink(missing_ok=True)
+        else:
+            out_file.write_text(before_out)
+        if before_email is None:
+            HIFEN_EMAIL_FILE.unlink(missing_ok=True)
+        else:
+            HIFEN_EMAIL_FILE.write_text(before_email)
 
 
 def test_dump_skips_when_no_cache(monkeypatch):

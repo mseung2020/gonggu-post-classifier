@@ -1,6 +1,6 @@
 """links.py — URL 정규화와 후보 필터링 규칙."""
 from gonggu.resolve_links.config import MAX_CANDIDATES
-from gonggu.resolve_links.links import _filter_link_pairs, normalize_url
+from gonggu.resolve_links.links import _filter_link_pairs, extract_linkbio_hub_urls, normalize_url
 
 
 class TestNormalizeUrl:
@@ -53,3 +53,23 @@ class TestFilterLinkPairs:
     def test_source_field_preserved(self):
         out = _filter_link_pairs([('https://a.example/1', '상품 9,900원', 'product')])
         assert out[0]['source'] == 'product'
+
+
+class TestExtractLinkbioHubUrls:
+    def test_finds_multiple_platforms_not_just_inpock(self):
+        text = ('https://link.inpock.co.kr/a;https://linktr.ee/b '
+                'https://litt.ly/c')
+        assert extract_linkbio_hub_urls(text) == [
+            'https://link.inpock.co.kr/a', 'https://linktr.ee/b', 'https://litt.ly/c']
+
+    def test_non_linkbio_hosts_excluded(self):
+        text = 'https://link.inpock.co.kr/a;https://smartstore.naver.com/x/products/1'
+        assert extract_linkbio_hub_urls(text) == ['https://link.inpock.co.kr/a']
+
+    def test_dedup_and_order_preserved(self):
+        text = 'https://litt.ly/c;https://litt.ly/c;https://linktr.ee/b'
+        assert extract_linkbio_hub_urls(text) == ['https://litt.ly/c', 'https://linktr.ee/b']
+
+    def test_empty_text(self):
+        assert extract_linkbio_hub_urls('') == []
+        assert extract_linkbio_hub_urls(None) == []

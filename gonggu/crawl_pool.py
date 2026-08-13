@@ -14,7 +14,9 @@ Playwright/LazyPage 수명 관리가 각각 손으로 복제되어 있었고, �
 - handle에서 예외가 새어나와도 그 항목만 실패 로그를 남기고 워커는 계속 돈다 — 예전 rescan에서
   예외로 스레드가 조용히 죽어 실제 동시성이 줄어들던 사고의 재발 방지(2026-08-04 실측).
 """
+import os
 import queue
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -23,6 +25,37 @@ from playwright.sync_api import sync_playwright
 
 from gonggu.resolve_links.browser import LazyPage
 from gonggu.resolve_links.config import MAX_BROWSERS
+
+# 스톨 워치독(2026-08-12) — sync Playwright는 워커마다 독립 드라이버를 쓰는데, 그 드라이버(노드
+# 프로세스)나 브라우저가 죽으면 page.goto의 타임아웃조차 발동 못 하고(타임아웃은 살아있는
+# 드라이버가 재워줘야 함) 그 워커가 sync 호출에서 영원히 멈춘다. 굳은 워커가 MAX_BROWSERS 허가증을
+# 쥔 채 멈추면 나머지 워커까지 허가증을 못 받아 풀 전체가 정지한다(실측: resolve/rescan/backfill이
+# 몇 시간씩 무진척으로 멈춤, 2026-08-11~12). 죽은 드라이버에 물린 sync 호출을 다른 스레드에서
+# 안전하게 깨울 방법이 없어(스레드 안전 아님) 워커 단위 되살리기는 불가 — 대신 "풀 전체가
+# CRAWL_STALL_TIMEOUT초 동안 단 한 건도 진척이 없으면" 무한 정지로 판단하고 이 단계 프로세스를
+# 즉시 끝낸다(os._exit). daily는 이 단계 실패를 보고 재개 힌트를 띄우고, 각 단계는 멱등이라
+# `--from <단계>`로 이어서 돌리면 이미 끝난 건은 건너뛴다. 남은 락은 pid가 죽어 다음 실행의
+# acquire_lock이 덮어쓴다(common.acquire_lock). 0이면 워치독을 끈다.
+STALL_TIMEOUT = float(os.environ.get('CRAWL_STALL_TIMEOUT', '300'))
+
+
+def _should_abort(idle, done, total, timeout):
+    """풀이 멈췄다고 판단할 조건 — 타임아웃 켜짐 & 아직 남은 항목이 있는데 idle이 임계 초과.
+    (테스트를 위해 순수 함수로 분리 — os._exit 경로와 로직을 떼어 검증한다.)"""
+    return timeout > 0 and done < total and idle > timeout
+
+
+def _stall_message(idle, done, total, warn_hint=None):
+    hint = f' (동시성 {warn_hint}를 낮추면 빈도가 줄어듭니다)' if warn_hint else ''
+    return (f'\n✗ 크롤 풀이 약 {idle}초간 한 건도 진척이 없습니다 ({done}/{total} 처리 후 정지) — '
+            f'드라이버 먹통으로 판단하고 이 단계를 강제 종료합니다{hint}.\n'
+            f'  재개: python3 -m gonggu.daily --from <이 단계>  (각 단계는 멱등이라 이미 끝난 건은 건너뜁니다)')
+
+
+def _abort(msg):  # 테스트에서 monkeypatch로 대체(os._exit는 프로세스를 즉시 죽이므로).
+    print(msg, file=sys.stderr, flush=True)
+    print(msg, flush=True)
+    os._exit(3)
 
 
 def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
@@ -57,6 +90,23 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
         work_q.put(item)
     lock = threading.Lock()
 
+    # 스톨 워치독용 진척 추적 — 항목 하나가 끝날 때마다(성공/실패 무관) last/done을 갱신한다.
+    total_items = len(items)
+    progress = {'last': time.monotonic(), 'done': 0}
+    prog_lock = threading.Lock()
+    stop_watchdog = threading.Event()
+
+    def _watchdog():
+        if STALL_TIMEOUT <= 0:
+            return
+        while not stop_watchdog.wait(min(15.0, STALL_TIMEOUT)):
+            with prog_lock:
+                idle = time.monotonic() - progress['last']
+                done = progress['done']
+            if _should_abort(idle, done, total_items, STALL_TIMEOUT):
+                _abort(_stall_message(int(idle), done, total_items, warn_hint))
+                return
+
     def _worker(wid):
         state = worker_setup() if worker_setup else None
         try:
@@ -77,6 +127,10 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
                         with lock:
                             print(f'  ⚠ (w{wid}) 항목 처리 중 예외 — 이 항목만 건너뜀: {str(e)[:120]}',
                                   flush=True)
+                    # 진척 갱신 — 워치독이 "풀 전체 무진척"을 이걸로 판단한다(성공/실패 무관, 항목 1건 완료).
+                    with prog_lock:
+                        progress['last'] = time.monotonic()
+                        progress['done'] += 1
                     # 브라우저를 더 안 쓰게 됐는데 기다리는 워커가 있으면 넘겨준다 — sleep 전에
                     # (어차피 자는 동안 브라우저를 붙잡고 있을 이유가 없다). 사용 여부는
                     # release가 플래그를 리셋하기 전에 읽어둔다.
@@ -89,9 +143,12 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
             if worker_teardown and state is not None:
                 worker_teardown(state)
 
+    watchdog = threading.Thread(target=_watchdog, daemon=True)
+    watchdog.start()
     threads = [threading.Thread(target=_worker, args=(wid,)) for wid in range(n_workers)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+    stop_watchdog.set()   # 정상 종료 — 워치독 깨워 즉시 끝냄(데몬이라 안 깨워도 무방하지만 깔끔히)
     return n_workers

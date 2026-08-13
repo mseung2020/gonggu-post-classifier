@@ -30,9 +30,12 @@ import subprocess
 import threading
 import time
 
-from gonggu.common import ROOT
-
-DEFAULT_PROFILE = ROOT / 'data/auth/uc_profile'
+# ⚠ uc 프로필은 iCloud 동기화가 닿지 않는 로컬 경로에 둔다(2026-08-12, 크래시로그로 확정).
+# 이 저장소가 Documents 안(= "Documents in iCloud"로 동기화됨)에 있어서, 프로필을 저장소 하위
+# (data/auth/uc_profile)에 두면 iCloud가 크롬 프로필의 락/SQLite/Singleton 파일을 실시간으로
+# 동기화·축출해 크롬이 크래시한다(크래시 스레드가 FileProvider/CloudDocs translation fault).
+# 홈 아래 숨김 폴더(iCloud 비동기화)로 옮겨 손을 탄다. UC_PROFILE 환경변수로 덮어쓸 수 있다.
+DEFAULT_PROFILE = os.path.join(os.path.expanduser('~'), '.gonggu_uc_profile')
 
 # 챌린지/차단 화면 마커 — 네이버 로그인월·영수증 캡차·429 과부하 + 오픈마켓(G마켓/쿠팡 등)
 # 봇확인 화면. 실측(2026-08-06): 네이버 "보안 확인을 완료"(띄어쓰기 변형), G마켓 "간단한 봇
@@ -190,18 +193,48 @@ def _scroll_all(driver):
         pass
 
 
+UC_HARD_TIMEOUT = float(os.environ.get('UC_HARD_TIMEOUT', '75'))
+
+
 def fetch_sync(url):
-    """(final_url, html) 반환 — 드라이버 1개를 락으로 직렬화. 실패 시 예외."""
+    """(final_url, html) 반환 — 드라이버 1개를 락으로 직렬화. 실패 시 예외.
+
+    ⚠ 워치독(2026-08-12): 드라이버가 먹통이 돼 한 호출이 UC_HARD_TIMEOUT초를 넘기면 드라이버를
+    강제 종료(quit)해 그 호출을 예외로 깨운다. 이게 없으면 먹통 크롬 하나가 uc 레인 전체를
+    무한정 막아, resolve가 특정 항목에서 몇 시간씩 정지한다(실측). 강제 종료되면 _driver를
+    비워 다음 호출이 새 크롬을 띄운다(build_driver가 스테일 락도 청소)."""
     global _driver
     with _lock:
         if _driver is None:
             _driver = build_driver()
-        _warm(_driver, url)
-        _driver.get(url)
-        _settle()
-        _wait_human_pass(_driver)
-        _scroll_all(_driver)
-        return _driver.current_url, _driver.page_source
+        d = _driver
+        fired = {'v': False}
+
+        def _kill():
+            fired['v'] = True
+            try:
+                d.quit()   # in-flight 명령을 강제로 깨서 예외를 던지게 한다(락 불필요 — 로컬 d 사용)
+            except Exception:
+                pass
+
+        watchdog = threading.Timer(UC_HARD_TIMEOUT, _kill)
+        watchdog.start()
+        try:
+            _warm(d, url)
+            d.get(url)
+            _settle()
+            _wait_human_pass(d)
+            _scroll_all(d)
+            result = (d.current_url, d.page_source)
+        except Exception:
+            _driver = None   # 죽었을 수 있으니 다음 호출에서 새로 띄운다
+            raise
+        finally:
+            watchdog.cancel()
+        if fired['v']:
+            _driver = None
+            raise TimeoutError(f'uc 응답 없음 — {UC_HARD_TIMEOUT}s 초과로 드라이버 강제 종료')
+        return result
 
 
 def close_sync():

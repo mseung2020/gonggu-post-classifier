@@ -136,3 +136,52 @@ class TestConditionalDelay:
 
     def test_smart_with_no_browser_never_sleeps(self, monkeypatch):
         assert self._run(monkeypatch, smart=True, browser_items=set()) == []
+
+
+class TestStallWatchdog:
+    """스톨 워치독(2026-08-12) — 죽은 Playwright 드라이버에 워커가 물려 풀 전체가 무한 정지할 때,
+    CRAWL_STALL_TIMEOUT초 무진척이면 이 단계를 강제 종료(os._exit)해 몇 시간짜리 침묵 정지를
+    '빨리 티나게 실패 → --from 재개'로 바꾼다."""
+
+    def test_should_abort_truth_table(self):
+        assert cp._should_abort(idle=100, done=5, total=10, timeout=300) is False   # idle<timeout
+        assert cp._should_abort(idle=301, done=5, total=10, timeout=300) is True    # 무진척 초과
+        assert cp._should_abort(idle=301, done=10, total=10, timeout=300) is False  # 다 끝남
+        assert cp._should_abort(idle=99999, done=5, total=10, timeout=0) is False   # 0이면 꺼짐
+
+    def test_stall_message_has_resume_hint(self):
+        msg = cp._stall_message(400, 1037, 3083, warn_hint='RESCAN_CONCURRENCY')
+        assert '--from' in msg and '1037/3083' in msg and 'RESCAN_CONCURRENCY' in msg
+        assert '--from' in cp._stall_message(400, 1, 2)          # 힌트 없어도 재개 안내는 항상
+
+    def test_normal_run_does_not_abort(self, monkeypatch):
+        """진척이 계속되면 워치독은 발동하지 않는다(오발동 방지)."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 5.0)
+        aborted = []
+        monkeypatch.setattr(cp, '_abort', lambda msg: aborted.append(msg))
+        seen = []
+        lock = threading.Lock()
+        cp.run_crawl_pool(list(range(20)), lambda c, i: (lock.acquire(), seen.append(i), lock.release()),
+                          concurrency=4)
+        assert sorted(seen) == list(range(20)) and aborted == []
+
+    def test_watchdog_fires_when_fully_stalled(self, monkeypatch):
+        """전 워커가 한 항목에서 멈춰 진척이 0이면 _abort가 호출된다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.4)
+        fired = threading.Event()
+        release = threading.Event()
+        monkeypatch.setattr(cp, '_abort', lambda msg: fired.set())   # os._exit 대신 플래그만
+
+        def handle(ctx, item):
+            release.wait(10)     # 전 워커가 여기서 멈춤 → done이 0에서 안 늘어남
+
+        done = threading.Event()
+        threading.Thread(target=lambda: (cp.run_crawl_pool([1, 2, 3, 4], handle, concurrency=4),
+                                         done.set()), daemon=True).start()
+        assert fired.wait(3), '스톨 임계(0.4s)를 넘겼는데 워치독이 안 울렸다'
+        release.set()            # 워커 풀어줘 정상 종료(테스트 프로세스는 _abort를 가짜로 둬 안 죽음)
+        assert done.wait(5)

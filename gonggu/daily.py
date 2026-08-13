@@ -44,6 +44,13 @@ LOCK_FILE = ROOT / 'data/output/.daily.lock'
 # 다시 데일리에 uc를 켜고 싶으면 아래 resolve_links/rescan_inprogress 단계 env에
 # RESOLVE_UC=1, RESOLVE_UC_HOSTS=..., UC_LOGIN_WAIT=0 을 넣으면 된다(권장하지 않음).
 
+# 동시성 두 손잡이는 별개다(2026-08-13): 여기 값은 "워커 수"(동시 처리 상품 수)고, 실제 뜨는
+# 크롬 개수는 config.MAX_BROWSERS(RAM 기준 ~10)가 따로 상한한다. 워커를 40으로 올려도 브라우저가
+# 필요한 작업은 크롬 10개 안에서만 돌지만, LLM#2/#3 호출은 브라우저를 안 먹어서 워커↑만큼 병렬로
+# 빨라진다 — 그래서 LLM 바운드 단계(resolve/rescan는 fast-skip 후, backfill_inpock는 크롤 자체가
+# 없음)는 40이 이득이다. 반대로 몰 크롤=브라우저 바운드인 backfill_period는 워커를 올려봤자
+# 크롬 10개가 병목이고, 40이면 그 10개를 서로 뺏는 churn으로 예전처럼 얼어붙는다 — 그래서 낮게 둔다.
+# MAX_BROWSERS 자체를 올리는 건 16GB 맥에서 스왑→먹통 사고가 났던 값이라 손대지 않는다.
 # (모듈명, 이 단계 전용 동시성/기간 기본값) — 환경변수로 이미 지정돼 있으면 그 값이 이긴다.
 STAGES = [
     ('update_gonggu_stage', {}),                          # 6. 공구 상태 갱신
@@ -52,11 +59,11 @@ STAGES = [
     ('classify',            {'CONCURRENCY': '200'}),      # 2. LLM#1 공구 분류
     ('classify_yt_ppl',     {'CONCURRENCY': '200'}),      # 8-2. 유튜브 PPL 공구 판별(독립)
     ('transform',           {}),                          # 3. 보수적 게이트링
-    ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),   # 4. 링크 해석(Playwright — 안정)
+    ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),   # 4. 링크 해석(Playwright + fast-skip). 워커40/크롬10 — 남은 일 대부분이 LLM#2/#3 호출(브라우저 무관)이라 워커↑가 이득
     ('load',                {}),                          # 5. DB 적재
-    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '40'}),    # 7. 진행중 미해석 재탐색(Playwright)
-    ('backfill_period_inpock', {'CONCURRENCY': '8'}),          # 9-0. 기간 백필(인포크 우선, 크롤 없음)
-    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '20'}),  # 9. 공구기간 백필(몰 크롤, 인포크로 못 채운 것만)
+    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '40'}),    # 7. 진행중 미해석 재탐색(resolve와 같은 엔진 — fast-skip 적용, 동일 이유로 40)
+    ('backfill_period_inpock', {'CONCURRENCY': '40'}),         # 9-0. 기간 백필(인포크, 크롤 없이 LLM만 — 브라우저 무관이라 높여도 안전)
+    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '8'}),  # 9. 공구기간 백필(몰 크롤=브라우저 바운드). ⚠40 금지 — 크롬10 초과예약 churn으로 얼던 그 단계(1037에서 멈춤). fast-skip도 아직 없음
     ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
     # 인포크 허브 JSON 저장은 resolve_links 단계에서 파싱본을 그대로 떨구는 방식으로 흡수됐다
     # (2026-08-11, 중복 크롤 제거) — 별도 crawl_linkbio 단계는 데일리에서 제외. 예전에 이미 적재된

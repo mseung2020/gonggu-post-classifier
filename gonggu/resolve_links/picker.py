@@ -2,7 +2,7 @@
 from urllib.parse import urlparse
 
 from .antibot import is_linkbio_hub, is_non_mall, looks_discontinued
-from .browser import fetch
+from .browser import UC_SKIP_NOTE, fast_skip_uc_host, fetch
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, LINK_PICK_OK_CONF
 from .links import normalize_url
 from .llm import judge_page, pick_link
@@ -46,6 +46,12 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
     # 확인되면 확정, 아니면 버림. 이때 차단(로그인월/캡차)되면 URL 복구 시도 없이 그냥
     # 이 후보를 포기한다(내용을 못 본 채로 확정하지 않기 위함, 2026-07-20 결정).
     if confidence == 'medium' or force_verify:
+        # fast(무인) 1단: 재검증하려는 목적지가 네이버/오픈마켓 로그인월 호스트면 브라우저로
+        # 열지 않고 uc 패스로 넘긴다(구조화 최종 URL 확정 경로는 아래 elif라 영향 없음 — 여긴
+        # 실제로 페이지를 열어 검증하려던 자리라, 어차피 막혀 unresolved 될 것을 미리 넘기는 것).
+        if fast_skip_uc_host(chosen_href):
+            return {'status': 'unresolved', 'final_url': None,
+                    'note': f'{page_type_label} 후보(conf={confidence}) {UC_SKIP_NOTE}'}
         r2 = fetch(page, chosen_href, referer=referer)
         if r2['error']:
             return {'status': 'unresolved', 'final_url': None,

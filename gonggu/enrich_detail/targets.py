@@ -1,9 +1,12 @@
 """대상 선정 + 원본 캡션 로딩.
 
-대상: link_status='done'인 상품 중 detail 행이 아직 없거나 detail_status가 pending/error인 것.
-DB 상태 자체가 체크포인트라서 별도 파일이 없다 — 첫 실행은 백로그 전수(백필), 이후 실행은
-그날 새로 done이 된 것 + 지난 실행에서 error였던 것만 자동으로 잡힌다(idempotent).
-gone(페이지 영구 소멸)과 done은 재시도하지 않는다.
+대상은 실행 모드에 따라 갈린다(2026-08-12):
+  fast(기본) — link_status='done'인데 detail이 아직 없거나 detail_status가 pending/error인 것.
+               DB 상태가 곧 체크포인트라 첫 실행은 백로그 전수(백필), 이후는 그날 새로 done이 된
+               것 + 지난 실행에서 error였던 것만 자동으로 잡힌다(idempotent). done/gone/blocked는
+               제외 — blocked는 fast로 다시 뚫어봤자 또 막히므로 uc 패스 몫이다.
+  uc         — detail_status='blocked'인 것만(호스트 무관). fast가 안티봇에 막아 남긴 집합을
+               uc로 다시 시도한다. done/gone은 재시도하지 않는다.
 
 detail/image 테이블·FK 컬럼명은 platforms.py 메타에서 규칙적으로 파생된다(DDL이 그렇게
 설계됨): gonggu_post_product → gonggu_post_product_detail / gonggu_post_product_image /
@@ -26,10 +29,15 @@ def fk_col(p):
     return p.product_table.replace('gonggu_', '') + '_id'
 
 
-def select_targets_sql(p):
+def select_targets_sql(p, mode='fast'):
     """이번 실행 대상 상품 SELECT. 유튜브는 부모에 title 컬럼이 있어 LLM#4 입력으로 같이
-    가져온다(인스타는 그 컬럼이 없어 빈 문자열로 통일)."""
+    가져온다(인스타는 그 컬럼이 없어 빈 문자열로 통일). mode에 따라 상태 조건이 갈린다."""
     title_col = 'p.title AS parent_title,' if p.code == 'yt' else "'' AS parent_title,"
+    # uc 모드: blocked인 것만(detail 행이 반드시 존재). fast 모드: 미처리(신규/pending/error).
+    if mode == 'uc':
+        status_cond = "d.detail_status = 'blocked'"
+    else:
+        status_cond = "(d.id IS NULL OR d.detail_status IN ('pending', 'error'))"
     # gonggu_stage는 상품 단위로 이전됨(2026-08-06) → pp(상품)에서 읽는다. LLM#5에 "이 상품이
     # 진행중/종료인지" 컨텍스트로 넘겨 종료 공구의 가격 판단 등에 쓴다.
     return f"""
@@ -41,18 +49,18 @@ FROM {p.product_table} pp
 JOIN {p.parent_table} p ON p.{p.id_col} = pp.{p.id_col}
 LEFT JOIN {detail_table(p)} d ON d.{fk_col(p)} = pp.id
 WHERE pp.link_status = 'done'
-  AND (d.id IS NULL OR d.detail_status IN ('pending', 'error'))
+  AND {status_cond}
 """
 
 
-def fetch_targets(conn, only_platform=None):
+def fetch_targets(conn, only_platform=None, mode='fast'):
     """(platform_code, row dict) 목록. row에는 select_targets_sql의 컬럼이 그대로 들어있다."""
     out = []
     with conn.cursor() as cur:
         for code, p in PLATFORMS.items():
             if only_platform and code != only_platform:
                 continue
-            cur.execute(select_targets_sql(p))
+            cur.execute(select_targets_sql(p, mode))
             for r in cur.fetchall():
                 r['publish_date'] = str(r['publish_date'])
                 out.append((code, r))

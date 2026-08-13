@@ -1,0 +1,62 @@
+공구집 일일 퀘스트
+
+# ═══ 매일 아침 루틴 (순서대로) ═══════════════════════════
+# (1) 무인 자동 — 핵심. 그냥 돌려두면 전반부(수집~적재~백필) 전체가 끝난다.
+python3 -m gonggu.daily
+# (2) uc 구제 — 사람이 곁에서, daily 끝난 뒤. 두 uc 패스는 같은 크롬 하나를 공유하니
+#    서로/daily와 동시 실행 금지, 워밍업은 1회로 둘 다 커버.
+python3 -m gonggu.enrich_detail.warmup_naver_uc
+UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=6 python3 -m gonggu.resolve_links.reverify_uc   # 전반부 링크 uc 구제(막힌 링크→done)
+# (3) 상세 수집 — 2 다음(reverify로 done이 늘어난 뒤라야 대상이 많다).
+python3 -m gonggu.enrich_detail                  # 1단계 fast(자사몰). 동시성 기본 4, 올려도 ≤10 — 100 절대 금지(브라우저 상한 ~10이라 얼어버림)
+DETAIL_MODE=uc python3 -m gonggu.enrich_detail   # 2단계 uc(blocked만). reverify_uc와 동시 실행 금지
+#   ※ 진짜 매일 무인인 건 1번뿐. 2·3의 uc는 로그인월을 사람이 통과해줘야 함(밀려도 멱등이라 손실 없음).
+
+# ═══ 작업 반영 (커밋+푸시, 언제든 안전) ══════════════════
+#   .gitignore가 data/·auth 세션쿠키·.env를 전부 빼주므로 add -A라도 소스만 올라간다.
+#   pull --rebase가 원격에 다른 커밋이 있어도 얹어준다(같은 줄 진짜 충돌이면 거기서 멈춰 수동 해결).
+git add -A && git commit -m "작업 반영 $(date +%F)" && git pull --rebase origin main && git push
+
+# ── 기본 실행 ──────────────────────────────────────
+python3 -m gonggu.daily                                # 전체 (6→1→8-1→2→8-2→3→4→5→7→9-0→9→정리, resolve/rescan은 Playwright)
+python3 -m gonggu.daily --list                         # 순서/기본값 확인
+
+# ── 중단된 단계부터 이어서 (--from <단계>) ─────────────
+python3 -m gonggu.daily --from update_gonggu_stage     # 6.  공구 상태 갱신부터 (=전체와 동일)
+python3 -m gonggu.daily --from fetch_source            # 1.  원본 수집부터
+python3 -m gonggu.daily --from fetch_yt_ppl            # 8-1. 유튜브 PPL 수집부터
+python3 -m gonggu.daily --from classify                # 2.  LLM 공구 분류부터
+python3 -m gonggu.daily --from classify_yt_ppl         # 8-2. 유튜브 PPL 판별부터
+python3 -m gonggu.daily --from transform               # 3.  게이트링부터
+python3 -m gonggu.daily --from resolve_links           # 4.  링크 해석부터(Playwright — uc 아님)
+python3 -m gonggu.daily --from load                    # 5.  DB 적재부터
+python3 -m gonggu.daily --from rescan_inprogress       # 7.  진행중 재탐색부터
+python3 -m gonggu.daily --from backfill_period_inpock  # 9-0. 기간 백필(인포크 우선, 크롤 없음)부터
+python3 -m gonggu.daily --from backfill_period         # 9.  공구기간 백필(몰 크롤)부터
+python3 -m gonggu.daily --from maintenance             # 10. 하우스키핑만 남았을 때
+
+# ── 한 단계만 따로 (--only <단계>) ─────────────────────
+python3 -m gonggu.daily --only resolve_links           # 예: 링크 해석만 다시
+python3 -m gonggu.daily --only load                    # 예: 적재만 다시
+
+# 네이버/오픈마켓 uc 구제 패스 (데일리와 별도 — 사람이 곁에서, 낮은 동시성으로만)
+python3 -m gonggu.enrich_detail.warmup_naver_uc                                    # 1회 워밍업(창에서 로그인/확인 통과)
+UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=6 python3 -m gonggu.resolve_links.reverify_uc  # unresolved(로그인월_차단)만 uc로 재시도
+
+# 스키마 blocked 상태 추가 (일회성 — detail_status ENUM에 blocked, 상세 2단 백필 쓰기 전 1회만)
+python3 -m gonggu._migrate_detail_blocked
+# 디테일 채우기 1단계 / 2단계  (위 "매일 아침 루틴 3)"과 동일 — 동시성은 ≤10, 100 금지)
+python3 -m gonggu.enrich_detail                  # 1단계 fast(자사몰). DETAIL_CONCURRENCY 올려도 8~10까지
+DETAIL_MODE=uc python3 -m gonggu.enrich_detail   # 2단계 uc(blocked만, 사람 곁에서 · reverify_uc와 동시 금지)
+
+# 쿠팡/알리/테무 삭제 (--yes 없으면 미리보기만, --status로 대상 상태 지정 가능)
+python3 -m gonggu.purge_marketplace_links --yes
+
+# 크리에이터 이메일을 hifen DB(instagram_user.email)에 반영 (dev_gongguking엔 영향 없음)
+python3 -m gonggu.sync_hifen_emails
+
+# 대시보드
+python3 -m gonggu.unresolved_board --open
+
+# 메모리확인/정리
+ggstat / ggclean

@@ -13,26 +13,35 @@ browser.fetch()/redirect.follow_redirect() 안에서 "실제로 page.goto()를 �
 import re
 import sys
 
-from gonggu.common import (DEEPSEEK_KEY, LOAD_READY_DIR, RESOLVED_DIR, acquire_lock, append_jsonl,
-                     clear_json_dir, dump_jsonl_sharded, load_json_dir, load_jsonl, parent_date_key)
+from gonggu import linkbio_parser
+from gonggu.common import (DEEPSEEK_KEY, HIFEN_EMAIL_FILE, LOAD_READY_DIR, RESOLVED_DIR,
+                     acquire_lock, append_jsonl, clear_json_dir, dump_jsonl_sharded,
+                     load_json_dir, load_jsonl, parent_date_key)
 from gonggu.crawl_pool import run_crawl_pool
 
 from .config import (HTTP_FAST_PATH, ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSERS,
                      RESOLUTION_FILE, RESOLVE_CONCURRENCY)
 from .httpfetch import stats as httpfetch_stats
 from .core import resolve_product
-from .links import cached_linkbio_data, normalize_url
+from .links import cached_linkbio_data, extract_linkbio_hub_urls
 from .matching import product_key
 
 
 def _dump_linkbio(items):
-    """resolve 중 파싱해 캐시에 남은 인포크 허브 원본을 포스트별로 모아 게시일별 JSONL로 저장한다.
+    """resolve 중 파싱해 캐시에 남은 링크인바이오 허브 원본(인포크/링크트리/litt.ly 등
+    linkbio_parser가 지원하는 플랫폼 전체, 2026-08-11부터 인포크 한정 해제)을 포스트별로
+    모아 게시일별 JSONL로 저장한다.
     ⚠ 재크롤 없음 — resolve가 이미 파싱한 캐시(cached_linkbio_data)만 꺼내 쓰므로, crawl_linkbio의
-    독립 크롤을 데일리에서 대체한다. 이번 실행에 인포크가 실제로 파싱된 포스트만 기록된다(증분).
-    이미 적재된 옛 포스트의 소급은 여전히 standalone `python3 -m gonggu.crawl_linkbio`가 담당."""
-    from gonggu.crawl_linkbio import OUT_DIR, extract_inpock_hubs  # 지연 import(순환참조 회피)
+    독립 크롤을 데일리에서 대체한다. 이번 실행에 허브가 실제로 파싱된 포스트만 기록된다(증분).
+    이미 적재된 옛 포스트의 소급은 여전히 standalone `python3 -m gonggu.crawl_linkbio`가 담당.
+
+    곁다리로 그 허브 파싱본에서 연락 이메일도 같이 찾는다(linkbio_parser.extract_emails) —
+    인스타그램 포스트(ig)면 계정(user_id)별로 HIFEN_EMAIL_FILE에도 남겨서
+    `python3 -m gonggu.sync_hifen_emails`가 hifen DB에 반영할 수 있게 한다. dev_gongguking
+    쪽 출력에는 영향 없음(이메일 컬럼 자체가 없음)."""
+    from gonggu.crawl_linkbio import OUT_DIR  # 지연 import(순환참조 회피)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    written = 0
+    written = email_posts = 0
     for item in items:
         parent, code = item.get('parent') or {}, item.get('platform')
         nid = parent.get('post_id') if code == 'ig' else parent.get('video_id')
@@ -42,19 +51,35 @@ def _dump_linkbio(items):
         if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date or ''):
             date = 'unknown'
         cand_text = ' '.join((p.get('candidate_url') or '') for p in item.get('products') or [])
-        linkbio = []
-        for h in extract_inpock_hubs(cand_text):
-            data = cached_linkbio_data(normalize_url(h)) or cached_linkbio_data(h)
-            if data:
-                linkbio.append({'hub_url': h, 'parsed': data, 'error': None})
+        linkbio, post_emails = [], []
+        for h in extract_linkbio_hub_urls(cand_text):
+            data = cached_linkbio_data(h)
+            if not data:
+                continue
+            found = linkbio_parser.extract_emails(data)
+            linkbio.append({'hub_url': h, 'parsed': data, 'error': None, 'emails': found or None})
+            for e in found:
+                if e not in post_emails:
+                    post_emails.append(e)
         if linkbio:
-            append_jsonl(OUT_DIR / f'{date}.jsonl',
-                         {'key': f'{code}:{nid}', 'platform': code, 'post_id': nid,
-                          'publish_date': date, 'hub_urls': [x['hub_url'] for x in linkbio],
-                          'linkbio': linkbio})
+            rec = {'key': f'{code}:{nid}', 'platform': code, 'post_id': nid,
+                   'publish_date': date, 'hub_urls': [x['hub_url'] for x in linkbio],
+                   'linkbio': linkbio}
+            if post_emails:
+                rec['emails'] = ','.join(post_emails)
+            append_jsonl(OUT_DIR / f'{date}.jsonl', rec)
             written += 1
+            user_id = parent.get('user_id') if code == 'ig' else None
+            if post_emails and user_id:
+                append_jsonl(HIFEN_EMAIL_FILE,
+                             {'key': user_id, 'user_id': user_id, 'emails': post_emails,
+                              'source_post': f'{code}:{nid}'})
+                email_posts += 1
     if written:
-        print(f'  인포크 파싱본 저장: {written}개 포스트 -> data/linkbio/<게시일>.jsonl (재크롤 없음)')
+        print(f'  링크인바이오 파싱본 저장: {written}개 포스트 -> data/linkbio/<게시일>.jsonl (재크롤 없음)')
+    if email_posts:
+        print(f'  이메일 발견: 인스타그램 계정 {email_posts}개 -> {HIFEN_EMAIL_FILE} '
+              f'(hifen DB 반영은 별도로 `python3 -m gonggu.sync_hifen_emails`)')
 
 
 def load_resolutions():

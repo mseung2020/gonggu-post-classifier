@@ -129,7 +129,7 @@ dev_gongguking DB
   (상품 단위 체크포인트 — 상품 key당 결과 1줄, 재실행 시 이미 처리된 건 건너뜀)
 - **명령**(저장소 루트에서):
   ```
-  RESOLVE_CONCURRENCY=30 python3 -m gonggu.resolve_links
+  RESOLVE_CONCURRENCY=40 python3 -m gonggu.resolve_links   # 데일리 기본값 40
   python3 -m gonggu.resolve_links 50   # 50건만 끊어서 테스트
   ```
 - **알아둘 점**:
@@ -140,8 +140,12 @@ dev_gongguking DB
     `LINK_LLM_TIMEOUT=45 LINK_LLM_TIMEOUT_RETRY=1`(옵트인 — 재시도라 답이 달라질 수 있음)도
     선택지입니다(gonggu/resolve_links/config.py 주석 참고).
   - **워커 1개 = 브라우저 1개**라 `RESOLVE_CONCURRENCY`를 올리면 메모리를 많이 씁니다.
-    맥북(10코어/16GB급) 기준 30까지는 실측으로 안전했지만, 다른 무거운 앱(크롬/VSCode 등)이
-    같이 떠 있으면 여유 메모리가 부족해질 수 있으니 `uptime`/활성상태 보기로 살펴가며 조절할 것.
+    데일리 기본값은 40이고, 지정 안 하면 `config.py`가 이 컴퓨터 RAM에 맞춰 자동으로 상한을
+    잡습니다(RAM÷1.5, 4~16 범위 — 16GB면 10). 다른 무거운 앱(크롬/VSCode 등)이 같이 떠
+    있으면 여유 메모리가 부족해질 수 있으니 `uptime`/활성상태 보기로 살펴가며 조절할 것.
+  - **쿠팡/알리익스프레스/테무 원천 제외(2026-08-11 정책)**: 이 세 마켓플레이스는 공구 대상이
+    아니라 후보 단계에서 걸러내고, 리다이렉트형 제휴링크라 입력을 통과해도 최종 도착지가 이 셋이면
+    `unresolved`로 뒤집습니다 — done이 되지 않습니다("매일 돌리는 순서" 아래 정책 항목 참고).
   - **`MAX_PER_DOMAIN`**(기본 4): 같은 목적지 도메인(스마트스토어 등)에 동시에 몰리는 걸
     막는 상한 — `browser.py`의 `fetch()`/`redirect.py`의 `follow_redirect()`가 실제로
     페이지를 여는 그 순간에 도메인 기준으로 게이팅합니다(후보 링크의 "첫 번째" 도메인이 아니라
@@ -150,6 +154,14 @@ dev_gongguking DB
   - **인포크 등 링크인바이오 캐시**: 같은 인플루언서 계정을 형제 상품 여러 개가 공유하는
     경우가 많아서(실측: 평균 2.7배 중복), 같은 URL은 프로세스 안에서 한 번만 실제로 요청하고
     재사용합니다.
+  - **링크인바이오 파싱본·이메일 저장(2026-08-11)**: 실행이 끝나면 이번에 실제로 파싱된
+    링크인바이오 허브(인포크뿐 아니라 `linkbio_parser`가 지원하는 플랫폼 전체 — 링크트리,
+    litt.ly 등)를 재크롤 없이 캐시에서 꺼내 `data/linkbio/<게시일>.jsonl`에 저장합니다
+    (예전엔 이 저장을 별도 `crawl_linkbio.py`가 담당했는데 지금은 흡수됨, 9-2번 참고). 그
+    파싱본 안에서 크리에이터 연락 이메일이 보이면 곁다리로 같이 찾아서(`linkbio_parser.
+    extract_emails`) 인스타그램 계정(ig)이면 `data/output/hifen_emails.jsonl`에도
+    남깁니다 — `dev_gongguking`엔 이메일 컬럼이 없어 그쪽엔 영향이 없고, hifen DB에 실제로
+    반영하려면 별도로 `python3 -m gonggu.sync_hifen_emails`를 돌려야 합니다(9-3번 참고).
   - **`python3 -m gonggu.login_naver`**: 네이버에 직접 로그인해서 세션을
     `data/auth/session_state.json`에 저장해두면, 이후 모든 resolve_links 워커가 로그인된
     상태로 스마트스토어/블로그에 접근합니다(로그인월로 튕기는 페이지를 실제 계정으로 우회 —
@@ -281,14 +293,13 @@ dev_gongguking DB
   모호해 단일상품만 대상으로 제한했는데, 그 제약이 사라졌습니다).
   `update_gonggu_stage.py`와 마찬가지로 `transform.py`의 `_compute_stage`를 재사용합니다.
 
-### 9-2. `crawl_linkbio.py` — 인포크 허브 크롤 (매일 보강, load 이후)
+### 9-2. `crawl_linkbio.py` — 링크인바이오 허브 크롤 (백로그 소급 전용, standalone)
 
-- **무엇**: 우리가 수집한 공구 포스트/영상의 캡션·프로필에서 인포크 허브 URL
-  (`link.inpock.co.kr/<username>` / `inpk.link/<username>`)을 찾아, `linkbio_parser`로
-  파싱한 정보 전체(링크/스토어/상품/텍스트/bio 등)를 게시일별 JSONL로 저장합니다. 허브 텍스트에
-  섞여 있는 크리에이터 연락 이메일 같은 정보도 파싱 결과 안에 그대로 담깁니다(이메일만 따로
-  추출하지는 않음 — 저장분에서 나중에 뽑아 씁니다). `/api/r/<토큰>`(버튼 리다이렉트)은 허브가
-  아니라 개별 상품 링크라 제외합니다.
+- **무엇**: 우리가 수집한 공구 포스트/영상의 캡션·프로필에서 링크인바이오 허브 URL을 찾아
+  (인포크뿐 아니라 `linkbio_parser.hosts`가 지원하는 플랫폼 전체 — 링크트리, litt.ly,
+  bio.site 등, 2026-08-11부터 인포크 한정 해제), `linkbio_parser`로 파싱한 정보 전체
+  (링크/스토어/상품/텍스트/bio 등)를 게시일별 JSONL로 저장합니다. `/api/r/<토큰>`
+  (인포크 버튼 리다이렉트)은 허브가 아니라 개별 상품 링크라 제외합니다.
 - **입력/출력**: 대상은 `gonggu_post`/`gonggu_video`(그래서 `load` 이후에 실행), 캡션·프로필은
   hifen(SRC)에서 조회. 출력은 `data/linkbio/<게시일>.jsonl`(포스트별 레코드) +
   `data/linkbio/_hub_cache.jsonl`(허브당 1회만 크롤하는 캐시) +
@@ -296,8 +307,30 @@ dev_gongguking DB
 - **명령**: `python3 -m gonggu.crawl_linkbio` (`LIMIT=200` 소규모, `LINKBIO_CONCURRENCY=8`,
   `RESOLVE_INNER=1`이면 허브 내부 `/api/r/` 링크의 최종 주소까지 추적 — 파이프라인 parse와 동일하나 느림)
 - **알아둘 점**: DB/파일 상태가 곧 증분 기준이라(idempotent) 첫 실행은 백로그 전수, 이후 실행은
-  아직 스캔 안 한 새 포스트만 처리합니다 — 그래서 이 모듈 하나가 "백로그 크롤"과 "데일리 편입"을
-  겸합니다. 같은 크리에이터 허브를 여러 포스트가 공유하므로 고유 허브당 한 번만 크롤합니다.
+  아직 스캔 안 한 새 포스트만 처리합니다. 다만 데일리(`gonggu.daily`)에는 포함되지 않습니다 —
+  4번(`resolve_links`)이 인포크뿐 아니라 링크인바이오 전체를 매일 알아서 흡수해 저장하므로
+  (아래 4번 항목·9-3번 참고), 이 스크립트는 그 자동화가 생기기 전(2026-08-11 이전)에 이미
+  DB에 있던 옛 포스트를 소급 정리할 때만 씁니다.
+
+### 9-3. `sync_hifen_emails.py` — 크리에이터 이메일을 hifen DB로 반영 (수동, 필요할 때)
+
+- **무엇**: 4번(`resolve_links`)이 링크인바이오 허브를 파싱하는 김에 곁다리로 찾아 로컬 파일
+  (`data/output/hifen_emails.jsonl`, 인스타그램 계정별 1줄)에 쌓아 둔 크리에이터 연락 이메일을
+  hifen DB의 `instagram_user.email` 컬럼에 반영합니다. 이메일이 여러 개면 쉼표로 이어붙여
+  하나의 문자열로 넣습니다.
+- **입력/출력**: 입력은 `data/output/hifen_emails.jsonl`(파일만, DB 조회 없음). 출력은
+  hifen(SRC)의 `instagram_user.email` UPDATE뿐 — **`dev_gongguking`(우리 자체 DB)에는 이메일
+  컬럼이 아예 없고 앞으로도 만들지 않으며, 이 명령이 그쪽 테이블을 건드리는 일도 없습니다.**
+- **명령**: `python3 -m gonggu.sync_hifen_emails`
+- **알아둘 점**:
+  - hifen(SRC)은 이 저장소 전체에서 지금까지 읽기 전용으로만 써왔는데(`common.connect_src`
+    참고), 이 명령만 유일하게 예외적으로 UPDATE를 합니다 — 대상도 `email` 컬럼 하나뿐입니다.
+  - 별도 "오늘 것만" 체크포인트 없이 매번 파일 전체를 hifen과 다시 비교합니다 — UPDATE 문이
+    기존과 똑같은 값을 넣으면 MySQL이 rowcount를 0으로 돌려주므로, 그 rowcount로 "이번에
+    실제로 바뀐 것"만 집계합니다. 그래서 몇 번을 다시 돌려도 안전하고(idempotent), 실행할
+    때마다 정확히 그 실행에서 새로 반영된 계정 수·이메일 개수만 출력됩니다.
+  - `resolve_links`가 자동으로 매일 채워주는 파일을 읽기만 하므로, 이 명령 자체는 크롤링을
+    하지 않고 즉시 끝납니다 — 데일리 실행 뒤 아무 때나 따로 돌리면 됩니다.
 
 ## 설치
 
@@ -356,17 +389,61 @@ DAYS_BACK=7 python3 -m gonggu.fetch_yt_ppl                   # 8-1. 유튜브 PP
 CONCURRENCY=24 python3 -m gonggu.classify                    # 2. LLM#1 공구 분류
 CONCURRENCY=100 python3 -m gonggu.classify_yt_ppl             # 8-2. 유튜브 PPL 공구 판별(독립 모듈)
 python3 -m gonggu.transform                                  # 3. 보수적 게이트링
-RESOLVE_CONCURRENCY=30 python3 -m gonggu.resolve_links          # 4. 링크 해석
+RESOLVE_CONCURRENCY=40 python3 -m gonggu.resolve_links          # 4. 링크 해석(Playwright — uc 아님)
 python3 -m gonggu.load                                         # 5. DB 적재
-python3 -m gonggu.rescan_inprogress                           # 7. 진행중인데 못 찾은 링크 재탐색
-python3 -m gonggu.backfill_period                             # 9. 공구기간 판단불가 건 보강 크롤링
+RESCAN_CONCURRENCY=40 python3 -m gonggu.rescan_inprogress     # 7. 진행중인데 못 찾은 링크 재탐색
+python3 -m gonggu.backfill_period_inpock                      # 9-0. 기간 백필(인포크 파싱본 우선, 크롤 없음)
+python3 -m gonggu.backfill_period                             # 9. 공구기간 판단불가 건 보강 크롤링(몰 크롤)
+python3 -m gonggu.maintenance                                # 10. 하우스키핑(컴팩션/로테이션)
 ```
+
+> **9-0 `backfill_period_inpock`은 9 `backfill_period`보다 먼저** — 인포크에 이미 파싱돼 있는
+> 공구기간을 크롤 없이 먼저 채우고(값이 이미 있는 상품은 조회조차 안 되므로 덮어쓸 여지 없음),
+> 그래도 못 채운 것만 9번이 실제 상품페이지를 크롤해 보강합니다.
+> **`daily`는 네이버/오픈마켓을 uc로 뚫지 않습니다**(2026-08-12) — 안정적인 Playwright로만 돌리고,
+> 로그인월/봇확인으로 막힌 것은 사람이 곁에서 돌리는 별도 uc 구제 패스로 따로 처리합니다(아래
+> "네이버/오픈마켓 uc 구제 패스" 참고).
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
 끝나므로, 순서대로 하나씩 실행하세요. `CONCURRENCY`/`RESOLVE_CONCURRENCY` 숫자는 본인 컴퓨터
 사양에 맞게 조절할 것(너무 높으면 메모리 부족으로 시스템이 느려질 수 있음 — "모듈 하나씩
 뜯어보기"의 4번 항목 참고). **같은 단계를 두 터미널에서 동시에 실행하지 마세요** — classify.py/
 resolve_links/load.py 모두 동시 실행 시 문제가 생긴 전례가 있습니다.
+
+### 네이버/오픈마켓 uc 구제 패스 (데일리와 별도, 수동)
+
+데일리(4·7번)는 안정적인 **Playwright**로만 돌립니다 — 네이버 스마트스토어/블로그·G마켓·옥션·
+오하우스·11번가 등은 로그인월/봇확인으로 `unresolved`(note에 "로그인월_차단")로 남는데, 이건
+데일리가 끝난 뒤 **사람이 곁에 있을 때** `undetected_chromedriver`(uc) 패스로 따로 구제합니다.
+uc는 실제 크롬 창 하나를 직렬로 쓰는 무거운 방식이라(2026-08-12에 대량 무인 경로에서 반복
+크래시가 확인돼 데일리에서 뺐습니다) 저동시성 수동 실행에만 씁니다 — **데일리(resolve/rescan)와
+절대 동시에 돌리지 마세요.**
+
+```bash
+python3 -m gonggu.enrich_detail.warmup_naver_uc                                     # 1회 워밍업 — 뜨는 크롬 창에서 로그인/보안확인을 직접 통과(쿠키가 프로필에 남음)
+UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=6 python3 -m gonggu.resolve_links.reverify_uc  # unresolved(로그인월_차단)만 uc로 재시도
+```
+
+- uc 전용 크롬 프로필은 `~/.gonggu_uc_profile`에 둡니다(2026-08-12) — 이 저장소가 iCloud로
+  동기화되는 `Documents` 안에 있어서, 프로필을 저장소 하위에 두면 iCloud가 크롬 락/SQLite 파일을
+  실시간 동기화해 크롬이 크래시합니다. `UC_PROFILE=...` 환경변수로 다른 경로를 지정할 수 있습니다.
+- 한 항목이 uc에서 `UC_HARD_TIMEOUT`초(기본 75)를 넘겨 먹통이 되면 드라이버를 강제 종료해 다음
+  항목으로 넘어갑니다 — 예전처럼 한 창이 wedge돼 몇 시간씩 멈추는 일을 막는 워치독입니다.
+- 데일리에 uc를 다시 넣고 싶다면(권장하지 않음) `daily.py`의 resolve_links/rescan_inprogress
+  단계 env에 `RESOLVE_UC=1`, `RESOLVE_UC_HOSTS=...`, `UC_LOGIN_WAIT=0`을 넣으면 됩니다(그 파일
+  상단 주석 참고).
+
+### 쿠팡/알리익스프레스/테무 원천 제외 (2026-08-11 정책)
+
+이 세 마켓플레이스는 공구 대상이 아니라, resolve 단계에서 아예 `done`이 되지 못하게 막습니다 —
+후보 입력 단계에서 걸러내고(`is_excluded_marketplace`), 리다이렉트형 제휴링크라 입력 필터를
+통과해도 **최종 도착지**가 이 세 곳이면 다시 `unresolved`로 뒤집습니다(2026-08-12, yt PPL 알리
+누수 대응). 이미 DB에 적재된 옛 링크를 청소하려면 일회성으로:
+
+```bash
+python3 -m gonggu.purge_marketplace_links            # 미리보기(대상만 출력)
+python3 -m gonggu.purge_marketplace_links --yes      # 실제 삭제(--status로 대상 상태 지정 가능)
+```
 
 ### 한 번에 자동으로 (1~5번만)
 

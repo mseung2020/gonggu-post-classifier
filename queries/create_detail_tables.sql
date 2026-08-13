@@ -9,17 +9,17 @@
 -- detail_status 규약(link_status의 pending/done/unresolved 컨벤션과 같은 취지):
 --   pending = 아직 처리 안 됨(기본값)
 --   done    = 크롤링+LLM 요약까지 완료
---   error   = 일시 실패(타임아웃/LLM 에러 등) → 다음 실행에서 자동 재시도
+--   error   = 일시 실패(타임아웃/LLM 에러 등) → fast(무인) 실행에서 자동 재시도
 --   gone    = 페이지 영구 소멸(404/판매종료/상품삭제) → 재시도하지 않음.
 --             "죽은 링크도 기록은 남긴다" 방침(2026-08-06)에 따라 행 자체는 생성.
+--   blocked = fast(무인) 경로에서 안티봇/로그인월/봇확인에 막힘(2026-08-12) → uc 패스가 처리.
+--             fast는 재시도하지 않고(다시 막힐 뿐) uc 대상에만 잡힌다. 자세한 배경은
+--             queries/add_detail_blocked_status.sql 상단 주석 참고.
 --
 -- 신규 설치용이며 DROP을 포함하지 않는다 — 테이블이 이미 있으면 에러로 멈출 뿐
 -- 기존 데이터는 건드리지 않는다(안전한 실패). create_gonggu_tables.sql과 같은 규약.
--- 이미 'gone' 없는 구버전 ENUM으로 생성된 경우에만 아래 ALTER를 대신 실행:
---   ALTER TABLE gonggu_post_product_detail  MODIFY COLUMN detail_status
---     ENUM('pending','done','error','gone') NOT NULL DEFAULT 'pending';
---   ALTER TABLE gonggu_video_product_detail MODIFY COLUMN detail_status
---     ENUM('pending','done','error','gone') NOT NULL DEFAULT 'pending';
+-- 이미 만들어진 기존 테이블에 상태값을 넓히려면(gone/blocked 추가) 이 파일 대신
+-- queries/add_detail_blocked_status.sql의 ALTER를 실행한다.
 -- ============================================================
 
 -- ============================================================
@@ -46,7 +46,7 @@ CREATE TABLE gonggu_post_product_detail (
     coupon_info VARCHAR(300) NULL COMMENT '쿠폰/중복할인 요약 1건(예: "5% 중복 쿠폰")',
     ai_summary VARCHAR(1000) NULL COMMENT '크롤링 결과 + 원본 캡션을 종합해 LLM이 생성한 공구 요약',
     ai_summary_confidence TINYINT UNSIGNED NULL COMMENT 'AI 요약 신뢰도(%), 0~100',
-    detail_status ENUM('pending', 'done', 'error', 'gone') NOT NULL DEFAULT 'pending' COMMENT '처리 상태. error=일시 실패(다음 실행 때 자동 재시도), gone=페이지 영구 소멸(404/판매종료/삭제 — 재시도 안 함)',
+    detail_status ENUM('pending', 'done', 'error', 'gone', 'blocked') NOT NULL DEFAULT 'pending' COMMENT '처리 상태. error=일시 실패(fast 재시도), gone=페이지 영구 소멸(404/판매종료/삭제 — 재시도 안 함), blocked=fast(무인) 경로 차단 → uc 패스가 처리',
     detail_error VARCHAR(500) NULL COMMENT '실패 사유(LLM 단계 에러 메시지 로그)',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -104,7 +104,7 @@ CREATE TABLE gonggu_video_product_detail (
     coupon_info VARCHAR(300) NULL COMMENT '쿠폰/중복할인 요약 1건(예: "5% 중복 쿠폰")',
     ai_summary VARCHAR(1000) NULL COMMENT '크롤링 결과 + 원본 캡션을 종합해 LLM이 생성한 공구 요약',
     ai_summary_confidence TINYINT UNSIGNED NULL COMMENT 'AI 요약 신뢰도(%), 0~100',
-    detail_status ENUM('pending', 'done', 'error', 'gone') NOT NULL DEFAULT 'pending' COMMENT '처리 상태. error=일시 실패(다음 실행 때 자동 재시도), gone=페이지 영구 소멸(404/판매종료/삭제 — 재시도 안 함)',
+    detail_status ENUM('pending', 'done', 'error', 'gone', 'blocked') NOT NULL DEFAULT 'pending' COMMENT '처리 상태. error=일시 실패(fast 재시도), gone=페이지 영구 소멸(404/판매종료/삭제 — 재시도 안 함), blocked=fast(무인) 경로 차단 → uc 패스가 처리',
     detail_error VARCHAR(500) NULL COMMENT '실패 사유(LLM 단계 에러 메시지 로그)',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

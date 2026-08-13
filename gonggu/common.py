@@ -133,6 +133,12 @@ def connect_dst():
 _usage_lock = threading.Lock()
 LLM_USAGE_FILE = ROOT / 'data/output/llm_usage.jsonl'
 
+# resolve_links가 링크인바이오 허브를 파싱하다 곁다리로 찾은 인스타그램 계정 이메일 —
+# user_id(=hifen instagram_user.user_id)당 한 줄, key당 마지막 줄이 최신(common.load_jsonl
+# 규약). sync_hifen_emails.py가 이 파일을 읽어 hifen(SRC) DB에 반영한다. dev_gongguking에는
+# 이메일 컬럼이 없고 앞으로도 안 만든다 — 이 파일이 유일한 로컬 축적처.
+HIFEN_EMAIL_FILE = ROOT / 'data/output/hifen_emails.jsonl'
+
 
 def _log_usage(model, usage):
     """DeepSeek 응답의 usage 필드(토큰 수)를 그대로 파일에 남긴다. 단가(원/달러)는 여기서

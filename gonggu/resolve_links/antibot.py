@@ -6,12 +6,19 @@ from urllib.parse import parse_qs, urlparse
 from gonggu import linkbio_parser
 
 from .config import (BROKEN_PATH_SEGMENTS, DISCONTINUED_MARKERS, EXCLUDED_MARKETPLACE_DOMAINS,
-                     NON_MALL_DOMAINS)
+                     NON_MALL_DOMAINS, UC_LOGINWALL_HOSTS)
 from .urlutil import host_of
 
 
 def is_non_mall(url):
     return host_of(url) in NON_MALL_DOMAINS
+
+
+def is_uc_host(url):
+    """네이버/오픈마켓처럼 Playwright엔 로그인월·403/429로 막혀 uc 패스가 처리해야 하는 호스트인지.
+    부분 문자열 매칭(reverify_uc의 RESOLVE_UC_HOSTS와 동일 규칙: 'naver.'가 host에 들어가면 참)."""
+    h = host_of(url or '')
+    return any(k in h for k in UC_LOGINWALL_HOSTS)
 
 
 def is_excluded_marketplace(url):

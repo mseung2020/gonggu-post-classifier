@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""링크인바이오(인포크) 허브 크롤 — 우리가 수집한 공구 포스트/영상의 캡션·프로필에서 인포크
-허브 URL을 찾아, linkbio_parser로 파싱한 정보 전체를 게시일별 JSONL로 저장한다.
+"""링크인바이오 허브 크롤 — 우리가 수집한 공구 포스트/영상의 캡션·프로필에서 링크인바이오
+허브 URL(인포크/링크트리/litt.ly 등 linkbio_parser.hosts가 지원하는 플랫폼 전체, 2026-08-11부터
+인포크 한정 해제)을 찾아, linkbio_parser로 파싱한 정보 전체를 게시일별 JSONL로 저장한다.
 
-목적: 인포크 허브에는 링크/스토어/상품/텍스트(bio·notice·sns) 등 구조화 정보가 들어있고, 그
+목적: 링크인바이오 허브에는 링크/스토어/상품/텍스트(bio·notice·sns) 등 구조화 정보가 들어있고, 그
 안에 크리에이터 연락 이메일이 껴 있는 경우가 있다. 여기서는 이메일만 따로 뽑지 않고
 linkbio_parser.parse()가 주는 정보 전체를 그대로 저장해 둔다(이메일은 그 안에 들어옴 — 나중에
-필요할 때 이 저장분에서 추출).
+필요할 때 이 저장분에서 추출, `python3 -m gonggu._extract_inpock_emails` 참고).
 
 저장(모두 data/linkbio/ 아래):
   <게시일>.jsonl   — 레코드=포스트별 {key, platform, post_id, publish_date, hub_urls, linkbio}.
-                     인포크 허브가 하나도 없는 포스트는 파일에 안 남긴다(체크포인트엔 남김).
+                     허브가 하나도 없는 포스트는 파일에 안 남긴다(체크포인트엔 남김).
   _processed.jsonl — 이미 스캔한 포스트 key(재실행/데일리에서 스킵 — DB 상태가 곧 증분 기준).
   _hub_cache.jsonl — 허브 URL별 파싱 결과 캐시. 같은 크리에이터 허브를 여러 포스트가 공유하므로
                      고유 허브당 1회만 크롤한다.
@@ -39,25 +40,31 @@ CONCURRENCY = int(os.environ.get('LINKBIO_CONCURRENCY', '8'))
 RESOLVE_INNER = os.environ.get('RESOLVE_INNER', '0') == '1'
 _CHUNK = 400
 
-# 인포크 허브 URL — link.inpock.co.kr/<username> 또는 inpk.link/<username>. group(1)=host,
-# group(2)=username. /api/r/<토큰>(내부 버튼 리다이렉트)은 허브가 아니라 개별 상품 링크이므로
-# username 자리가 'api'로 잡히는 것을 아래에서 걸러낸다.
-_INPOCK_RE = re.compile(
-    r'https?://(link\.inpock\.co\.kr|inpk\.link)/([A-Za-z0-9._%-]+)', re.I)
+# 도메인/유저명 한 조각짜리 URL(예: linktr.ee/abc, link.inpock.co.kr/abc) 후보를 우선 넓게
+# 잡고, 실제 링크인바이오 서비스인지는 linkbio_parser.detect_platform으로 걸러낸다 — 그래야
+# hosts.py에 새 플랫폼이 추가돼도 여기를 따로 안 고쳐도 된다. group(1)=host, group(2)=유저명.
+# /api/r/<토큰>(인포크 내부 버튼 리다이렉트)은 허브가 아니라 개별 상품 링크이므로 유저명 자리가
+# 'api'로 잡히는 것을 아래에서 걸러낸다.
+_HUB_URL_RE = re.compile(r'https?://([A-Za-z0-9.-]+)/([A-Za-z0-9._%-]+)', re.I)
 
 
-def extract_inpock_hubs(*texts):
-    """여러 텍스트(캡션·프로필 URL 등)에서 인포크 허브 URL을 뽑아 정규화·중복제거해 돌려준다.
-    /api/r/ 형태(버튼 리다이렉트)와 빈 username은 제외. 등장 순서를 보존한다."""
+def extract_linkbio_hubs(*texts):
+    """여러 텍스트(캡션·프로필 URL 등)에서 linkbio_parser가 지원하는 플랫폼의 허브 URL만
+    뽑아 정규화·중복제거해 돌려준다. /api/r/ 형태(버튼 리다이렉트)와 빈 유저명, 미지원 도메인은
+    제외. 등장 순서를 보존한다."""
     hubs, seen = [], set()
     for t in texts:
         if not t:
             continue
-        for m in _INPOCK_RE.finditer(t):
+        for m in _HUB_URL_RE.finditer(t):
             host, user = m.group(1).lower(), m.group(2)
             if user.lower() == 'api':          # /api/r/... 는 허브 아님
                 continue
             hub = f'https://{host}/{user}'
+            try:
+                linkbio_parser.detect_platform(hub)
+            except ValueError:                 # 링크인바이오 서비스가 아닌 일반 도메인
+                continue
             if hub not in seen:
                 seen.add(hub)
                 hubs.append(hub)
@@ -152,16 +159,16 @@ def main():
     finally:
         src.close()
 
-    # 포스트별 인포크 허브 추출(캡션 + 프로필/채널 링크)
+    # 포스트별 링크인바이오 허브 추출(캡션 + 프로필/채널 링크)
     per_post, all_hubs = [], set()
     for code, nid, date, ctx in todo:
         cap = captions.get((code, nid), '')
         bio = bios.get(ctx, '') if code == 'ig' else (ctx or '')  # yt: 채널 external_url 그 자체
-        hubs = extract_inpock_hubs(cap, bio)
-        per_post.append((f'{code}:{nid}', code, nid, date, hubs))
+        hubs = extract_linkbio_hubs(cap, bio)
+        per_post.append((f'{code}:{nid}', code, nid, date, hubs, ctx))
         all_hubs.update(hubs)
     n_with_hub = sum(1 for r in per_post if r[4])
-    print(f'  인포크 허브: 고유 {len(all_hubs)}개, 허브 있는 포스트 {n_with_hub}개'
+    print(f'  링크인바이오 허브: 고유 {len(all_hubs)}개, 허브 있는 포스트 {n_with_hub}개'
           f'{" (RESOLVE_INNER=1: 내부 링크까지 추적)" if RESOLVE_INNER else ""}')
 
     # 고유 허브 크롤(캐시) — 허브당 1회만
@@ -189,13 +196,17 @@ def main():
 
     # 포스트별 레코드 저장(게시일 샤딩) + 처리 체크포인트
     written = 0
-    for key, code, nid, date, hubs in per_post:
+    for key, code, nid, date, hubs, ctx in per_post:
         if hubs:
             linkbio = [{'hub_url': h, 'parsed': (cache.get(h) or {}).get('parsed'),
                         'error': (cache.get(h) or {}).get('error')} for h in hubs]
-            append_jsonl(OUT_DIR / f'{date}.jsonl',
-                         {'key': key, 'platform': code, 'post_id': nid, 'publish_date': date,
-                          'hub_urls': hubs, 'linkbio': linkbio})
+            rec = {'key': key, 'platform': code, 'post_id': nid, 'publish_date': date,
+                   'hub_urls': hubs, 'linkbio': linkbio}
+            if code == 'ig':
+                # 실제 인스타그램 핸들(gonggu_post.user_id) — _extract_inpock_emails.py가
+                # 이메일을 계정과 짝짓는 데 쓴다.
+                rec['poster_username'] = ctx
+            append_jsonl(OUT_DIR / f'{date}.jsonl', rec)
             written += 1
         append_jsonl(PROCESSED_FILE, {'key': key})
 

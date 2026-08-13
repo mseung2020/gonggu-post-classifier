@@ -26,6 +26,17 @@ NON_MALL_DOMAINS = ('blog.naver.com', 'm.blog.naver.com')
 EXCLUDED_MARKETPLACE_DOMAINS = ('coupang.com', 'coupa.ng', 'aliexpress.com', 'aliexpress.us',
                                 'temu.com')
 
+# fast(무인) resolve/rescan에서 "브라우저로 열려는 순간" 이 호스트면 크롤을 생략하고 uc 패스
+# (reverify_uc)로 넘긴다(2026-08-13, 리졸브 1/2단 분리). 네이버 스마트스토어/오픈마켓처럼
+# Playwright엔 로그인월·403/429로 막혀 어차피 unresolved가 되고, 그 시도 하나하나가 브라우저
+# 점유 + 호스트 쿨다운(20초)을 먹어 데일리 리졸브 전체를 몇 시간씩 느리게 만든 하드테일이다.
+# 여기 걸리면 즉시 '재검증 중 차단' 노트로 남겨 reverify_uc가 uc로 실제로 연다(RESOLVE_UC=1이면
+# fast-skip이 꺼져 그 패스에선 정상적으로 uc로 열림). reverify_uc의 RESOLVE_UC_HOSTS 기본값과
+# 정합. ⚠ "브라우저를 여는 순간"에만 건다 — 인포크 구조화 데이터로 최종 URL이 이미 확정되는
+# (브라우저 안 여는) 경로는 대상이 아니라 그대로 done. 부분 문자열 매칭(host에 'naver.' 포함 등).
+UC_LOGINWALL_HOSTS = tuple(h for h in os.environ.get(
+    'RESOLVE_SKIP_UC_HOSTS', 'naver.,gmarket.co.kr,auction.co.kr,ohou.se,11st.co.kr').split(',') if h)
+
 # 버튼 텍스트에 이런 말이 있으면 애초에 상품 구매 링크가 아니니 LLM#2한테 보여주지도 않고
 # 후보에서 뺀다 — LLM#2 프롬프트에도 같은 취지의 지침이 있지만, 다른 후보가 다 별로면 그중
 # "제일 나은" 걸로 고객센터/문의 링크를 골라버리는 경우가 실제로 있어서(확신도 낮게라도)

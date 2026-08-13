@@ -4,20 +4,25 @@
 ITEM_DELAY(_SMART) 값을 그대로 공유한다. 진행 로그/카운터 스타일은 rescan_inprogress와
 동일하게 맞춘다(운영자가 같은 눈으로 읽을 수 있게).
 
-사용법:
+사용법(2단 백필 — 운영 성격이 정반대인 두 패스, DB 상태 'blocked'로 느슨하게 결합):
+    # 1단계 fast(무인·병렬·안정): 자사몰 대량 처리, 막힌 건 blocked로 남김
     python3 -m gonggu.enrich_detail
-    LIMIT=10 python3 -m gonggu.enrich_detail
+    # 2단계 uc(사람이 곁에서·직렬): blocked인 것만 uc로 재시도(warmup_naver_uc 먼저)
+    DETAIL_MODE=uc python3 -m gonggu.enrich_detail
+
+    LIMIT=10 python3 -m gonggu.enrich_detail          # 소량 테스트
     PLATFORM=ig DETAIL_CONCURRENCY=8 python3 -m gonggu.enrich_detail
 """
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 from gonggu.common import DEEPSEEK_KEY, acquire_lock, connect_dst
 from gonggu.crawl_pool import run_crawl_pool
 from gonggu.resolve_links.config import ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSERS
 from gonggu.resolve_links.urlutil import host_of
 
-from .config import DETAIL_CONCURRENCY, MAX_ERROR_LEN, PAGE_TEXT_LIMIT
+from .config import DETAIL_CONCURRENCY, DETAIL_MODE, MAX_ERROR_LEN, PAGE_TEXT_LIMIT
 from .extract import extract_facts
 from .fetchpage import fetch_detail_page
 from .images import build_image_rows
@@ -37,21 +42,29 @@ def process_target(page, code, row, caption):
     dbg = f"{rec.get('via', '?')}·{host}"
     if rec['gone']:
         return 'gone', None, [], f"페이지 소멸({host}): {rec['gone']}", dbg
+    if rec.get('blocked'):
+        # 안티봇/로그인월 — fast는 재시도 안 하고 uc 패스에 넘긴다(error와 구분).
+        return 'blocked', None, [], f"차단({host}): {rec['error'] or '안티봇/로그인월'}", dbg
     if rec['error'] or not rec['html']:
         return 'error', None, [], f"크롤링 실패({host}): {rec['error'] or '빈 응답'}", dbg
 
     facts = extract_facts(rec['html'], rec['final_url'] or row['candidate_url'], PAGE_TEXT_LIMIT)
     dbg = f"{rec.get('via', '?')}·{facts.get('source') or '추출없음'}·{host}"
 
-    llm_out, llm_err = call_detail_enrich(
-        product_name=row['product_name'], caption=caption, facts=facts,
-        gonggu_stage=row.get('gonggu_stage'), publish_date=row.get('publish_date'))
+    # LLM#5(상세)와 LLM#4(카테고리)는 서로 입출력을 주고받지 않는 독립 호출이라 동시에 쏜다
+    # — 순서대로 부르면 상품 1건당 네트워크 왕복이 그대로 두 배로 쌓여 처리량의 실제 병목이
+    # 됐다(2026-08-12 실측: 워커 40개인데도 초당 1.5건 — 크롤링/브라우저가 아니라 이 직렬
+    # 호출이 원인).
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        detail_fut = ex.submit(call_detail_enrich, product_name=row['product_name'], caption=caption,
+                                facts=facts, gonggu_stage=row.get('gonggu_stage'),
+                                publish_date=row.get('publish_date'))
+        category_fut = ex.submit(call_category, product_name=facts.get('product_name') or row['product_name'],
+                                  title=row.get('parent_title') or '', caption=caption)
+        llm_out, llm_err = detail_fut.result()
+        category, subcategory = category_fut.result()
     if llm_out is None:
         return 'error', None, [], f'LLM#5 실패: {llm_err}', dbg
-
-    category, subcategory = call_category(
-        product_name=facts.get('product_name') or row['product_name'],
-        title=row.get('parent_title') or '', caption=caption)
 
     fields = merge_and_validate(llm_out, facts, caption, category, subcategory)
     image_rows = build_image_rows(facts['thumbnail_urls'], facts['detail_image_urls'])
@@ -67,7 +80,7 @@ def main():
     only_platform = os.environ.get('PLATFORM') or None
     conn = connect_dst()
     try:
-        targets = fetch_targets(conn, only_platform)
+        targets = fetch_targets(conn, only_platform, DETAIL_MODE)
     finally:
         conn.close()
 
@@ -87,10 +100,12 @@ def main():
     total = len(targets)
     limit = int(os.environ.get('LIMIT', '0')) or total
     targets = targets[:limit]
-    retry_n = sum(1 for _, r in targets if r.get('prev_status') == 'error')
-    print(f"상세 수집 대상 {total}건 (link_status=done & detail 미완) → 이번 실행 {len(targets)}건"
+    retry_n = sum(1 for _, r in targets if r.get('prev_status') in ('error', 'blocked'))
+    scope = ("blocked(fast가 막아 남긴 것) — uc로 재시도" if DETAIL_MODE == 'uc'
+             else "link_status=done & detail 미완")
+    print(f"[{DETAIL_MODE} 모드] 상세 수집 대상 {total}건 ({scope}) → 이번 실행 {len(targets)}건"
           f"{f' (LIMIT으로 {total - len(targets)}건 보류)' if len(targets) < total else ''}"
-          f"{f' — 그중 error 재시도 {retry_n}건' if retry_n else ''}")
+          f"{f' — 그중 재시도 {retry_n}건' if retry_n else ''}")
     if not targets:
         print('  오늘은 상세 수집할 것이 없습니다.')
         return
@@ -111,6 +126,12 @@ def main():
         except Exception as e:  # 예상 밖 예외 — 이 상품만 error로 남기고 워커는 계속
             status, fields, image_rows, err, dbg = ('error', None, [],
                                                     f'예외: {str(e)[:MAX_ERROR_LEN - 10]}', '')
+
+        # uc 패스에서 done/gone이 아닌 결과(error/blocked)는 전부 blocked로 남긴다 — uc 큐 안에
+        # 머물러 다음 uc 실행(재워밍업 후)에서 다시 시도되게 한다. error로 두면 fast 큐로 새어
+        # 나가 Playwright→다시 차단→blocked를 반복하는 왕복이 생긴다(두 큐의 깔끔한 분리 유지).
+        if DETAIL_MODE == 'uc' and status == 'error':
+            status = 'blocked'
 
         with ctx.lock:
             try:

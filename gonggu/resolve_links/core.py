@@ -1,7 +1,7 @@
 """링크 해석의 핵심 상태 기계 — 후보 URL 하나하나를 시도하며 done/hold/unresolved/error를
 가른다(post -> 프로필/링크모음 -> 상품 흐름의 오케스트레이션 본체)."""
 from .antibot import is_excluded_marketplace, is_non_mall
-from .browser import fetch, fetch_with_browser
+from .browser import UC_SKIP_NOTE, fast_skip_uc_host, fetch, fetch_with_browser
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
 from .links import extract_collection_links, linkbio_candidates, normalize_url
 from .llm import judge_page
@@ -70,6 +70,12 @@ def resolve_product(page, platform, parent, product):
         norm_url = normalize_url(url)
         tried_urls.append(norm_url)
         res = _resolve_one_candidate(page, norm_url, product, ctx)
+        # 최종 도착지가 쿠팡/알리/테무면 done으로 확정하지 않는다 — 후보 입력이 리다이렉트형
+        # 제휴링크(짧은 링크 → ko.aliexpress.com 등)라 입력 단계 필터를 통과하는 경우가 있어,
+        # 여기서 최종 URL 기준으로 한 번 더 막는다(2026-08-12 실측: yt PPL 알리 링크 누수).
+        if res['status'] == 'done' and is_excluded_marketplace(res.get('final_url') or ''):
+            res = {'status': 'unresolved', 'final_url': None,
+                   'note': '최종 목적지가 쿠팡/알리익스프레스/테무라 공구 대상에서 제외'}
         if res['status'] == 'done':
             res['tried_urls'] = tried_urls
             res['candidate_url'] = res['final_url']
@@ -89,6 +95,12 @@ def _resolve_one_candidate(page, current_url, product, ctx):
     if fast_links:
         return finalize_pick(page, fast_links, product, ctx, current_url, '링크인바이오(구조화)',
                               prefetched_final=True)
+
+    # fast(무인) 1단: 네이버/오픈마켓 직행 후보는 브라우저로 열지 않고 즉시 uc 패스로 넘긴다
+    # (어차피 로그인월·403으로 unresolved 되면서 브라우저·쿨다운만 낭비 — 데일리 리졸브 하드테일).
+    # reverify_uc(RESOLVE_UC=1)에서는 fast_skip_uc_host가 False라 이 지점을 지나 실제로 uc로 연다.
+    if fast_skip_uc_host(current_url):
+        return {'status': 'unresolved', 'final_url': None, 'note': UC_SKIP_NOTE}
 
     r = fetch(page, current_url)
     if r['error']:

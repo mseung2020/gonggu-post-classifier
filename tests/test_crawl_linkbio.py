@@ -1,11 +1,12 @@
-"""crawl_linkbio의 순수 로직 — 캡션/프로필에서 인포크 허브 URL을 정확히 뽑는지 못박는다.
-(실제 인포크 크롤/DB는 LIMIT 소량 실전 스모크로 확인하는 게 이 저장소 규약.)"""
-from gonggu.crawl_linkbio import _date, extract_inpock_hubs
+"""crawl_linkbio의 순수 로직 — 캡션/프로필에서 링크인바이오 허브 URL을 정확히 뽑는지
+못박는다(인포크뿐 아니라 linkbio_parser가 지원하는 플랫폼 전체, 2026-08-11부터 인포크
+한정 해제). (실제 크롤/DB는 LIMIT 소량 실전 스모크로 확인하는 게 이 저장소 규약.)"""
+from gonggu.crawl_linkbio import _date, extract_linkbio_hubs
 
 
 def test_hub_from_caption():
     cap = '공구 링크는 프로필 https://link.inpock.co.kr/2ddou_ 확인하세요'
-    assert extract_inpock_hubs(cap) == ['https://link.inpock.co.kr/2ddou_']
+    assert extract_linkbio_hubs(cap) == ['https://link.inpock.co.kr/2ddou_']
 
 
 def test_api_redirect_excluded():
@@ -13,26 +14,32 @@ def test_api_redirect_excluded():
     text = ('https://link.inpock.co.kr/2ddou_ '
             'https://link.inpock.co.kr/api/r/laXWp81g_tRTK1oYXoY57nQ '
             'https://link.inpock.co.kr/api/r/8K4hitO-OO5VqguVVf6Bs')
-    assert extract_inpock_hubs(text) == ['https://link.inpock.co.kr/2ddou_']
+    assert extract_linkbio_hubs(text) == ['https://link.inpock.co.kr/2ddou_']
 
 
 def test_inpk_link_short_domain():
-    assert extract_inpock_hubs('https://inpk.link/hello') == ['https://inpk.link/hello']
+    assert extract_linkbio_hubs('https://inpk.link/hello') == ['https://inpk.link/hello']
+
+
+def test_other_linkbio_platforms_included():
+    text = 'https://linktr.ee/abc 및 https://litt.ly/def 및 https://bio.site/ghi'
+    assert extract_linkbio_hubs(text) == [
+        'https://linktr.ee/abc', 'https://litt.ly/def', 'https://bio.site/ghi']
 
 
 def test_dedup_and_order_across_texts():
     cap = 'https://link.inpock.co.kr/aaa 및 https://link.inpock.co.kr/bbb'
     bio = 'https://link.inpock.co.kr/aaa'   # 캡션과 중복
-    assert extract_inpock_hubs(cap, bio) == [
+    assert extract_linkbio_hubs(cap, bio) == [
         'https://link.inpock.co.kr/aaa', 'https://link.inpock.co.kr/bbb']
 
 
-def test_no_inpock_returns_empty():
-    assert extract_inpock_hubs('그냥 텍스트 https://smartstore.naver.com/x', '') == []
+def test_unsupported_domain_excluded():
+    assert extract_linkbio_hubs('그냥 텍스트 https://smartstore.naver.com/x', '') == []
 
 
 def test_none_and_empty_inputs_safe():
-    assert extract_inpock_hubs(None, '', None) == []
+    assert extract_linkbio_hubs(None, '', None) == []
 
 
 def test_date_normalization():

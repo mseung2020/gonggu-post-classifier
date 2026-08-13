@@ -19,6 +19,22 @@ def test_not_excluded_normal_malls():
     assert not is_excluded_marketplace('')            # 빈 URL 안전
 
 
+def test_final_url_marketplace_excluded(monkeypatch):
+    """입력 후보가 리다이렉트형(마켓 아님)이라 입력 필터를 통과해도, 최종 도착지가 알리/쿠팡/테무면
+    done으로 확정하지 않고 unresolved로 뒤집는다(2026-08-12 yt PPL 알리 누수 대응)."""
+    from gonggu.resolve_links import core
+    monkeypatch.setattr(core, 'rank_candidates', lambda urls, handle: list(urls))
+    monkeypatch.setattr(core, 'post_context_text', lambda product, parent: '')
+    monkeypatch.setattr(core, '_resolve_one_candidate',
+                        lambda page, url, product, ctx: {
+                            'status': 'done', 'final_url': 'https://ko.aliexpress.com/item/1005.html',
+                            'note': 'ok'})
+    res = core.resolve_product(None, 'ig', {'user_id': 'u'},
+                               {'candidate_url': 'https://go.short.example/abc'})
+    assert res['status'] == 'unresolved'
+    assert '제외' in res['note']
+
+
 def test_filter_link_pairs_drops_marketplace():
     pairs = [
         ('https://smartstore.naver.com/x/products/1', '진짜 상품', 'link'),

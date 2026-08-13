@@ -97,6 +97,28 @@ def linkbio_candidates(url):
     return entry['result']
 
 
+_HUB_URL_RE = re.compile(r'https?://[^\s;]+')
+
+
+def extract_linkbio_hub_urls(text):
+    """candidate_url 원문(여러 후보가 세미콜론/공백으로 섞인 텍스트)에서 linkbio_parser가
+    지원하는 플랫폼(인포크/링크트리/litt.ly 등, hosts.py 참고)의 허브 URL만 뽑는다.
+    normalize_url까지 거쳐서 core.resolve_product가 linkbio_candidates(url)를 부를 때 쓰는
+    키와 똑같이 맞춘다 — 그래야 cached_linkbio_data(url)로 캐시에서 그대로 찾을 수 있다
+    (resolve_links/runner.py의 일일 이메일/허브 파싱본 저장이 재크롤 없이 이걸로 동작한다)."""
+    hubs, seen = [], set()
+    for raw in _HUB_URL_RE.findall(text or ''):
+        u = normalize_url(raw)
+        try:
+            linkbio_parser.detect_platform(u)
+        except ValueError:
+            continue
+        if u not in seen:
+            seen.add(u)
+            hubs.append(u)
+    return hubs
+
+
 def cached_linkbio_data(url):
     """resolve 중 이미 파싱해 둔 인포크 허브의 **원본 파싱 결과(dict)**를 캐시에서 꺼낸다.
     아직 파싱 안 됐거나 미지원/실패면 None. resolve 끝에 이걸 모아 날짜별 JSON으로 저장한다
