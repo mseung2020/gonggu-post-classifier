@@ -61,7 +61,7 @@ STAGES = [
     ('transform',           {}),                          # 3. 보수적 게이트링
     ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),   # 4. 링크 해석(Playwright + fast-skip). 워커40/크롬10 — 남은 일 대부분이 LLM#2/#3 호출(브라우저 무관)이라 워커↑가 이득
     ('load',                {}),                          # 5. DB 적재
-    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '40'}),    # 7. 진행중 미해석 재탐색(resolve와 같은 엔진 — fast-skip 적용, 동일 이유로 40)
+    ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '10'}),    # 7. 진행중 미해석 재탐색. ⚠resolve와 달리 10 — 대상이 "이미 한 번 실패한 진행중 건"이라 브라우저 재검증(스토어메인/링크모음/non-uc 몰)이 몰려 브라우저 바운드다. 40에선 크롬10 churn으로 반복 정체(2026-08-13 실측). fast-skip 있어도 잔여 브라우저 부하가 resolve보다 큼
     ('backfill_period_inpock', {'CONCURRENCY': '40'}),         # 9-0. 기간 백필(인포크, 크롤 없이 LLM만 — 브라우저 무관이라 높여도 안전)
     ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '8'}),  # 9. 공구기간 백필(몰 크롤=브라우저 바운드). ⚠40 금지 — 크롬10 초과예약 churn으로 얼던 그 단계(1037에서 멈춤). fast-skip도 아직 없음
     ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
