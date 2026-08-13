@@ -9,7 +9,7 @@ python3 -m gonggu.enrich_detail.warmup_naver_uc
 UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=10 python3 -m gonggu.resolve_links.reverify_uc   # 전반부 링크 uc 구제(막힌 링크→done)
 # (3) 상세 수집 — 2 다음(reverify로 done이 늘어난 뒤라야 대상이 많다).
 DETAIL_CONCURRENCY=100 python3 -m gonggu.enrich_detail                  # 1단계 fast(자사몰). 동시성 기본 4, 올려도 ≤10 — 100 절대 금지(브라우저 상한 ~10이라 얼어버림)
-DETAIL_MODE=uc python3 -m gonggu.enrich_detail   # 2단계 uc(blocked만). reverify_uc와 동시 실행 금지
+UC_LOGIN_WAIT=0 DETAIL_MODE=uc python3 -m gonggu.enrich_detail   # 2단계 uc(blocked만). reverify_uc와 동시 실행 금지
 #   ※ 진짜 매일 무인인 건 1번뿐. 2·3의 uc는 로그인월을 사람이 통과해줘야 함(밀려도 멱등이라 손실 없음).
 
 # ═══ 작업 반영 (커밋+푸시, 언제든 안전) ══════════════════
