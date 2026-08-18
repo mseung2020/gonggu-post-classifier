@@ -38,6 +38,20 @@ def _output_path(shard_count, shard_index):
     return OUTPUT_DIR / 'detail_crawled.jsonl'
 
 
+def _all_crawled_keys():
+    """지금까지 크롤링에 성공한 전체 key 집합(2026-08-18 수정, 문제 3) — SHARD_COUNT가
+    실행마다 달라질 수 있어서(예: 어떤 날은 샤딩 없이, 어떤 날은 5-way로) 결과가 쌓이는
+    파일 자체가 detail_crawled.jsonl 하나였다가 detail_crawled_shard0~4.jsonl로 바뀔 수
+    있다. 자기 샤드의 출력 파일 하나만 보고 "이미 크롤링했는지"를 판단하면, 다른 샤드
+    구성으로 이미 크롤링해둔 상품을 못 보고 또 크롤링하게 된다 — 특히 uc는 사람이 지켜보는
+    가장 느린 자원이라 이 낭비가 제일 아프다. llm_stage.py._load_crawled()와 동일하게
+    detail_crawled*.jsonl 전부를 합쳐서 봐야 한다."""
+    keys = set()
+    for path in sorted(OUTPUT_DIR.glob('detail_crawled*.jsonl')):
+        keys.update(load_jsonl(path).keys())
+    return keys
+
+
 def main():
     shard_count = int(os.environ.get('SHARD_COUNT', '1'))
     shard_index = int(os.environ.get('SHARD_INDEX', '0'))
@@ -47,8 +61,8 @@ def main():
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)
 
-    out_path = _output_path(shard_count, shard_index)
-    already_crawled = set(load_jsonl(out_path).keys())  # 재실행 시 이미 크롤링해둔 건 다시 안 금
+    out_path = _output_path(shard_count, shard_index)  # 이번 실행 결과는 계속 자기 샤드 파일에 씀
+    already_crawled = _all_crawled_keys()  # 하지만 "이미 크롤링됐는지"는 전체를 합쳐서 판단
 
     only_platform = os.environ.get('PLATFORM') or None
     conn = connect_dst()

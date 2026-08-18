@@ -394,6 +394,25 @@ def test_shipping_from_body_text_fallback():
     assert facts['free_shipping'] == 0
 
 
+def test_shipping_text_fallback_survives_price_window_truncation():
+    """문제 2 회귀 테스트(2026-08-18) — 배송 안내가 LLM#5용으로 잘라낸 가격-중심 윈도우 훨씬
+    밖(페이지 하단)에 있어도 찾아야 한다. 예전엔 _apply_shipping_from_text가 이미 잘린
+    body_text에서 배송 라벨을 찾아서, 가격 근처로 좁혀진 창 밖에 있는 배송 안내를 놓쳤다 —
+    여기서는 윈도우가 '정가/판매가' 언급 쪽으로 잡히도록 유도하고, 배송 안내는 그보다
+    한참 뒤(윈도우 폭 이상)에 둔다."""
+    prefix = 'y' * 600  # 윈도우 탐색 시작점(page_text_limit)을 넘겨야 아래 정가 언급이 "탐색 대상"이 됨
+    decoy_price = ' 정가 100,000원 판매가 80,000원 '  # 윈도우가 여기로 잡힘
+    filler = ' 상세설명 ' * 400  # 윈도우 폭(500자)보다 훨씬 긴 무관한 텍스트 — 배송 안내를 창 밖으로 밀어냄
+    shipping = '배송정보 3,000원 50,000원 이상 무료배송'
+    html = ('<html><body><script type="application/ld+json">{"@type":"Product","name":"x",'
+            '"offers":{"price":"80000"}}</script>'
+            + prefix + decoy_price + filler + shipping + '</body></html>')
+    facts = extract_facts(html, 'https://shop.x.com/p', page_text_limit=500)
+    # 윈도우가 정가 언급 쪽에 잡혀 배송 문구를 포함하지 못함을 먼저 확인(테스트 설계 검증)
+    assert '배송정보' not in facts['body_text']
+    assert facts['shipping_fee'] == 3000 and facts['free_over'] == 50000
+
+
 def test_gmarket_dom_price():
     """G마켓: JSON-LD엔 가격 없고 .price_real DOM에 있음. 기존가/할인률은 price_innerwrap 텍스트."""
     html = ('<html><head><script type="application/ld+json">{"@type":"Product","name":"청독필 세트"}'
@@ -572,3 +591,49 @@ def test_llm_stage_process_one_failure_keeps_original_item(monkeypatch):
     result = llm_stage.process_one(_FAKE_CRAWLED_ITEM)
     assert '타임아웃' in result['llm_error']
     assert result['code'] == 'ig' and result['product_row_id'] == 1
+
+
+# ── crawl_stage.py 샤드 간 중복 크롤링 방지(2026-08-18 수정, 문제 3) ─────────
+
+def test_all_crawled_keys_merges_across_shard_files(tmp_path, monkeypatch):
+    """SHARD_COUNT가 실행마다 달라져도(예: 샤딩 없이 한 번, 5-way로 한 번) 이미 크롤링된
+    key는 어느 파일에 있든 다 보여야 한다 — 자기 샤드 파일 하나만 보면 다른 샤드 구성으로
+    이미 크롤링해둔(특히 느린 uc로 어렵게 뚫어낸) 결과를 놓치고 재크롤링하게 된다."""
+    from gonggu.enrich_detail import crawl_stage
+    monkeypatch.setattr(crawl_stage, 'OUTPUT_DIR', tmp_path)
+    (tmp_path / 'detail_crawled.jsonl').write_text(
+        '{"key": "ig:a#1"}\n', encoding='utf-8')
+    (tmp_path / 'detail_crawled_shard0.jsonl').write_text(
+        '{"key": "ig:b#2"}\n', encoding='utf-8')
+    (tmp_path / 'detail_crawled_shard3.jsonl').write_text(
+        '{"key": "ig:c#3"}\n', encoding='utf-8')
+    assert crawl_stage._all_crawled_keys() == {'ig:a#1', 'ig:b#2', 'ig:c#3'}
+
+
+def test_all_crawled_keys_empty_when_no_files(tmp_path, monkeypatch):
+    from gonggu.enrich_detail import crawl_stage
+    monkeypatch.setattr(crawl_stage, 'OUTPUT_DIR', tmp_path)
+    assert crawl_stage._all_crawled_keys() == set()
+
+
+# ── load_stage.py 무제한 재처리 방지(2026-08-18 수정, 문제 1) ────────────────
+
+def test_todo_records_skips_already_loaded_keys():
+    from gonggu.enrich_detail.load_stage import _todo_records
+    all_records = {'ig:a#1': {'key': 'ig:a#1', 'v': 1},
+                   'ig:b#2': {'key': 'ig:b#2', 'v': 2},
+                   'yt:c#3': {'key': 'yt:c#3', 'v': 3}}
+    todo = _todo_records(all_records, loaded_keys={'ig:a#1'})
+    assert sorted(r['key'] for r in todo) == ['ig:b#2', 'yt:c#3']
+
+
+def test_todo_records_all_new_when_nothing_loaded_yet():
+    from gonggu.enrich_detail.load_stage import _todo_records
+    all_records = {'ig:a#1': {'key': 'ig:a#1'}}
+    assert _todo_records(all_records, loaded_keys=set()) == [{'key': 'ig:a#1'}]
+
+
+def test_todo_records_empty_when_everything_already_loaded():
+    from gonggu.enrich_detail.load_stage import _todo_records
+    all_records = {'ig:a#1': {'key': 'ig:a#1'}}
+    assert _todo_records(all_records, loaded_keys={'ig:a#1'}) == []

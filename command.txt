@@ -1,4 +1,4 @@
-공구집 일일 퀘스트 (2026-08-13 재정리 — enrich_detail 3단계 분리 반영)
+공구집 일일 퀘스트 (2026-08-18 재정리 — 데일리/디테일 파이프라인 점검·수정 반영, uc는 항상 3단계 분리로 고정)
 
 # ════════════════════════════════════════════════════════════════════════
 # 1. 공구 데일리 일일 퀘스트 (본줄기 — 수집~적재~백필)
@@ -43,35 +43,39 @@ UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=10 python3 -m gonggu.resolve_links.reverify
 #   fast — 무인·병렬·안정. 자사몰 대량 처리. 안티봇 걸리면 시도 없이/시도 후 blocked로 남김.
 #   uc   — 사람이 곁에서. blocked인 것만(호스트 무관하게 대상이지만 실제 uc 필요한 건 네이버뿐
 #          — 2026-08-13, 그 외 호스트는 자동으로 http/Playwright 먼저 시도 후 안 되면 uc 폴백).
+#
+# 2026-08-18부터 고정 루틴(앞으로 이 4개로만 진행) — fast는 항상 단일실행, uc는 항상
+# 3단계 분리(크롤링→LLM→DB)로:
 
 # (1) fast 자사몰 대량 처리 — 동시성 기본 4, 올려도 ≤10(브라우저 상한 10, 100 절대 금지)
 DETAIL_CONCURRENCY=10 python3 -m gonggu.enrich_detail
 
-# (2) uc 백로그 — 예전 방식(상품 1건마다 크롤링+LLM+DB를 한 번에). 소량/단일 프로필이면 충분.
-python3 -m gonggu.enrich_detail.warmup_naver_uc                                                # 워밍업(1.5와 공유, 이미 했으면 생략)
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc DETAIL_CONCURRENCY=1 python3 -m gonggu.enrich_detail             # reverify_uc/1.5와 동시 실행 금지
+# (2) uc 크롤링만 — 3단계 분리 1단계. 워밍업 먼저(1.5와 공유, 이미 했으면 생략).
+#     크롤링 결과(detail_crawled*.jsonl)는 LLM 결과와 별도 파일로 영구 보존 — 나중에 프롬프트
+#     고쳐서 LLM만 다시 돌려도(FORCE_RELLM=1) 재크롤링 불필요.
+python3 -m gonggu.enrich_detail.warmup_naver_uc
+UC_LOGIN_WAIT=0 DETAIL_MODE=uc python3 -m gonggu.enrich_detail.crawl_stage
 
-# (3) uc 백로그 — 3단계 분리(2026-08-13 대공사, 백로그가 커서 위 방식이 너무 느릴 때).
-#   크롤링(브라우저, 느림) → LLM(고동시성 배치, 빠름) → DB적재를 완전히 독립된 명령으로 분리.
-#   크롤링 결과(detail_crawled*.jsonl)는 LLM 결과와 별도 파일로 영구 보존 — 나중에 프롬프트
-#   고쳐서 LLM만 다시 돌려도(FORCE_RELLM=1) 재크롤링 불필요.
-#
-#   3-1) 크롤링만 — 신뢰 쿠키 프로필을 N벌 복제해서(cp -R ~/.gonggu_uc_profile ~/.gonggu_uc_profile_N)
-#        진짜 병렬(각자 다른 UC_PROFILE). 5개 예시:
+# (3) LLM만 — 브라우저와 무관, 고동시성(기본 60)으로 크롤링 결과를 몰아서 처리
+LLM_STAGE_CONCURRENCY=60 python3 -m gonggu.enrich_detail.llm_stage
+FORCE_RELLM=1 python3 -m gonggu.enrich_detail.llm_stage        # 프롬프트 수정 후 이미 처리된 것까지 전부 재처리
+
+# (4) DB 반영만
+python3 -m gonggu.enrich_detail.load_stage
+
+# ── (2)-샤딩 버전 — 백로그가 커서 위 (2)가 너무 느릴 때만, 쓸 수도 안 쓸 수도 있음 ──
+#   신뢰 쿠키 프로필을 N벌 복제해서(cp -R ~/.gonggu_uc_profile ~/.gonggu_uc_profile_N) 진짜
+#   병렬(각자 다른 UC_PROFILE). crawl_stage.py가 2026-08-18부터 샤드 파일 전체(detail_crawled*.jsonl)를
+#   합쳐서 중복 체크하므로, 아래처럼 샤딩했다 안 했다 오가도 이미 크롤링된 건 안전하게 건너뛴다.
 UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_1 SHARD_COUNT=5 SHARD_INDEX=0 python3 -m gonggu.enrich_detail.crawl_stage
 UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_2 SHARD_COUNT=5 SHARD_INDEX=1 python3 -m gonggu.enrich_detail.crawl_stage
 UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_3 SHARD_COUNT=5 SHARD_INDEX=2 python3 -m gonggu.enrich_detail.crawl_stage
 UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_4 SHARD_COUNT=5 SHARD_INDEX=3 python3 -m gonggu.enrich_detail.crawl_stage
 UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_5 SHARD_COUNT=5 SHARD_INDEX=4 python3 -m gonggu.enrich_detail.crawl_stage
-#        (샤딩 없이 단일 프로세스로도 가능: SHARD_COUNT/SHARD_INDEX/UC_PROFILE 다 빼고 그냥)
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc python3 -m gonggu.enrich_detail.crawl_stage
-#
-#   3-2) LLM만 — 브라우저와 무관, 고동시성(기본 60)으로 크롤링 결과를 몰아서 처리
-LLM_STAGE_CONCURRENCY=60 python3 -m gonggu.enrich_detail.llm_stage
-FORCE_RELLM=1 python3 -m gonggu.enrich_detail.llm_stage        # 프롬프트 수정 후 이미 처리된 것까지 전부 재처리
-#
-#   3-3) DB 반영만
-python3 -m gonggu.enrich_detail.load_stage
+
+# ── (참고, 이제 안 씀) uc 단일실행 — 상품 1건마다 크롤링+LLM+DB를 한 번에 처리하던 예전 방식.
+#   2026-08-18부터 uc는 항상 위 3단계 분리로 진행하기로 해서 더 이상 안 쓴다.
+# UC_LOGIN_WAIT=0 DETAIL_MODE=uc DETAIL_CONCURRENCY=1 python3 -m gonggu.enrich_detail
 
 
 # ════════════════════════════════════════════════════════════════════════

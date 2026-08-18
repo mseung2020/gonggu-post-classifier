@@ -252,15 +252,23 @@ def _apply_cafe24(soup, html, url, facts):
 _HIDDEN_STYLE = re.compile(r'display\s*:\s*none|visibility\s*:\s*hidden', re.I)
 
 
-def _body_text(soup, limit):
-    """LLM#5에 넘길 본문 — 숨김 요소 제거(httpfetch의 실측 교훈), 가격 표기가 창 밖이면
-    그 근처로 창을 옮긴다(_snippet 원리)."""
+def _clean_body_text(soup):
+    """숨김 요소를 제거한(httpfetch의 실측 교훈) **잘리지 않은** 본문 텍스트 전체.
+    2026-08-18 분리(문제 2) — 예전엔 이 전체 텍스트를 곧바로 LLM#5용으로 잘라버린 뒤
+    그 잘린 결과에서 배송비 라벨(_apply_shipping_from_text)까지 찾았는데, 배송 안내가
+    가격 표기와 멀리 떨어진 페이지 하단 FAQ/정책 섹션 등에 있으면 잘린 창 밖으로 밀려나
+    애초에 검색 대상에서 사라졌다. 배송 라벨 검색은 반드시 이 잘리지 않은 전체 텍스트로
+    해야 한다(라벨 근처 200자만 보므로 전체를 스캔해도 비용 부담은 작음)."""
     for t in soup(['script', 'style', 'noscript', 'template']):
         t.decompose()
     for el in soup.find_all(style=_HIDDEN_STYLE):
         el.decompose()
     body = soup.body or soup
-    text = body.get_text(' ', strip=True)
+    return body.get_text(' ', strip=True)
+
+
+def _window_body_text(text, limit):
+    """LLM#5에 넘길 만큼만 자른다 — 가격 표기가 창 밖이면 그 근처로 창을 옮긴다(_snippet 원리)."""
     if len(text) <= limit:
         return text
     m = re.search(r'\d{1,3}(?:,\d{3})+\s*원', text[limit:])
@@ -268,6 +276,11 @@ def _body_text(soup, limit):
         return text[:limit]
     start = max(0, limit + m.start() - limit // 4)
     return text[start:start + limit]
+
+
+def _body_text(soup, limit):
+    """하위 호환 래퍼(목록 페이지 분기 등 배송 폴백을 안 쓰는 호출부용) — 전체 추출 후 바로 자름."""
+    return _window_body_text(_clean_body_text(soup), limit)
 
 
 def extract_facts(html, url, page_text_limit):
@@ -298,8 +311,11 @@ def extract_facts(html, url, page_text_limit):
     facts['thumbnail_urls'] = collect_thumbnails(facts['thumbnail_urls'], url)
     facts['detail_image_urls'] = collect_detail_images(
         soup, url, pre_collected=facts['detail_image_urls'] or None)
-    facts['body_text'] = _body_text(soup, page_text_limit)
-    _apply_shipping_from_text(facts['body_text'], facts)  # 배송 본문 텍스트 폴백
+    full_text = _clean_body_text(soup)
+    # 배송 라벨 검색은 잘리지 않은 전체 텍스트로(2026-08-18 수정, 문제 2 — 위 _clean_body_text
+    # 참고) — LLM#5에 넘길 body_text는 그 다음에 별도로 윈도잉한다.
+    _apply_shipping_from_text(full_text, facts)
+    facts['body_text'] = _window_body_text(full_text, page_text_limit)
     facts['page_kind'] = facts.get('page_kind') or _page_kind(facts['body_text'], url)
     return facts
 
