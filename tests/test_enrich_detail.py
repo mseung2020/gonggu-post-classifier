@@ -454,12 +454,13 @@ def test_fast_mode_presumed_host_short_circuits_to_blocked(monkeypatch):
     assert rec['blocked'] is True and rec['via'] == 'skip' and rec['gone'] is None
 
 
-def test_uc_mode_enables_engine_for_all_hosts(monkeypatch):
-    """uc 모드: 엔진 on + 모든 호스트가 uc 대상(대상 자체가 이미 blocked 집합이므로)."""
+def test_uc_mode_enables_engine_only_for_naver(monkeypatch):
+    """uc 모드: 엔진은 켜지지만 uc가 실제로 필요한 건 네이버뿐 — 그 외 호스트는 먼저
+    http/Playwright로 시도해보고(진짜 병렬), 막혔을 때만 uc로 폴백한다(fetch_detail_page)."""
     from gonggu.enrich_detail import fetchpage
     monkeypatch.setattr(fetchpage, 'DETAIL_MODE', 'uc')
     assert fetchpage._uc_enabled() is True
-    assert fetchpage._is_uc_host('https://shop.cafe24.com/p/1') is True   # 호스트 무관
+    assert fetchpage._is_uc_host('https://shop.cafe24.com/p/1') is False
     assert fetchpage._is_uc_host('https://smartstore.naver.com/x') is True
 
 
@@ -474,8 +475,62 @@ def test_uc_mode_routes_to_uc_not_skip(monkeypatch):
     assert rec is sentinel
 
 
-def test_process_target_blocked_returns_blocked(monkeypatch):
-    """rec.blocked면 process_target은 gone/error가 아니라 'blocked'로 라우팅(LLM 호출 없이 조기 반환)."""
+def test_uc_mode_non_naver_tries_playwright_before_uc(monkeypatch):
+    """uc 모드 + 네이버 아닌 호스트(gmarket 등): http가 실패해도 uc로 바로 안 가고
+    Playwright(_browser_fetch)를 먼저 시도한다 — 성공하면 uc는 아예 호출되지 않는다."""
+    from gonggu.enrich_detail import fetchpage
+    monkeypatch.setattr(fetchpage, 'DETAIL_MODE', 'uc')
+    ok = {'via': 'browser', 'html': '<html>ok</html>', 'final_url': 'https://x',
+          'status': 200, 'error': None, 'gone': None, 'blocked': False}
+    monkeypatch.setattr(fetchpage, '_http_fetch', lambda url: None)
+    monkeypatch.setattr(fetchpage, '_browser_fetch', lambda page, url: ok)
+    monkeypatch.setattr(fetchpage, '_uc_fetch',
+                         lambda url: (_ for _ in ()).throw(AssertionError('uc가 불필요하게 호출됨')))
+    rec = fetchpage.fetch_detail_page(object(), 'https://item.gmarket.co.kr/Item?goodscode=1')
+    assert rec is ok
+
+
+def test_uc_mode_non_naver_falls_back_to_uc_when_still_blocked(monkeypatch):
+    """uc 모드 + 네이버 아닌 호스트: Playwright도 막히면(blocked) 그때만 uc로 최종 폴백한다."""
+    from gonggu.enrich_detail import fetchpage
+    monkeypatch.setattr(fetchpage, 'DETAIL_MODE', 'uc')
+    blocked = {'via': 'browser', 'html': '', 'final_url': 'https://x', 'status': 403,
+               'error': '차단', 'gone': None, 'blocked': True}
+    uc_sentinel = {'via': 'uc', 'html': '<html>ok</html>', 'final_url': 'https://x',
+                   'status': 200, 'error': None, 'gone': None, 'blocked': False}
+    monkeypatch.setattr(fetchpage, '_http_fetch', lambda url: None)
+    monkeypatch.setattr(fetchpage, '_browser_fetch', lambda page, url: blocked)
+    monkeypatch.setattr(fetchpage, '_uc_fetch', lambda url: uc_sentinel)
+    rec = fetchpage.fetch_detail_page(object(), 'https://item.gmarket.co.kr/Item?goodscode=1')
+    assert rec is uc_sentinel
+
+
+def test_crawl_one_blocked_returns_blocked(monkeypatch):
+    """rec.blocked면 crawl_one은 gone/error가 아니라 'blocked'로 라우팅(LLM 호출 없이 조기 반환).
+    process_target(단일실행 경로)/crawl_stage.py(분리 실행 경로)가 공유하는 크롤링 전용 함수."""
+    from gonggu.enrich_detail import runner
+    monkeypatch.setattr(runner, 'fetch_detail_page', lambda page, url: {
+        'via': 'skip', 'html': '', 'final_url': url, 'status': None,
+        'error': '사전 차단 호스트', 'gone': None, 'blocked': True})
+    status, facts, err, dbg = runner.crawl_one(
+        None, {'candidate_url': 'https://smartstore.naver.com/x', 'product_name': 'p'})
+    assert status == 'blocked' and facts is None
+    assert '차단' in err
+
+
+def test_gone_precedence_over_blocked(monkeypatch):
+    """gone(영구 소멸)은 blocked보다 우선 — 죽은 페이지를 uc로 재시도해봐야 소용없다."""
+    from gonggu.enrich_detail import runner
+    monkeypatch.setattr(runner, 'fetch_detail_page', lambda page, url: {
+        'via': 'http', 'html': '', 'final_url': url, 'status': 404,
+        'error': None, 'gone': 'HTTP 404', 'blocked': False})
+    status, *_ = runner.crawl_one(None, {'candidate_url': 'https://x.co.kr/p', 'product_name': 'p'})
+    assert status == 'gone'
+
+
+def test_process_target_delegates_to_crawl_one(monkeypatch):
+    """process_target(기존 단일실행 경로)은 crawl_one이 crawled가 아니면 그대로 조기 반환한다
+    (LLM 호출 없이) — crawl_one 분리 후에도 기존 동작이 그대로 유지되는지 확인."""
     from gonggu.enrich_detail import runner
     monkeypatch.setattr(runner, 'fetch_detail_page', lambda page, url: {
         'via': 'skip', 'html': '', 'final_url': url, 'status': None,
@@ -486,12 +541,34 @@ def test_process_target_blocked_returns_blocked(monkeypatch):
     assert '차단' in err
 
 
-def test_gone_precedence_over_blocked(monkeypatch):
-    """gone(영구 소멸)은 blocked보다 우선 — 죽은 페이지를 uc로 재시도해봐야 소용없다."""
-    from gonggu.enrich_detail import runner
-    monkeypatch.setattr(runner, 'fetch_detail_page', lambda page, url: {
-        'via': 'http', 'html': '', 'final_url': url, 'status': 404,
-        'error': None, 'gone': 'HTTP 404', 'blocked': False})
-    status, *_ = runner.process_target(
-        None, 'ig', {'candidate_url': 'https://x.co.kr/p', 'product_name': 'p'}, '')
-    assert status == 'gone'
+# ── llm_stage.py(분리 실행 2단계) ────────────────────────────────────────────
+
+_FAKE_FACTS = {'product_name': '기본 티셔츠', 'thumbnail_urls': ['https://x/thumb.jpg'],
+               'detail_image_urls': [], 'body_text': '설명', 'source': 'og'}
+_FAKE_CRAWLED_ITEM = {'key': 'ig:abc#1', 'code': 'ig', 'product_row_id': 1,
+                      'product_name': '기본 티셔츠', 'parent_title': '', 'gonggu_stage': '진행중',
+                      'publish_date': '2026-08-01', 'caption': '캡션', 'facts': _FAKE_FACTS}
+
+
+def test_llm_stage_process_one_success(monkeypatch):
+    """크롤링 결과 1건이 LLM#5+#4 성공 시 fields/image_rows를 담아 반환한다(llm_error=None)."""
+    from gonggu.enrich_detail import llm_stage
+    monkeypatch.setattr(llm_stage, 'call_detail_enrich',
+                        lambda **kw: ({'ai_summary': '요약', 'sale_price': 10000}, None))
+    monkeypatch.setattr(llm_stage, 'call_category', lambda **kw: ('패션', '티셔츠/블라우스/니트'))
+    result = llm_stage.process_one(_FAKE_CRAWLED_ITEM)
+    assert result['llm_error'] is None
+    assert result['key'] == 'ig:abc#1'
+    assert result['fields']['category'] == '패션'
+    assert result['image_rows'][0][0] == 'https://x/thumb.jpg'
+
+
+def test_llm_stage_process_one_failure_keeps_original_item(monkeypatch):
+    """LLM#5 실패 시 llm_error를 채워 원본 item과 함께 반환 — persist_one이 이걸로
+    write_status(error)를 부를 수 있게(product_row_id/code가 그대로 있어야 함)."""
+    from gonggu.enrich_detail import llm_stage
+    monkeypatch.setattr(llm_stage, 'call_detail_enrich', lambda **kw: (None, '타임아웃'))
+    monkeypatch.setattr(llm_stage, 'call_category', lambda **kw: (None, None))
+    result = llm_stage.process_one(_FAKE_CRAWLED_ITEM)
+    assert '타임아웃' in result['llm_error']
+    assert result['code'] == 'ig' and result['product_row_id'] == 1

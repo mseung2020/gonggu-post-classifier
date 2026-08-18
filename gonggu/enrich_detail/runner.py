@@ -32,29 +32,41 @@ from .validate import merge_and_validate
 from .writeback import write_done, write_status
 
 
+def crawl_one(page, row):
+    """상품 1건: 크롤링→추출만(LLM 없음). 반환: (status, facts|None, error|None, 진단문자열).
+    status: 'crawled'(성공, facts 있음) | 'gone' | 'blocked' | 'error'.
+    process_target(기존 단일실행 경로)과 crawl_stage.py(신규 분리 경로)가 공유한다 — 크롤링
+    동작은 어느 경로로 부르든 동일해야 하므로 로직을 한 곳에만 둔다."""
+    host = host_of(row['candidate_url'] or '')
+    rec = fetch_detail_page(page, row['candidate_url'])
+    dbg = f"{rec.get('via', '?')}·{host}"
+    if rec['gone']:
+        return 'gone', None, f"페이지 소멸({host}): {rec['gone']}", dbg
+    if rec.get('blocked'):
+        # 안티봇/로그인월 — fast는 재시도 안 하고 uc 패스에 넘긴다(error와 구분).
+        return 'blocked', None, f"차단({host}): {rec['error'] or '안티봇/로그인월'}", dbg
+    if rec['error'] or not rec['html']:
+        return 'error', None, f"크롤링 실패({host}): {rec['error'] or '빈 응답'}", dbg
+
+    facts = extract_facts(rec['html'], rec['final_url'] or row['candidate_url'], PAGE_TEXT_LIMIT)
+    dbg = f"{rec.get('via', '?')}·{facts.get('source') or '추출없음'}·{host}"
+    return 'crawled', facts, None, dbg
+
+
 def process_target(page, code, row, caption):
     """상품 1건: 크롤링→추출→LLM→검증. 반환: (status, fields|None, image_rows, error|None, 진단문자열).
     DB는 건드리지 않는다(호출부가 lock 안에서 반영) — 테스트에서 이 함수만 따로 돌릴 수 있게.
     진단문자열(경로/추출소스/도메인)은 콘솔 로그용 — "왜 이 필드가 NULL이지?"를 로그만으로
     절반은 답할 수 있게 한다(실전 스모크 검수에서 필요성 확인, 2026-08-06)."""
-    host = host_of(row['candidate_url'] or '')
-    rec = fetch_detail_page(page, row['candidate_url'])
-    dbg = f"{rec.get('via', '?')}·{host}"
-    if rec['gone']:
-        return 'gone', None, [], f"페이지 소멸({host}): {rec['gone']}", dbg
-    if rec.get('blocked'):
-        # 안티봇/로그인월 — fast는 재시도 안 하고 uc 패스에 넘긴다(error와 구분).
-        return 'blocked', None, [], f"차단({host}): {rec['error'] or '안티봇/로그인월'}", dbg
-    if rec['error'] or not rec['html']:
-        return 'error', None, [], f"크롤링 실패({host}): {rec['error'] or '빈 응답'}", dbg
-
-    facts = extract_facts(rec['html'], rec['final_url'] or row['candidate_url'], PAGE_TEXT_LIMIT)
-    dbg = f"{rec.get('via', '?')}·{facts.get('source') or '추출없음'}·{host}"
+    status, facts, err, dbg = crawl_one(page, row)
+    if status != 'crawled':
+        return status, None, [], err, dbg
 
     # LLM#5(상세)와 LLM#4(카테고리)는 서로 입출력을 주고받지 않는 독립 호출이라 동시에 쏜다
     # — 순서대로 부르면 상품 1건당 네트워크 왕복이 그대로 두 배로 쌓여 처리량의 실제 병목이
     # 됐다(2026-08-12 실측: 워커 40개인데도 초당 1.5건 — 크롤링/브라우저가 아니라 이 직렬
-    # 호출이 원인).
+    # 호출이 원인). 이 병렬화는 이 단일실행 경로에서만 의미가 있다 — llm_stage.py는 바깥
+    # 배치 동시성이 이미 50~100이라 상품 하나 안에서 또 병렬화할 필요가 없다.
     with ThreadPoolExecutor(max_workers=2) as ex:
         detail_fut = ex.submit(call_detail_enrich, product_name=row['product_name'], caption=caption,
                                 facts=facts, gonggu_stage=row.get('gonggu_stage'),
@@ -72,7 +84,12 @@ def process_target(page, code, row, caption):
 
 
 def main():
-    acquire_lock('enrich_detail')
+    # 샤딩 실행(SHARD_COUNT>1)은 프로세스가 여러 개 동시에 도는 게 목적이라 락 이름에
+    # 샤드 번호를 넣는다 — 안 그러면 2번째 프로세스부터 "이미 실행 중"으로 즉시 거부된다.
+    shard_count = int(os.environ.get('SHARD_COUNT', '1'))
+    lock_name = f"enrich_detail_shard{os.environ.get('SHARD_INDEX', '0')}" if shard_count > 1 \
+        else 'enrich_detail'
+    acquire_lock(lock_name)
     if not DEEPSEEK_KEY:
         print('.env에 DEEPSEEK_KEY가 필요합니다.', file=sys.stderr)
         sys.exit(1)
@@ -96,6 +113,18 @@ def main():
         targets = [(c, r) for c, r in targets
                    if not any(k in host_of(r['candidate_url'] or '') for k in skip)]
         print(f'  스킵 호스트 {skip} — {before - len(targets)}건 제외(2단 uc에서 자동 재대상)')
+
+    # 샤딩(2026-08-13) — uc 모드는 프로세스 하나당 uc 드라이버(=크롬 창) 하나뿐이라 진짜
+    # 병렬은 별도 프로세스를 여러 개 띄우는 것뿐이다. 같은 UC_PROFILE(신뢰 쿠키)을 프로세스
+    # 개수만큼 복제해 서로 다른 UC_PROFILE로 각 프로세스를 띄우고, product_row_id를
+    # SHARD_COUNT로 나눠 겹치지 않게 담당 구간을 정한다. 안 쓰면(기본 SHARD_COUNT=1) 전체를
+    # 그대로 처리 — 기존 동작 무변경.
+    shard_count = int(os.environ.get('SHARD_COUNT', '1'))
+    shard_index = int(os.environ.get('SHARD_INDEX', '0'))
+    if shard_count > 1:
+        before = len(targets)
+        targets = [(c, r) for c, r in targets if r['product_row_id'] % shard_count == shard_index]
+        print(f'  샤딩 {shard_index}/{shard_count} — 전체 {before}건 중 이 프로세스 담당 {len(targets)}건')
 
     total = len(targets)
     limit = int(os.environ.get('LIMIT', '0')) or total

@@ -152,8 +152,14 @@ def _browser_fetch(page, url):
     return rec
 
 
-# uc 엔진 활성화 규칙(2026-08-12):
-#   - DETAIL_MODE=uc  → uc 켜고, 대상이 이미 'blocked' 집합이라 호스트 무관하게 전부 uc로 연다.
+# uc 엔진 활성화 규칙(2026-08-12, 2026-08-13 호스트 분리):
+#   - DETAIL_MODE=uc  → uc 켜짐. 하지만 실제로 uc(JS 챌린지 통과)가 필요하다고 실측 확인된 건
+#     네이버 계열뿐이다 — 그 외 호스트(gmarket/11st/ohou/auction/lotteimall 등)는 fast 모드가
+#     "어차피 안 될 거야"라고 미리 blocked로 넘긴 것일 뿐 실제로 Playwright를 시도해본 적이
+#     없다. 그래서 uc 모드에서도 네이버가 아니면 먼저 http/Playwright(진짜 병렬, MAX_BROWSERS
+#     까지)로 시도하고, 그래도 막히면 그때만 uc로 최종 폴백한다(fetch_detail_page 참고) —
+#     "네이버는 네이버대로, 나머지는 나머지대로" 분리해서 uc라는 1개짜리 느린 레인을 네이버
+#     전용으로 아껴둔다.
 #   - DETAIL_MODE=fast → uc 절대 안 씀(무인·안정 유지). 막힌 건 blocked로 남겨 uc 패스에 넘긴다.
 #   - (하위호환) DETAIL_NAVER_ENGINE=uc → 모드와 별개로 uc를 켜되 DETAIL_UC_HOSTS 목록만 uc로.
 #     예전 혼합 실행 명령을 그대로 살려 둔다. 예: DETAIL_UC_HOSTS=naver.,gmarket.co.kr,auction.co.kr
@@ -161,9 +167,13 @@ def _uc_enabled():
     return DETAIL_MODE == 'uc' or os.environ.get('DETAIL_NAVER_ENGINE', '') == 'uc'
 
 
+def _is_naver(url):
+    return 'naver.' in host_of(url)
+
+
 def _is_uc_host(url):
     if DETAIL_MODE == 'uc':
-        return True   # uc 모드: blocked 집합 전체를 호스트 무관하게 uc로
+        return _is_naver(url)   # uc 모드에서도 uc가 실제로 필요한 건 네이버뿐(실측 확인)
     hosts = [h for h in os.environ.get('DETAIL_UC_HOSTS', 'naver.').split(',') if h]
     h = host_of(url)
     return any(k in h for k in hosts)
@@ -216,6 +226,10 @@ def fetch_detail_page(page, url):
         if _uc_enabled() and _is_uc_host(url):
             return _uc_fetch(url)
         rec = _http_fetch(url)
-        if rec is not None:
-            return rec
-        return _browser_fetch(page, url)
+        if rec is None:
+            rec = _browser_fetch(page, url)
+        # uc 모드 + 네이버 아닌 호스트: http/Playwright가 막혔을 때만 uc로 최종 폴백
+        # (미리 uc로 보내지 않고 일단 병렬 경로로 시도해본 뒤 실패해야만 느린 레인을 쓴다).
+        if _uc_enabled() and rec.get('blocked'):
+            return _uc_fetch(url)
+        return rec

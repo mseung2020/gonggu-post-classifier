@@ -8,36 +8,29 @@
     python3 -m gonggu.classify_category                       # 기본 입출력 경로, 남은 것 전부
     LIMIT=20 python3 -m gonggu.classify_category               # 이번 실행에 20건만(체크포인트 이어서)
     CONCURRENCY=8 python3 -m gonggu.classify_category
-    ESCALATION_THRESHOLD=0.7 python3 -m gonggu.classify_category    # 기본값도 0.7
     python3 -m gonggu.classify_category <입력.jsonl> <출력.jsonl>
 
-2단 캐스케이드: 모든 제품을 먼저 DEEPSEEK_MODEL_FLASH(싼 모델)로 분류하고, confidence가
-ESCALATION_THRESHOLD 이상이면 그 결과를 바로 최종으로 쓴다. 미만이면 같은 프롬프트로
-DEEPSEEK_MODEL(프로, 더 비싼 모델)에 한 번 더 태워서 그 결과를 최종으로 쓴다(두 모델이 서로
-다르니 프롬프트 캐시는 당연히 공유되지 않는다). category_taxonomy에 모든 대카테고리가
-"기타" 하위카테고리를, 그리고 "기타" 자체도 16번째 대카테고리로 갖고 있어서 뭘 골라도
-항상 유효한 값이 나온다 — 그래서 "미분류"로 강제로 빼는 로직은 없다(카테고리 체계
-자체에 항상 마지막 안전망이 있음).
+모든 제품을 DEEPSEEK_MODEL_FLASH(싼 모델) 한 번으로만 분류한다(2026-08-13, pro 재검증
+캐스케이드 제거 — enrich_detail에서 매 상품마다 flash/pro 두 모델을 오가는 구조가 상세수집
+전체의 속도 병목이었음). category_taxonomy에 모든 대카테고리가 "기타" 하위카테고리를,
+그리고 "기타" 자체도 16번째 대카테고리로 갖고 있어서 뭘 골라도 항상 유효한 값이 나온다 —
+그래서 "미분류"로 강제로 빼는 로직은 없다(카테고리 체계 자체에 항상 마지막 안전망이 있음).
 
 결과: <출력.jsonl> (입력 레코드 + category/subcategory/confidence/reason/classify_error 필드,
-    레코드 1개=1줄). 추가로 decided_by("flash"|"pro")와 flash_category/flash_subcategory/
-    flash_confidence(1차 스크리닝 결과, 참고용)도 같이 남는다. llm_category/llm_subcategory는
-    최종 결정을 내린 단계의 원본(교정 전) 값이다.
+    레코드 1개=1줄). llm_category/llm_subcategory는 교정 전 원본 값이다.
 """
 import json
 import os
 import pathlib
 import sys
 
-from gonggu.common import CATEGORY_TAXONOMY, DEEPSEEK_KEY, DEEPSEEK_MODEL, DEEPSEEK_MODEL_FLASH, \
+from gonggu.common import CATEGORY_TAXONOMY, DEEPSEEK_KEY, DEEPSEEK_MODEL_FLASH, \
     SUBCATEGORY_TO_CATEGORY, call_llm
 from gonggu.llm_batch import retry_llm, run_llm_batch
 from gonggu.prompts import CATEGORY_CLASSIFY_SYSTEM, build_category_classify_user
 
 IN_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'
 OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_result.jsonl'
-
-ESCALATION_THRESHOLD = float(os.environ.get('ESCALATION_THRESHOLD', '0.7'))
 
 
 def _load_jsonl(path):
@@ -48,8 +41,7 @@ def _load_jsonl(path):
 
 
 def _call_stage(model, user_message):
-    """한 모델로 한 번 호출 — 429/일시 오류는 그 호출 안에서만 재시도한다(캐스케이드에서
-    플래시가 이미 성공했는데 프로 호출 실패로 플래시까지 다시 부르는 낭비를 막기 위해)."""
+    """한 모델로 한 번 호출 — 429/일시 오류는 그 호출 안에서만 재시도한다."""
     return retry_llm(lambda: call_llm(CATEGORY_CLASSIFY_SYSTEM, user_message, model=model))
 
 
@@ -75,30 +67,16 @@ def classify_one(row):
         description=row.get('description') or '',
     )
 
-    flash_parsed, err = _call_stage(DEEPSEEK_MODEL_FLASH, user_message)
-    if flash_parsed is None:
+    parsed, err = _call_stage(DEEPSEEK_MODEL_FLASH, user_message)
+    if parsed is None:
         return {**row, 'category': None, 'subcategory': None, 'classify_error': err}
-    flash = _extract(flash_parsed)
-
-    if isinstance(flash['confidence'], (int, float)) and flash['confidence'] >= ESCALATION_THRESHOLD:
-        final, decided_by = flash, 'flash'
-    else:
-        pro_parsed, err = _call_stage(DEEPSEEK_MODEL, user_message)
-        if pro_parsed is None:
-            return {**row, 'category': None, 'subcategory': None, 'classify_error': err,
-                    'flash_category': flash['category'], 'flash_subcategory': flash['subcategory'],
-                    'flash_confidence': flash['confidence']}
-        final = _extract(pro_parsed)
-        decided_by = 'pro'
+    final = _extract(parsed)
 
     return {
         **row,
         'category': final['category'], 'subcategory': final['subcategory'],
         'confidence': final['confidence'], 'reason': final['reason'],
         'llm_category': final['llm_category'], 'llm_subcategory': final['llm_subcategory'],
-        'decided_by': decided_by,
-        'flash_category': flash['category'], 'flash_subcategory': flash['subcategory'],
-        'flash_confidence': flash['confidence'],
         'classify_error': None,
     }
 

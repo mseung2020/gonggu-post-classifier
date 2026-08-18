@@ -19,6 +19,15 @@ stderr(Playwright 노이즈 등)는 로그 파일에만 남는다 — 예전처�
 보여주고 중단한다(이미 끝난 단계들의 체크포인트는 그대로니, 문제 해결 후
 `--from <그 단계>`로 이어서 실행).
 
+스톨 자동 재시도(2026-08-18): resolve_links/rescan_inprogress/backfill_period는 crawl_pool의
+스톨 워치독이 있어 "드라이버 먹통"이면 CRAWL_STALL_EXIT_CODE로 그 단계만 강제 종료한다(각
+단계는 체크포인트라 멱등). 예전엔 이게 나면 사람이 알아채고 `--from <단계>`를 손으로 다시
+쳐야 했는데(2026-08-18 실측 — 6,201건 중 1,117건 처리 후 314초 무진척으로 정지), 그 재시도
+자체는 항상 안전한 조작이라 daily가 대신 몇 번 해준다 — 이 exit code로 죽은 경우에만이다
+(DEEPSEEK_KEY 누락 같은 진짜 설정 오류까지 자동 재시도하면 원인을 못 보고 계속 헛돌 수 있어서
+그런 경우는 여전히 즉시 중단한다). 기본 2회(STAGE_STALL_RETRIES 환경변수로 조정, 총 최대
+1+N번 시도) — 그래도 안 되면 원래대로 사람이 봐야 할 진짜 문제로 보고 중단한다.
+
 이중 실행 방지: data/output/.daily.lock에 pid를 남기고, 살아있는 프로세스가 잡고 있으면
 시작을 거부한다(classify/resolve/load 동시 2회 실행 금지 제약을 코드로 강제).
 """
@@ -31,10 +40,14 @@ import sys
 import threading
 import time
 
-from gonggu.common import ROOT
+from gonggu.common import CRAWL_STALL_EXIT_CODE, ROOT
 
 LOG_DIR = ROOT / 'data/logs'
 LOCK_FILE = ROOT / 'data/output/.daily.lock'
+
+# 스톨(먹통) 종료로 판단해 daily가 대신 재시도해줄 최대 횟수 — 0이면 예전처럼 자동 재시도 없이
+# 즉시 중단(사람이 --from으로 재개)한다. 환경변수로 넘기면 그 값이 이긴다.
+STAGE_STALL_RETRIES = int(os.environ.get('STAGE_STALL_RETRIES', '2'))
 
 # ⚠ uc를 데일리 대량 resolve/rescan에 상시 넣는 건 철회했다(2026-08-12). 이유: 이 맥의 최신
 # 크롬(v151) + undetected_chromedriver 조합이 동시성 높은 대량 경로에서 반복 크래시("Chrome이
@@ -123,6 +136,28 @@ def _run_stage(module, extra_env, log):
     return proc.wait(), list(stderr_tail)
 
 
+def _run_stage_with_stall_retry(module, extra_env, log, retry_limit=STAGE_STALL_RETRIES):
+    """_run_stage를 감싸서, 딱 CRAWL_STALL_EXIT_CODE(드라이버 먹통)로 죽었을 때만 최대
+    retry_limit번 같은 단계를 다시 돈다 — 각 단계는 체크포인트라 재실행은 이미 끝난 건을
+    건너뛰고 이어서 하는 것과 같다(순수 함수로 재시도 여부 판단을 분리해 실제 서브프로세스
+    없이 테스트할 수 있게 한다).
+
+    반환: (최종 exit code, 그 시도의 stderr 마지막 줄들, 전체 시도 합산 소요초, 재시도 횟수)."""
+    attempt = 0
+    total_dt = 0.0
+    while True:
+        t0 = time.monotonic()
+        code, stderr_tail = _run_stage(module, extra_env, log)
+        total_dt += time.monotonic() - t0
+        if code != CRAWL_STALL_EXIT_CODE or attempt >= retry_limit:
+            return code, stderr_tail, total_dt, attempt
+        attempt += 1
+        msg = (f'  ⚠ gonggu.{module} 드라이버 먹통 정지(exit {CRAWL_STALL_EXIT_CODE}) — '
+               f'체크포인트로 이어서 자동 재시도 {attempt}/{retry_limit}회째')
+        print(msg, flush=True)
+        log.write(msg + '\n')
+
+
 def main():
     argv = sys.argv[1:]
     if '--list' in argv:
@@ -156,12 +191,11 @@ def main():
                 header = f'\n=== gonggu.{module} ==='
                 print(header)
                 log.write(header + '\n')
-                t0 = time.monotonic()
-                code, stderr_tail = _run_stage(module, defaults, log)
-                dt = time.monotonic() - t0
-                durations.append((module, dt, code))
+                code, stderr_tail, dt, retries = _run_stage_with_stall_retry(module, defaults, log)
+                durations.append((module, dt, code, retries))
                 if code != 0:
-                    print(f'\n✗ gonggu.{module} 실패 (exit {code}, {dt:.0f}초) — 중단합니다.',
+                    retried_note = f' — 자동재시도 {retries}회 후에도 실패' if retries else ''
+                    print(f'\n✗ gonggu.{module} 실패 (exit {code}, {dt:.0f}초){retried_note} — 중단합니다.',
                           file=sys.stderr)
                     if stderr_tail:
                         print('  stderr 마지막 출력:', file=sys.stderr)
@@ -172,9 +206,10 @@ def main():
                     sys.exit(code)
 
             summary = ['\n=== 일일 퀘스트 요약 ===']
-            for module, dt, _ in durations:
-                summary.append(f'  {module:<22} {dt:7.0f}초')
-            summary.append(f'  총 소요 {sum(d for _, d, _ in durations):.0f}초')
+            for module, dt, _, retries in durations:
+                retried_note = f' (자동재시도 {retries}회)' if retries else ''
+                summary.append(f'  {module:<22} {dt:7.0f}초{retried_note}')
+            summary.append(f'  총 소요 {sum(d for _, d, _, _ in durations):.0f}초')
             text = '\n'.join(summary)
             print(text)
             log.write(text + '\n')

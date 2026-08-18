@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 from playwright.sync_api import sync_playwright
 
+from gonggu.common import CRAWL_STALL_EXIT_CODE
 from gonggu.resolve_links.browser import LazyPage
 from gonggu.resolve_links.config import MAX_BROWSERS
 
@@ -55,7 +56,7 @@ def _stall_message(idle, done, total, warn_hint=None):
 def _abort(msg):  # 테스트에서 monkeypatch로 대체(os._exit는 프로세스를 즉시 죽이므로).
     print(msg, file=sys.stderr, flush=True)
     print(msg, flush=True)
-    os._exit(3)
+    os._exit(CRAWL_STALL_EXIT_CODE)  # daily.py의 자동 재시도가 이 코드로만 "먹통"을 식별한다
 
 
 def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,

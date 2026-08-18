@@ -13,6 +13,12 @@ from dotenv import load_dotenv
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / '.env')
 
+# crawl_pool.py의 스톨 워치독이 "드라이버 먹통"으로 판단해 이 단계 프로세스를 강제 종료할 때 쓰는
+# exit code — daily.py가 이 코드로 실패한 단계만(=진짜 설정/코드 오류가 아니라 크롤 풀이 멈춘
+# 경우만) 자동으로 --from 재개를 대신 해준다(2026-08-18, daily 자동 재시도). 두 파일이 각자
+# 하드코딩하면 한쪽만 고쳤을 때 조용히 어긋나므로 여기 한 곳에만 정의한다.
+CRAWL_STALL_EXIT_CODE = 3
+
 
 def acquire_lock(name):
     """중복 실행 방지 락 — 이미 살아있는 동일 이름 실행이 있으면 SystemExit로 시작을 거부한다.
