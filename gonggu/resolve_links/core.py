@@ -1,7 +1,7 @@
 """링크 해석의 핵심 상태 기계 — 후보 URL 하나하나를 시도하며 done/hold/unresolved/error를
 가른다(post -> 프로필/링크모음 -> 상품 흐름의 오케스트레이션 본체)."""
 from .antibot import is_excluded_marketplace, is_non_mall
-from .browser import UC_SKIP_NOTE, fast_skip_uc_host, fetch, fetch_with_browser
+from .browser import UC_SKIP_NOTE, bump_via, fast_skip_uc_host, fetch, fetch_with_browser
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
 from .links import extract_collection_links, linkbio_candidates, normalize_url
 from .llm import judge_page
@@ -65,11 +65,19 @@ def resolve_product(page, platform, parent, product):
                 'tried_urls': []}
 
     ctx = post_context_text(product, parent)
-    tried_urls, best = [], None
+    tried_urls, best, needs_browser = [], None, False
     for url in candidates:
         norm_url = normalize_url(url)
         tried_urls.append(norm_url)
         res = _resolve_one_candidate(page, norm_url, product, ctx)
+        # 이 후보는 브라우저가 있어야 판단 가능한데 지금은 없다(Tier0 빠른 패스, 2026-08-18) —
+        # unresolved/hold로 확정하지 않고 일단 넘어간다. 뒤 후보 중 더 싼 경로로 done이 나올 수도
+        # 있으니 즉시 포기하지 않되, 끝까지 done이 안 나오면 상품 전체를 Tier1(브라우저 패스)로
+        # 미룬다 — 여기서 확정해버리면 실제로는 done이었을 후보를 브라우저를 못 열어봤다는
+        # 이유만으로 unresolved/hold로 잘못 기록하게 된다.
+        if res['status'] == 'needs_browser':
+            needs_browser = True
+            continue
         # 최종 도착지가 쿠팡/알리/테무면 done으로 확정하지 않는다 — 후보 입력이 리다이렉트형
         # 제휴링크(짧은 링크 → ko.aliexpress.com 등)라 입력 단계 필터를 통과하는 경우가 있어,
         # 여기서 최종 URL 기준으로 한 번 더 막는다(2026-08-12 실측: yt PPL 알리 링크 누수).
@@ -82,6 +90,13 @@ def resolve_product(page, platform, parent, product):
             return res
         if best is None or _STATUS_RANK.get(res['status'], -1) > _STATUS_RANK.get(best['status'], -1):
             best = res
+    if needs_browser:
+        # done인 후보가 하나도 없었고, 브라우저가 필요해서 못 본 후보가 있었다 — best(있다면
+        # hold/unresolved/error)를 그대로 확정하지 않고 상품 전체를 보류해 Tier1이 처음부터
+        # (모든 후보를 브라우저 허용 상태로) 다시 판단하게 한다.
+        return {'status': 'needs_browser', 'final_url': None, 'candidate_url': None,
+                'note': '브라우저가 필요한 후보가 있어 Tier1(브라우저 패스)에서 재시도',
+                'tried_urls': tried_urls}
     best['tried_urls'] = tried_urls
     best['candidate_url'] = best.get('final_url') or normalize_url(candidates[0])
     return best
@@ -93,6 +108,7 @@ def _resolve_one_candidate(page, current_url, product, ctx):
     # 시도한다 — 실패/미지원이면 None이라 아래 기존 Playwright 경로로 그대로 넘어간다.
     fast_links = linkbio_candidates(current_url)
     if fast_links:
+        bump_via('linkbio_structured')  # 페치 자체가 필요 없던 경우(2026-08-18, 속도개선 A단계 진단)
         return finalize_pick(page, fast_links, product, ctx, current_url, '링크인바이오(구조화)',
                               prefetched_final=True)
 
@@ -100,11 +116,17 @@ def _resolve_one_candidate(page, current_url, product, ctx):
     # (어차피 로그인월·403으로 unresolved 되면서 브라우저·쿨다운만 낭비 — 데일리 리졸브 하드테일).
     # reverify_uc(RESOLVE_UC=1)에서는 fast_skip_uc_host가 False라 이 지점을 지나 실제로 uc로 연다.
     if fast_skip_uc_host(current_url):
+        bump_via('uc_host_skip')  # 페치 자체를 생략(2026-08-18, 속도개선 A단계 진단)
         return {'status': 'unresolved', 'final_url': None, 'note': UC_SKIP_NOTE}
 
     r = fetch(page, current_url)
     if r['error']:
         return {'status': 'error', 'final_url': None, 'note': r['error']}
+    if r.get('via') == 'needs_browser':
+        # http 패스트패스로도 부족해서 브라우저가 필요한데 지금은 못 연다(Tier0) — 여기서
+        # judge_page(LLM#3)를 부르면 텅 빈 page_info로 근거 없는 판정을 하게 되므로 그 전에
+        # 끊는다. resolve_product가 이 상태를 보고 상품 전체를 Tier1로 미룬다.
+        return {'status': 'needs_browser', 'final_url': None, 'note': '브라우저 필요 — Tier0에서는 보류'}
 
     if r['status'] in BLOCKED_STATUS_CODES:
         return {'status': 'unresolved', 'final_url': None,
@@ -147,6 +169,9 @@ def _resolve_one_candidate(page, current_url, product, ctx):
             r = fetch_with_browser(page, current_url)
             if r['error']:
                 return {'status': 'error', 'final_url': None, 'note': r['error']}
+            if r.get('via') == 'needs_browser':
+                return {'status': 'needs_browser', 'final_url': None,
+                        'note': '브라우저 필요(링크모음/스토어메인 DOM 추출) — Tier0에서는 보류'}
         links = extract_collection_links(page)
         if not links:
             return {'status': 'unresolved', 'final_url': None, 'note': f'{page_type}인데 후보 링크 추출 실패'}

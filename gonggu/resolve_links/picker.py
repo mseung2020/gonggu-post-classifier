@@ -2,9 +2,9 @@
 from urllib.parse import urlparse
 
 from .antibot import is_linkbio_hub, is_non_mall, looks_discontinued
-from .browser import UC_SKIP_NOTE, fast_skip_uc_host, fetch
+from .browser import UC_SKIP_NOTE, fast_skip_uc_host, fetch, fetch_with_browser
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, LINK_PICK_OK_CONF
-from .links import normalize_url
+from .links import extract_collection_links, normalize_url
 from .llm import judge_page, pick_link
 from .matching import hint_is_vague
 from .redirect import follow_redirect
@@ -56,6 +56,11 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
         if r2['error']:
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence}) 재검증 중 접속 실패: {r2["error"]}'}
+        if r2.get('via') == 'needs_browser':
+            # 재검증(LLM#3 전 단계)에 브라우저가 필요한데 지금은 못 연다(Tier0) — unresolved로
+            # 확정하지 않고 상품 전체를 Tier1로 미룬다(core.resolve_product가 처리).
+            return {'status': 'needs_browser', 'final_url': None,
+                    'note': f'{page_type_label} 후보(conf={confidence}) 재검증에 브라우저 필요 — Tier0에서는 보류'}
         if r2['status'] in BLOCKED_STATUS_CODES or any(
                 m.lower() in (r2.get('body_text') or '').lower() for m in BLOCKED_TEXT_MARKERS):
             return {'status': 'unresolved', 'final_url': None,
@@ -73,18 +78,49 @@ def finalize_pick(page, links, product, ctx, referer, page_type_label, prefetche
             verdict2 = judge_page(ctx, page_info2)
         except Exception as e:
             return {'status': 'error', 'final_url': None, 'note': f'LLM#3 재검증 호출 실패: {str(e)[:120]}'}
-        if not (verdict2.get('page_type') == '상품페이지' and verdict2.get('is_final_product_page')):
+        verdict2_type = verdict2.get('page_type')
+        # 2026-08-18 통일(문제 13) — 이 재검증도 core._resolve_one_candidate의 최초 판별과 같은
+        # LLM#3 스키마를 받으므로, page_type별 처리도 그대로 맞춘다(전에는 "상품페이지+일치"가
+        # 아니면 무조건 unresolved라, 최초 판별이었다면 구제됐을 링크모음/스토어메인 재귀나
+        # 무관→hold 완화를 재검증 경로에서만 놓치고 있었다).
+        if verdict2_type == '상품페이지' and verdict2.get('is_final_product_page'):
+            if looks_discontinued(r2['final_url'] or chosen_href):
+                return {'status': 'unresolved', 'final_url': None,
+                        'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 판매종료로 보임'}
+            if is_non_mall(r2['final_url'] or chosen_href):
+                return {'status': 'unresolved', 'final_url': None,
+                        'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 네이버 블로그(몰 아님)라 채택 안 함'}
+            chosen_url, verify_note = r2['final_url'], (
+                f"LLM#2 선택(conf={confidence}) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:60]}")
+        elif verdict2_type in ('링크모음', '스토어메인'):
+            # 재검증하려던 페이지 자체가 또 다른 링크모음/스토어메인이었다 — core.py의 최초
+            # 판별과 동일하게 한 홉 더 파고든다. r2가 requests 패스트패스로 끝났으면(via='http')
+            # page가 아직 그 URL에 가 있지 않으므로 DOM 추출 전에 브라우저로 다시 연다.
+            if r2.get('via') == 'http':
+                r2 = fetch_with_browser(page, chosen_href, referer=referer)
+                if r2['error']:
+                    return {'status': 'error', 'final_url': None,
+                            'note': f'{page_type_label} 후보(conf={confidence}) 재검증 중 접속 실패: {r2["error"]}'}
+                if r2.get('via') == 'needs_browser':
+                    return {'status': 'needs_browser', 'final_url': None,
+                            'note': f'{page_type_label} 후보(conf={confidence}) 재검증(하위 {verdict2_type} DOM 추출)에 '
+                                    f'브라우저 필요 — Tier0에서는 보류'}
+            sub_links = extract_collection_links(page)
+            if not sub_links:
+                return {'status': 'unresolved', 'final_url': None,
+                        'note': f'{page_type_label} 후보(conf={confidence}) 재검증 결과 {verdict2_type}인데 '
+                                f'후보 링크 추출 실패'}
+            return finalize_pick(page, sub_links, product, ctx, r2['final_url'] or chosen_href,
+                                 verdict2_type, prefetched_final=False)
+        elif verdict2_type == '무관':
+            # core.py의 최초 판별과 동일하게 자동 실패 종료 대신 사람 검토용 보류로 뺀다.
+            return {'status': 'hold', 'final_url': None,
+                    'note': f'{page_type_label} 후보(conf={confidence}) 재검증 결과 무관 — '
+                            f'{(verdict2.get("reason") or "")[:60]}'}
+        else:
             return {'status': 'unresolved', 'final_url': None,
                     'note': f'{page_type_label} 후보(conf={confidence})를 LLM#3 재검증에서 반려 — '
                             f'{(verdict2.get("reason") or "")[:60]}'}
-        if looks_discontinued(r2['final_url'] or chosen_href):
-            return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 판매종료로 보임'}
-        if is_non_mall(r2['final_url'] or chosen_href):
-            return {'status': 'unresolved', 'final_url': None,
-                    'note': f'{page_type_label} 후보(conf={confidence}) — 재검증한 페이지가 네이버 블로그(몰 아님)라 채택 안 함'}
-        chosen_url, verify_note = r2['final_url'], (
-            f"LLM#2 선택(conf={confidence}) + LLM#3 재검증 통과: {(verdict2.get('reason') or '')[:60]}")
     elif prefetched_final:
         # linkbio_parser가 이미 최종 목적지까지 리다이렉트를 추적해줬으니(예: inpock
         # /api/r/<토큰> -> 실제 스마트스토어 상품 URL) 다시 열어볼 필요 없다 — URL 문자열

@@ -1,6 +1,16 @@
 """LLM#1~#4 시스템 프롬프트 + 유저 메시지 조립. 판단은 전부 여기 프롬프트 텍스트가 결정하고,
 호출은 common.call_llm(DeepSeek)이 담당한다."""
 from gonggu.common import CATEGORY_TAXONOMY
+from gonggu.linkbio_parser.hosts import SUPPORTED_HOSTS
+
+# linkbio_parser가 실제로 지원하는 링크인바이오 도메인 — url_type의 "링크모음" 판별 예시로
+# 프롬프트에 그대로 심는다(2026-08-18 점검, 문제 11). 예전엔 이 예시가 하드코딩돼 있어서
+# 실제 지원 목록과 따로 놀았다 — lit.link·taplink처럼 실제로는 지원 안 하는 도메인이 예시로
+# 남아있었고, hity.io/instabio.cc/bio.site/linkon.id/linkseller.net처럼 실제 지원하는
+# 도메인은 누락돼 있었다. SUPPORTED_HOSTS가 바뀌면(플랫폼 추가/제거) 이 프롬프트도 같이
+# 맞춰지므로 두 곳이 다시 어긋날 일이 없다. `{LINKBIO_HOSTS}`는 .replace() 자리표시자일 뿐
+# (아래 두 프롬프트가 f-string이 아니므로 str.format()과 무관 — 문자 그대로 치환된다).
+_LINKBIO_HOST_EXAMPLES = '·'.join(SUPPORTED_HOSTS)
 
 # ── LLM#1 · 공구왕 링크방식 분류 ─────────────────────────────────────────────────────────
 GONGGU_CLASSIFY_SYSTEM = """너는 인스타그램/유튜브 공동구매(공구) 게시글에서 "구매 링크가 어떤 방식으로 제공되는지"를 분류하는 분석기다.
@@ -23,7 +33,7 @@ GONGGU_CLASSIFY_SYSTEM = """너는 인스타그램/유튜브 공동구매(공구
     - "링크없음_불명": 위 어디에도 해당 없음
   · url_type: 발견된 이 상품의 대표 구매 URL 종류(도메인 기준). URL이 전혀 없으면 "없음".
     ["네이버_스마트스토어","네이버_기타","링크모음","자사몰_독립몰","카카오채널","쿠팡_오픈마켓","결제플랫폼","단축링크","구글폼","기타","없음"]
-    - "링크모음" = inpock(link.inpock.co.kr)·litt.ly·lit.link·linktr.ee·taplink·링크트리 등 여러 링크를 모아둔 페이지
+    - "링크모음" = {LINKBIO_HOSTS} 등 여러 링크를 모아둔 페이지(링크트리처럼 위 도메인들의 한국어 서비스명도 해당)
     - "단축링크" = naver.me·bit.ly·srok.kr·me2.do 등 목적지가 가려진 단축 URL
     - "네이버_기타" = 네이버 폼·booking·place 등 스마트스토어가 아닌 네이버 서비스(단, 네이버 블로그·카페는 몰이 아니므로 이 값으로 분류하지 말 것)
     - "결제플랫폼" = srookpay·shop.srookpay 등 결제/주문 플랫폼
@@ -55,6 +65,7 @@ GONGGU_CLASSIFY_SYSTEM = """너는 인스타그램/유튜브 공동구매(공구
   "comment_gated": boolean,
   "pattern_note": string
 }"""
+GONGGU_CLASSIFY_SYSTEM = GONGGU_CLASSIFY_SYSTEM.replace('{LINKBIO_HOSTS}', _LINKBIO_HOST_EXAMPLES)
 
 
 def build_gonggu_classify_user(description, publish_date, creator_description):
@@ -67,7 +78,7 @@ def build_gonggu_classify_user(description, publish_date, creator_description):
 
 # ── LLM#2 · 공구왕 링크선택 ─────────────────────────────────────────────────────────────
 LINK_SELECTION_SYSTEM = """너는 크리에이터의 '링크모음(link-in-bio)' 페이지에서, 특정 공구/공동구매 포스트가 홍보하는 상품의 구매 링크를 찾아주는 분석기다.
-⚠ 네가 고른 링크가 최종 결정이다 — 이후에 그 링크에 실제로 들어가서 다시 확인하는 단계가 없으니, 여기서 신중하게 판단해야 한다.
+⚠ confidence가 이 링크의 운명을 결정한다 — "high"로 고르면 그 자리에서 바로 최종 확정되고(이후 그 링크를 실제로 열어 다시 확인하는 단계가 없음), "medium"이면 실제로 그 링크를 열어서 페이지 내용까지 한 번 더 검증한 뒤에 최종 확정되며, "low"는 검증 기회조차 없이 그 자리에서 자동 반려된다. 그러니 high는 신중하게(고른 게 최종 결정이므로), 반대로 "그럴듯하지만 완전히 확신은 안 선다" 수준이라고 무조건 low로 낮추면 안 된다 — 그런 경우가 정확히 medium이 재검증 기회를 주기 위해 있는 등급이다.
 입력: (1) 포스트 설명/맥락 (2) 그 페이지에서 추출한 후보 링크 목록(번호. 텍스트 | URL).
 아래 스키마의 JSON "하나만" 출력한다. 설명·마크다운·코드블록 금지. 순수 JSON.
 
@@ -76,11 +87,11 @@ LINK_SELECTION_SYSTEM = """너는 크리에이터의 '링크모음(link-in-bio)'
 - 상품명이 포스트 설명과 글자 하나하나 똑같이 일치할 필요는 없다 — 브랜드명만 겹쳐도, 상품명 일부만 겹쳐도, 줄임말/공백/영한 표기 차이가 있어도 같은 상품을 가리키는 것으로 보이면 매칭으로 인정한다(예: 포스트가 "브이롭티" 상품이면 후보 텍스트 "브이롭티 4+1 붓기 순삭템 구매 링크"는 명백히 일치). 너무 엄격하게 글자 단위로 대조하지 말고 유연하게 판단할 것.
 - "고객센터","CS","문의","상담","블로그","유튜브","인스타그램","후기 이벤트","카카오채널","공지사항","이용안내","교환/환불","공식 홈페이지" 등 상품 구매와 무관한 항목은 제외한다.
 - 여러 후보가 비슷하게 그럴듯하면 가장 위/최근에 있을 것으로 보이는(리스트 앞쪽) 항목을 우선한다.
-- confidence는 이제 최종 채택 여부에 직접 영향을 준다(코드가 낮은 확신도는 자동으로 거부할 수 있음) — 판단 기준:
-  · "high": 후보 텍스트에 포스트 상품명/브랜드명이 (부분적으로라도) 직접 보이거나, "구매","바로가기","주문하기" 같은 명확한 구매 문구와 함께 상품이 특정됨.
-  · "medium": 상품명이 직접 보이지는 않지만 맥락(카테고리, 시기, 브랜드 일부 일치)으로 볼 때 상당히 그럴듯함.
-  · "low": 후보들이 다 애매하거나 상품과의 연관성이 추측 수준일 때.
-- 확신이 없어도 그래도 가장 가능성 높은 index를 고르고 confidence를 낮게 표시한다. 후보가 전혀 없거나 전부 명백히 무관하면 chosen_index를 -1로.
+- confidence 판단 기준(위 경고대로 각 등급의 결과가 다르다는 걸 염두에 두고 고를 것):
+  · "high": 후보 텍스트에 포스트 상품명/브랜드명이 (부분적으로라도) 직접 보이거나, "구매","바로가기","주문하기" 같은 명확한 구매 문구와 함께 상품이 특정됨 — 재검증 없이 바로 확정되어도 될 만큼 확실할 때만.
+  · "medium": 상품명이 직접 보이지는 않지만 맥락(카테고리, 시기, 브랜드 일부 일치)으로 볼 때 상당히 그럴듯함 — 실제 페이지를 열어봐야 확신할 수 있는 수준.
+  · "low": 후보들이 다 애매하거나 상품과의 연관성이 추측 수준일 때 — 이건 검증 기회 없이 바로 버려지므로, "그래도 열어보면 맞을 수도 있는" 후보라면 low가 아니라 medium을 줄 것.
+- 확신이 없어도 그래도 가장 가능성 높은 index를 고르고 confidence를 낮게(medium 또는 low) 표시한다. 후보가 전혀 없거나 전부 명백히 무관하면 chosen_index를 -1로.
 - 후보를 하나도 못 고른 경우(chosen_index=-1), reason에 왜 못 골랐는지 적는다 — 다만 "오픈예정","곧 오픈","판매예정","공구예고" 같은 표현 때문에 아직 정식으로 안 열린 것으로 보이면 그 사실만은 반드시 담는다(단순히 "관련 후보 없음"이라고만 쓰지 말 것 — 오픈 전인지 그냥 무관한 후보들뿐인지는 구분해야 함).
 - reason은 항상 한국어 한 문장으로, 가능하면 40자 이내로 짧고 명료하게 쓴다 — 장황한 설명·나열 금지. 예: "아직 오픈 전이라 후보 링크 없음", "후보 전부 다른 브랜드 상품".
 
@@ -256,7 +267,7 @@ YT_PPL_GONGGU_SYSTEM = """너는 유튜브 PPL/브랜드 협찬 영상 중에서
     - "링크없음_불명": 위 어디에도 해당 없음
   · url_type: 발견된 이 상품의 대표 구매 URL 종류(도메인 기준). URL이 전혀 없으면 "없음".
     ["네이버_스마트스토어","네이버_기타","링크모음","자사몰_독립몰","카카오채널","쿠팡_오픈마켓","결제플랫폼","단축링크","구글폼","기타","없음"]
-    - "링크모음" = inpock(link.inpock.co.kr)·litt.ly·lit.link·linktr.ee·taplink·링크트리 등 여러 링크를 모아둔 페이지
+    - "링크모음" = {LINKBIO_HOSTS} 등 여러 링크를 모아둔 페이지(링크트리처럼 위 도메인들의 한국어 서비스명도 해당)
     - "단축링크" = naver.me·bit.ly·srok.kr·me2.do 등 목적지가 가려진 단축 URL
     - "네이버_기타" = 네이버 폼·booking·place 등 스마트스토어가 아닌 네이버 서비스(단, 네이버 블로그·카페는 몰이 아니므로 이 값으로 분류하지 말 것)
     - "결제플랫폼" = srookpay·shop.srookpay 등 결제/주문 플랫폼
@@ -283,6 +294,7 @@ YT_PPL_GONGGU_SYSTEM = """너는 유튜브 PPL/브랜드 협찬 영상 중에서
   "comment_gated": boolean,
   "pattern_note": string
 }"""
+YT_PPL_GONGGU_SYSTEM = YT_PPL_GONGGU_SYSTEM.replace('{LINKBIO_HOSTS}', _LINKBIO_HOST_EXAMPLES)
 
 
 def build_yt_ppl_gonggu_user(title, description, brand_name, sponsored_type):

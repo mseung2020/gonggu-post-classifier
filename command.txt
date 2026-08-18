@@ -18,9 +18,9 @@ python3 -m gonggu.daily --from transform                # 3.  게이트링부터
 python3 -m gonggu.daily --from resolve_links            # 4.  링크 해석부터(Playwright — uc 아님)
 python3 -m gonggu.daily --from load                     # 5.  DB 적재부터
 python3 -m gonggu.daily --from rescan_inprogress        # 7.  진행중 재탐색부터
-python3 -m gonggu.daily --from backfill_period_inpock   # 9-0. 기간 백필(인포크 우선, 크롤 없음)부터
-python3 -m gonggu.daily --from backfill_period          # 9.  공구기간 백필(몰 크롤)부터
+python3 -m gonggu.daily --from backfill_period          # 9.  공구기간 백필부터(인포크 우선 Tier0 → 몰 크롤 Tier1, 2026-08-18 병합)
 python3 -m gonggu.daily --from maintenance              # 10. 하우스키핑만 남았을 때
+
 python3 -m gonggu.daily --only resolve_links            # 예: 링크 해석만 다시
 python3 -m gonggu.daily --only load                     # 예: 적재만 다시
 

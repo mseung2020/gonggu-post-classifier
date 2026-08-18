@@ -185,3 +185,138 @@ class TestStallWatchdog:
         assert fired.wait(3), '스톨 임계(0.4s)를 넘겼는데 워치독이 안 울렸다'
         release.set()            # 워커 풀어줘 정상 종료(테스트 프로세스는 _abort를 가짜로 둬 안 죽음)
         assert done.wait(5)
+
+
+class TestRecycleWatchdog:
+    """정기 재기동(2026-08-18) — 사용자가 직접 관찰한 "브라우저 풀을 오래 재사용할수록 느려지고,
+    껐다 켜면 다시 빨라진다"는 문제를 스톨과 별개로 자동화한다. CRAWL_RECYCLE_SEC가 지나면
+    스톨이 아니어도(진척은 계속되고 있어도) 건강한 재시작으로 프로세스를 끝낸다."""
+
+    def test_should_recycle_truth_table(self):
+        assert cp._should_recycle(elapsed=100, done=5, total=10, recycle_after=240) is False  # 아직 안 지남
+        assert cp._should_recycle(elapsed=241, done=5, total=10, recycle_after=240) is True    # 지남, 남은 일 있음
+        assert cp._should_recycle(elapsed=241, done=10, total=10, recycle_after=240) is False  # 다 끝남 — 재기동 불필요
+        assert cp._should_recycle(elapsed=99999, done=5, total=10, recycle_after=0) is False   # 0이면 꺼짐
+
+    def test_recycle_message_has_resume_hint_and_is_not_a_failure_tone(self):
+        msg = cp._recycle_message(250, 1200, 5000)
+        assert '--from' in msg and '1200/5000' in msg
+        assert '먹통' not in msg  # 스톨 메시지와 달리 "드라이버 먹통"이 아니라 의도된 재시작임을 명확히 함
+        assert '의도된' in msg
+
+    def test_normal_run_does_not_recycle_when_disabled(self, monkeypatch):
+        """RECYCLE_AFTER_SEC=0(기본, 꺼짐)이면 워치독이 재기동을 발동하지 않는다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 0.0)
+        recycled = []
+        monkeypatch.setattr(cp, '_recycle', lambda msg: recycled.append(msg))
+        seen = []
+        lock = threading.Lock()
+        cp.run_crawl_pool(list(range(20)), lambda c, i: (lock.acquire(), seen.append(i), lock.release()),
+                          concurrency=4)
+        assert sorted(seen) == list(range(20)) and recycled == []
+
+    def test_watchdog_fires_recycle_after_time_budget(self, monkeypatch):
+        """항목은 계속 처리되고 있어도(스톨 아님) 수명이 임계를 넘으면 _recycle이 불린다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.0)      # 스톨 워치독은 꺼서 재기동만 관찰
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 0.3)
+        aborted = []
+        monkeypatch.setattr(cp, '_abort', lambda msg: aborted.append(msg))
+        fired = threading.Event()
+        monkeypatch.setattr(cp, '_recycle', lambda msg: fired.set())
+
+        release = threading.Event()
+
+        def handle(ctx, item):
+            release.wait(0.05)   # 계속 조금씩 진척은 나되(스톨 아님), 전체는 오래 걸리게
+
+        done = threading.Event()
+        # 항목을 충분히 많이 둬서(0.05s * 40 = 2s) 재기동 임계(0.3s)를 진척 중에 넘기게 한다.
+        threading.Thread(target=lambda: (cp.run_crawl_pool(list(range(40)), handle, concurrency=2),
+                                         done.set()), daemon=True).start()
+        assert fired.wait(3), '재기동 임계(0.3s)를 넘겼는데 워치독이 재기동을 안 불렀다'
+        assert aborted == []  # 스톨로 오인해 _abort를 부르면 안 됨
+        release.set()
+        assert done.wait(5)
+
+
+class TestNoPlaywrightMode:
+    """브라우저 없는 빠른 패스(2026-08-18, 속도개선 공사 F단계) — use_playwright=False면
+    sync_playwright() 자체를 안 띄우고(워커 수만큼 Node 드라이버 프로세스를 띄우는 비용까지
+    제거) ctx.page=None으로 워커가 돈다. resolve_links의 Tier0(브라우저 없는 빠른 패스)이
+    RESOLVE_FAST_CONCURRENCY(기본 200)처럼 큰 동시성을 공짜로 쓸 수 있는 근거."""
+
+    def _boom_if_called(self, monkeypatch, name='sync_playwright'):
+        def _boom(*a, **k):
+            raise AssertionError(f'use_playwright=False인데 {name}가 호출됨')
+        monkeypatch.setattr(cp, name, _boom)
+
+    def test_no_sync_playwright_called_and_page_is_none(self, monkeypatch):
+        self._boom_if_called(monkeypatch)
+        seen_pages = []
+        lock = threading.Lock()
+
+        def handle(ctx, item):
+            with lock:
+                seen_pages.append(ctx.page)
+
+        n = cp.run_crawl_pool([1, 2, 3], handle, concurrency=3, use_playwright=False)
+        assert n == 3
+        assert seen_pages == [None, None, None]
+
+    def test_item_delay_still_applies_without_page(self, monkeypatch):
+        self._boom_if_called(monkeypatch)
+        sleeps = []
+        monkeypatch.setattr(cp.time, 'sleep', sleeps.append)
+        cp.run_crawl_pool([1, 2], lambda c, i: None, concurrency=1, item_delay=2.0,
+                          use_playwright=False)
+        assert sleeps == [2.0, 2.0]
+
+    def test_handle_touching_page_none_is_caught_as_per_item_exception(self, monkeypatch, capsys):
+        """page가 None인데 실수로 건드리면(버그) 그 항목만 예외로 건너뛰고 풀 전체는 안 죽는다
+        (crawl_pool의 기존 handle 예외 계약, 2026-08-04 실측 그대로)."""
+        self._boom_if_called(monkeypatch)
+
+        def handle(ctx, item):
+            ctx.page.goto('x')  # None.goto -> AttributeError
+
+        cp.run_crawl_pool([1], handle, concurrency=1, use_playwright=False)
+        assert '건너뜀' in capsys.readouterr().out
+
+    def test_warn_hint_suppressed_without_playwright(self, monkeypatch, capsys):
+        """MAX_BROWSERS 기준 경고는 브라우저를 실제로 쓸 때만 의미가 있다 — 안 쓰는 패스에서
+        엉뚱하게 뜨지 않게 한다."""
+        self._boom_if_called(monkeypatch)
+        monkeypatch.setattr(cp, 'MAX_BROWSERS', 1)
+        cp.run_crawl_pool(list(range(10)), lambda c, i: None, concurrency=10,
+                          warn_hint='X_CONCURRENCY', use_playwright=False)
+        assert 'X_CONCURRENCY를 낮춰보세요' not in capsys.readouterr().out
+
+    def test_recycle_ignored_without_playwright(self, monkeypatch):
+        """2026-08-18 점검 발견 버그의 재발 방지 계약 — CRAWL_RECYCLE_SEC(정기 재기동)은
+        "오래 재사용된 브라우저의 메모리 누적"을 정리하려는 것이라, 브라우저 자체를 안 띄우는
+        use_playwright=False 패스(resolve_links의 Tier0)에는 걸리면 안 된다. 안 그러면
+        물량이 많아 이 임계 안에 못 끝내는 날마다 브라우저가 하나도 없는데 "브라우저 풀 재기동"
+        명분으로 프로세스가 반복 강제종료되어, 진짜 브라우저가 필요한 Tier1 진입이 지연된다."""
+        self._boom_if_called(monkeypatch)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.0)       # 스톨은 안 보고 재기동만 관찰
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 0.05)  # 아주 짧게 잡아 임계를 확실히 넘김
+        recycled = []
+        monkeypatch.setattr(cp, '_recycle', lambda msg: recycled.append(msg))
+
+        release = threading.Event()
+
+        def handle(ctx, item):
+            release.wait(0.02)  # 전체 실행이 재기동 임계(0.05s)를 확실히 넘도록 조금씩 걸리게
+
+        done = threading.Event()
+        threading.Thread(
+            target=lambda: (cp.run_crawl_pool(list(range(20)), handle, concurrency=2,
+                                              use_playwright=False),
+                            done.set()),
+            daemon=True).start()
+        assert done.wait(5)
+        assert recycled == []  # use_playwright=False면 재기동 임계를 넘겨도 절대 발동하지 않음

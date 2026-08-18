@@ -56,6 +56,27 @@ def _fallback(reason):
     return None
 
 
+# ── body_too_short 진단 샘플(2026-08-18, 속도 개선 공사 B단계) — 실측에서 패스트패스 미스의
+# 75~80%가 이 사유 하나였다. 근데 "본문이 문턱(HTTP_MIN_BODY_TEXT) 바로 아래라 아깝게 걸리는"
+# 건지 "그 사이트가 통째로 JS 렌더링이라 본문이 거의 0자"인지에 따라 처방이 다르다 — 문턱을
+# 낮추는 게 전자엔 먹히고 후자엔 안 먹힌다(오히려 얕은 페이지를 잘못 통과시킬 위험만 생김).
+# 호스트+실제 길이를 최근 N건만 들고 있다가 runner.py가 구간별 분포로 찍어서 이걸 데이터로 정한다.
+_BODY_LEN_SAMPLES_MAX = 200
+_body_len_samples = []
+
+
+def _record_body_too_short(url, length):
+    _bump('miss:body_too_short')
+    with _STATS_LOCK:
+        _body_len_samples.append((host_of(url), length))
+        del _body_len_samples[:-_BODY_LEN_SAMPLES_MAX]  # 최근 것만 유지
+
+
+def body_too_short_samples():
+    with _STATS_LOCK:
+        return list(_body_len_samples)
+
+
 def _meta(soup, prop):
     el = soup.find('meta', attrs={'property': prop}) or soup.find('meta', attrs={'name': prop})
     return el.get('content') if el else None
@@ -194,7 +215,8 @@ def try_http_fetch(url, referer=None):
     if not (jsonld.get('name') or og_image):
         return _fallback('no_jsonld_or_og')
     if len(body_text) < HTTP_MIN_BODY_TEXT:
-        return _fallback('body_too_short')
+        _record_body_too_short(url, len(body_text))
+        return None
 
     _bump('hit')
     return {'status': r.status_code, 'final_url': r.url, 'title': title, 'og_image': og_image,

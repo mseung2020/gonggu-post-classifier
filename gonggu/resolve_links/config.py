@@ -58,6 +58,14 @@ ITEM_DELAY_SMART = os.environ.get('ITEM_DELAY_SMART', '1') != '0'
 # ITEM_DELAY만으로 완화하던 걸 워커 수까지 감안해서 신중하게 올릴 것 — 진단 라운드로 차단율
 # 확인 후 조정.
 RESOLVE_CONCURRENCY = int(os.environ.get('RESOLVE_CONCURRENCY', '1'))
+# 브라우저 없는 빠른 패스(Tier0, 2026-08-18 속도개선 공사 F단계) 전용 동시성 — 실측(via_stats)으로
+# 후보 URL의 약 80%(linkbio_structured+uc_host_skip+http 합)가 브라우저를 아예 안 쓰고 끝나는데,
+# 예전엔 이 80%도 RESOLVE_CONCURRENCY(브라우저 필요 20%까지 감안해 낮게 잡은 값)라는 좁은 슬롯
+# 수만큼만 병렬화됐다. Tier0은 브라우저/Playwright 드라이버 자체를 안 띄우므로(runner.py의
+# use_playwright=False 패스) MAX_BROWSERS와 무관하게 네트워크·호스트쿨다운만이 병목이라 훨씬
+# 높게 잡을 수 있다. 브라우저가 필요하다고 판정된 나머지만 RESOLVE_CONCURRENCY/MAX_BROWSERS로
+# 넘어가는 Tier1(기존 경로)에서 처리한다.
+RESOLVE_FAST_CONCURRENCY = int(os.environ.get('RESOLVE_FAST_CONCURRENCY', '200'))
 # RESOLVE_CONCURRENCY(워커 스레드 수)와 별개로, 실제로 떠 있는 Playwright 브라우저 프로세스
 # 개수의 하드웨어 안전판 — 이 상한이 없으면 최악의 경우(워커가 전부 동시에 브라우저를 필요로
 # 하는 순간) 워커 수만큼 크롬 프로세스가 떠서 메모리를 통째로 먹는다(실측 확인, 2026-07-30 —

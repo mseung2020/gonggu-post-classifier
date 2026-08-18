@@ -10,6 +10,13 @@ append하므로 transform.py부터는 무수정으로 이 결과를 그대로 �
 중간에 죽어도 이어서 실행 가능. 재시도/스레드풀/진행 로그 배관은 llm_batch.py 공용
 러너(2단계 B2)를 쓴다.
 
+dedup(이미 분류된 video_id인지)은 CLASSIFIED_DIR 전체를 매번 다시 읽지 않고
+common.load_classify_done_keys()의 작은 인덱스를 classify.py와 공유한다(2026-08-18, 문제
+1/9 — 02_classified가 실측 223MB+인데 이 두 스크립트가 매일 각자 전체 재파싱하던 걸 없앴다).
+이 스크립트가 다루는 video_id(fetch_yt_ppl.py가 만든, 공구 키워드 **없는** 것)와 classify.py가
+다루는 것(공구 키워드 **있는** 것)은 fetch 단계 SQL에서부터 서로 배타적이라, 인덱스를
+공유해도 서로의 결과를 되짚어 재처리하는 일은 없다.
+
 사용법:
     CONCURRENCY=100 python3 -m gonggu.classify_yt_ppl
     LIMIT=20 python3 -m gonggu.classify_yt_ppl          # 소량 스모크 테스트
@@ -19,7 +26,9 @@ append하므로 transform.py부터는 무수정으로 이 결과를 그대로 �
 import os
 import sys
 
-from gonggu.common import CLASSIFIED_DIR, DEEPSEEK_KEY, ROOT, append_jsonl, call_llm, load_json_dir, post_date_key
+from gonggu.common import (CLASSIFIED_DIR, DEEPSEEK_KEY, ROOT, append_jsonl, call_llm,
+                     load_classify_done_keys, load_json_dir, post_date_key,
+                     record_classify_done_key)
 from gonggu.llm_batch import retry_llm, run_llm_batch
 from gonggu.prompts import YT_PPL_GONGGU_SYSTEM, build_yt_ppl_gonggu_user
 
@@ -41,6 +50,12 @@ def classify_one(post):
     return {**post, 'classification': parsed, 'classification_error': err}
 
 
+def _persist(r):
+    append_jsonl(CLASSIFIED_DIR / f'{post_date_key(r)}.jsonl', r)
+    if r.get('classification') and not r.get('classification_error'):
+        record_classify_done_key(_key(r))
+
+
 def main():
     if not DEEPSEEK_KEY:
         print('DEEPSEEK_KEY 환경변수가 없음 — .env에 채워넣을 것', file=sys.stderr)
@@ -48,13 +63,7 @@ def main():
 
     posts = load_json_dir(RAW_DIR_YT_PPL)
 
-    # 체크포인트: data/02_classified/를 읽어 이미 처리된(성공한) video_id는 스킵한다.
-    # classify.py도 같은 디렉터리에 쓰지만 그쪽은 fetch_source.py가 만든(공구 키워드 있는)
-    # video_id만 다루고, 이 스크립트는 fetch_yt_ppl.py가 만든(공구 키워드 없는) video_id만
-    # 다루므로 두 체크포인트가 서로의 결과를 되짚어 재처리하는 일은 없다.
-    prior = load_json_dir(CLASSIFIED_DIR)
-    done = [r for r in prior if r.get('platform') == 'yt' and r.get('classification') and not r.get('classification_error')]
-    done_keys = {_key(r) for r in done if r.get('video_id')}
+    done_keys = load_classify_done_keys()
     todo_all = [p for p in posts if _key(p) not in done_keys]
     already_done = len(posts) - len(todo_all)  # LIMIT 적용 전에 계산해둔다
 
@@ -65,8 +74,7 @@ def main():
     print(f'전체 {len(posts)} | 완료 {already_done} | 이번 실행 {len(todo)}건 (동시 {concurrency})')
 
     counters = run_llm_batch(
-        todo, classify_one,
-        lambda r: append_jsonl(CLASSIFIED_DIR / f'{post_date_key(r)}.jsonl', r),
+        todo, classify_one, _persist,
         concurrency=concurrency,
         extra=('공구판정', lambda r: bool((r.get('classification') or {}).get('is_gonggu'))))
 

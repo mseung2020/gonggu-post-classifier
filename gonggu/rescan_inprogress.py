@@ -8,7 +8,11 @@
 "후보 전부 다른 상품" 같은 건 몇 번을 다시 열어도 안 바뀐다. 그래서:
 
   1. 신규 전환(한 번도 재탐색 안 해본 진행중 상품)  → 무조건 당일 재탐색
-  2. link_status='error'(크롤링/LLM 기술 실패)      → 스케줄 무시하고 매일 무조건 포함
+  2. link_status='error'(크롤링/LLM 기술 실패)      → 스케줄(백오프 날짜) 무시하고 매일 포함,
+     단 RESCAN_ERROR_MAX_ATTEMPTS(기본 14)번 넘게 계속 error로만 끝나면 은퇴(2026-08-18 추가
+     — 원래 상한이 전혀 없어서, 특정 URL 패턴에서 resolve_product가 매번 예외를 던지는 것
+     같은 영구적 기술 문제도 매일 무기한 재시도 대상에 남는 문제가 있었다. unresolved/hold의
+     "백오프 소진 후 은퇴"와 대칭되는 안전판).
   3. 그 외(이미 시도했던 unresolved/hold)           → 백오프: 첫 시도 후 1일 → 2일 → 4일 →
      7일 간격으로 총 (1+len(백오프))회까지만. 다 소진하면 은퇴(보류) — link_status가 바뀌기
      전까지 다시 안 건드린다. 기본 백오프로 약 2주(통상 공구 기간)를 커버한다.
@@ -32,6 +36,7 @@ DB 상품 행에도 남긴다). candidate_url은 성공/실패와 무관하게 �
     RESCAN_CONCURRENCY=40 python3 -m gonggu.rescan_inprogress
     RESCAN_FORCE=1 python3 -m gonggu.rescan_inprogress      # 스케줄 무시, 풀 전체 강제 재시도
     RESCAN_BACKOFF_DAYS=1,3,7 python3 -m gonggu.rescan_inprogress   # 백오프 간격 조정(일)
+    RESCAN_ERROR_MAX_ATTEMPTS=30 python3 -m gonggu.rescan_inprogress   # error 은퇴 상한 조정
 
 RESCAN_CONCURRENCY는 "동시에 처리 중인 상품 수"지 "동시에 뜨는 크롬 수"가 아니다 — 실제
 브라우저 개수는 MAX_BROWSERS가 따로 제한한다(crawl_pool/browser.py 참고).
@@ -54,6 +59,11 @@ RESCAN_CONCURRENCY = int(os.environ.get('RESCAN_CONCURRENCY', '4'))
 RESCAN_FORCE = os.environ.get('RESCAN_FORCE', '0') == '1'
 # 첫 시도(전환 당일) 이후의 재시도 간격(일). 기본 1,2,4,7 → 상품당 최대 5회, 약 2주 커버.
 BACKOFF_DAYS = [int(d) for d in os.environ.get('RESCAN_BACKOFF_DAYS', '1,2,4,7').split(',') if d.strip()]
+# error는 백오프 날짜와 무관하게 매일 재시도하되(사업 신호를 기다릴 이유가 없음), 이 횟수를
+# 넘으면 은퇴한다(2026-08-18 추가) — 상한이 없으면 특정 URL 패턴에서 resolve_product가 매번
+# 예외를 던지는 것 같은 영구적 기술 문제도 매일 무기한 재시도 대상에 남는다. unresolved/hold의
+# 기본 백오프가 약 2주를 커버하는 것과 비슷한 수준으로 잡는다.
+RESCAN_ERROR_MAX_ATTEMPTS = int(os.environ.get('RESCAN_ERROR_MAX_ATTEMPTS', '14'))
 STATE_FILE = ROOT / 'data/output/rescan_state.jsonl'
 
 
@@ -67,12 +77,16 @@ def next_due(attempts, today):
 def classify_target(status, rec, today_iso, force=False):
     """이 상품을 이번 실행 대상에 넣을지 판단. 반환: (due 여부, 사유 라벨).
 
-    - error는 무조건 포함(기술 실패는 사업 신호를 기다릴 이유가 없음).
+    - error는 백오프 날짜 확인 없이 포함하되, RESCAN_ERROR_MAX_ATTEMPTS번을 넘겨 계속
+      error로만 끝났으면 은퇴한다(기술 실패는 사업 신호를 기다릴 이유가 없어 매일 재시도하지만,
+      영원히 안 풀리는 기술 문제까지 무기한 재시도하진 않는다).
     - 이력 없음 = 진행중이 된 뒤 한 번도 재탐색 안 해봄 → 신규전환, 무조건 포함.
       (재탐색 이력은 이 스크립트가 실제로 시도했을 때만 생기므로, update_gonggu_stage가
       오늘 '진행중'으로 넘긴 새 상품은 자동으로 이 분기에 들어온다.)
     - next_due가 지났으면 백오프 도래, 남았으면 쿨다운, None이면 은퇴(보류)."""
     if status == 'error':
+        if rec and rec.get('attempts', 0) >= RESCAN_ERROR_MAX_ATTEMPTS:
+            return False, '은퇴(에러 반복 상한)'
         return True, '에러(무조건)'
     if force:
         return True, '강제(RESCAN_FORCE)'

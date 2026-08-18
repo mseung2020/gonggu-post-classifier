@@ -273,24 +273,34 @@ dev_gongguking DB
   추가하는 걸 권장합니다(두 LLM이 직렬로: `classify.py`가 끝나야 `classify_yt_ppl.py`가
   시작됨).
 
-### 9. `backfill_period.py` — 공구기간 보강 크롤링 (매일 보강)
+### 9. `backfill_period.py` — 공구기간 보강 (매일 보강)
 
-- **무엇**: 캡션에 명시적 날짜가 없어 상품 `gonggu_stage='판단불가'`로 남은 상품 중, 그 상품
-  링크가 이미 `link_status='done'`으로 확정된 것을 골라 그 확정 상품페이지를 크롤링해서
-  페이지 안에 그 상품의 공구기간이 적혀 있는지 LLM(`prompts.PERIOD_BACKFILL_SYSTEM`)으로
-  찾습니다. 찾으면 그 상품의 `gonggu_start_date`/`gonggu_end_date`와 `gonggu_stage`를 그
-  자리에서 같이 갱신합니다.
-- **입력/출력**: `gonggu_post_product`/`gonggu_video_product` 테이블 자체(파일 관여 없음) +
-  `data/output/period_backfill.jsonl`(체크포인트 — 찾았으면 영구 스킵, 못 찾았으면
-  `PERIOD_RETRY_COOLDOWN_DAYS`일 쿨다운 후 재시도, `PERIOD_MAX_ATTEMPTS`회 넘으면 영구 스킵)
+- **무엇**: 캡션에 명시적 날짜가 없어 상품 `gonggu_stage='판단불가'`로 남은 상품의 기간을
+  채웁니다. 2026-08-18에 옛 별도 스크립트(`backfill_period_inpock.py`)를 이 파일 안의
+  2단 에스컬레이션으로 병합했습니다:
+  - **Tier0(인포크 텍스트, 크롤 없음)**: 그 포스트의 인포크 허브 파싱본
+    (`data/linkbio/<날짜>.jsonl`, `resolve_links`가 남김)에 기간이 있을 만한 텍스트가 있으면
+    브라우저 없이 바로 LLM(`prompts.PERIOD_BACKFILL_SYSTEM`)에 태웁니다. 빠르고 안티봇도 안
+    탑니다.
+  - **Tier1(몰 크롤)**: Tier0에서 못 찾았고, 그 상품 링크가 이미 `link_status='done'`으로
+    확정된 경우에만 그 확정 상품페이지를 크롤링해서 같은 LLM으로 다시 찾습니다.
+  - 어느 티어든 찾으면 그 상품의 `gonggu_start_date`/`gonggu_end_date`와 `gonggu_stage`를
+    그 자리에서 같이 갱신합니다. 인포크 텍스트도 없고 링크도 아직 미확정이면(검사할 소스
+    자체가 없음) 이번 실행에서는 건드리지 않습니다(재시도 횟수도 안 늘림).
+- **입력/출력**: `gonggu_post_product`/`gonggu_video_product` 테이블 자체 + `data/linkbio/`
+  (Tier0 입력, 파일 관여) + `data/output/period_backfill.jsonl`(두 티어 공통 체크포인트 —
+  찾았으면 영구 스킵, 못 찾았으면 `PERIOD_RETRY_COOLDOWN_DAYS`일 쿨다운 후 재시도,
+  `PERIOD_MAX_ATTEMPTS`회 넘으면 영구 스킵). 병합 전에는 인포크 쪽만 "한 번 못 찾으면 영구
+  스킵"이라는 별도 정책이었는데, 이제 두 티어가 하나의 체크포인트·정책을 공유합니다.
 - **명령**: `python3 -m gonggu.backfill_period` (`LIMIT=20`으로 소규모 테스트,
-  `BACKFILL_PERIOD_CONCURRENCY=4`로 동시성 조절)
+  `PERIOD_INPOCK_CONCURRENCY=40`으로 Tier0 동시성, `BACKFILL_PERIOD_CONCURRENCY=4`로 Tier1
+  동시성 조절 — 두 값이 별도인 이유는 resolve_links의 `RESOLVE_FAST_CONCURRENCY`/
+  `RESOLVE_CONCURRENCY` 구분과 같습니다: Tier0는 브라우저가 없어 훨씬 높게 잡을 수 있습니다)
 - **알아둘 점**: 대상 자체가 상품 stage='판단불가'(그 상품의 시작일/종료일 둘 다 NULL)뿐이라
   이미 날짜가 있는 상품은 조회조차 안 돼 기존 값을 덮어쓸 여지가 구조적으로 없습니다.
   기간/스테이지가 상품 단위로 이전된 뒤(2026-08-06)로는 상품이 2개 이상인 게시물도
-  스코프에 포함됩니다 — 예고 달력처럼 다중상품인 게시물의 각 상품도 자기 확정 페이지에서
-  기간을 따로 찾습니다(예전엔 기간이 포스트 단위라 다중상품에서 어느 상품 기준인지
-  모호해 단일상품만 대상으로 제한했는데, 그 제약이 사라졌습니다).
+  스코프에 포함됩니다 — 예고 달력처럼 다중상품인 게시물의 각 상품도 자기 확정 페이지/인포크
+  텍스트에서 기간을 따로 찾습니다.
   `update_gonggu_stage.py`와 마찬가지로 `transform.py`의 `_compute_stage`를 재사용합니다.
 
 ### 9-2. `crawl_linkbio.py` — 링크인바이오 허브 크롤 (백로그 소급 전용, standalone)
@@ -392,14 +402,10 @@ python3 -m gonggu.transform                                  # 3. 보수적 게�
 RESOLVE_CONCURRENCY=40 python3 -m gonggu.resolve_links          # 4. 링크 해석(Playwright — uc 아님)
 python3 -m gonggu.load                                         # 5. DB 적재
 RESCAN_CONCURRENCY=40 python3 -m gonggu.rescan_inprogress     # 7. 진행중인데 못 찾은 링크 재탐색
-python3 -m gonggu.backfill_period_inpock                      # 9-0. 기간 백필(인포크 파싱본 우선, 크롤 없음)
-python3 -m gonggu.backfill_period                             # 9. 공구기간 판단불가 건 보강 크롤링(몰 크롤)
+PERIOD_INPOCK_CONCURRENCY=40 python3 -m gonggu.backfill_period   # 9. 공구기간 백필(인포크 우선 Tier0 → 몰 크롤 Tier1)
 python3 -m gonggu.maintenance                                # 10. 하우스키핑(컴팩션/로테이션)
 ```
 
-> **9-0 `backfill_period_inpock`은 9 `backfill_period`보다 먼저** — 인포크에 이미 파싱돼 있는
-> 공구기간을 크롤 없이 먼저 채우고(값이 이미 있는 상품은 조회조차 안 되므로 덮어쓸 여지 없음),
-> 그래도 못 채운 것만 9번이 실제 상품페이지를 크롤해 보강합니다.
 > **`daily`는 네이버/오픈마켓을 uc로 뚫지 않습니다**(2026-08-12) — 안정적인 Playwright로만 돌리고,
 > 로그인월/봇확인으로 막힌 것은 사람이 곁에서 돌리는 별도 uc 구제 패스로 따로 처리합니다(아래
 > "네이버/오픈마켓 uc 구제 패스" 참고).

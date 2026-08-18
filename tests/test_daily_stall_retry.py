@@ -4,7 +4,7 @@
 import io
 
 import gonggu.daily as daily
-from gonggu.common import CRAWL_STALL_EXIT_CODE
+from gonggu.common import CRAWL_RECYCLE_EXIT_CODE, CRAWL_STALL_EXIT_CODE
 
 
 class _FakeLog(io.StringIO):
@@ -24,7 +24,7 @@ def _run_with_codes(monkeypatch, codes, retry_limit, durations=None):
         ticks.append(t)
     monkeypatch.setattr(daily.time, 'monotonic', lambda: ticks.pop(0))
 
-    def fake_run_stage(module, extra_env, log):
+    def fake_run_stage(module, extra_env, log, extra_args=(), log_lock=None, tag=''):
         calls.append(module)
         idx = len(calls) - 1
         return codes[idx], [f'stderr-{idx}']
@@ -72,3 +72,29 @@ class TestStallRetry:
             monkeypatch, [CRAWL_STALL_EXIT_CODE], retry_limit=0)
         assert code == CRAWL_STALL_EXIT_CODE and attempt == 0 and len(calls) == 1
         assert '재시도' not in log_text
+
+
+class TestRecycleRetry:
+    """정기 재기동(exit 4, 2026-08-18)은 실패가 아니라 의도된 브라우저 풀 재시작이라, 진짜 먹통용
+    STAGE_STALL_RETRIES 한도와 무관하게 무제한 재개해야 한다(안 그러면 몇 시간짜리 백로그가 4분
+    (CRAWL_RECYCLE_SEC=240)마다 재기동하다 재시도 한도(기본 6회 = 24분)에 걸려 파이프라인 전체가
+    중단되는 사고가 난다)."""
+
+    def test_recycle_does_not_count_against_retry_limit(self, monkeypatch):
+        codes = [CRAWL_RECYCLE_EXIT_CODE] * 5 + [0]  # 재기동 5번 겪고 성공 — retry_limit=1보다 훨씬 많음
+        (code, stderr_tail, dt, attempt), calls, log_text = _run_with_codes(
+            monkeypatch, codes, retry_limit=1, durations=[1.0] * 6)
+        assert code == 0
+        assert len(calls) == 6  # 전부 실제로 실행됨(무제한 재개)
+        assert attempt == 0  # 재기동은 "재시도 횟수"(스톨 전용 카운터)에 안 잡힘
+        assert log_text.count('정기 재기동') == 5
+
+    def test_recycle_then_real_stall_still_respects_stall_retry_limit(self, monkeypatch):
+        """재기동 뒤에 진짜 스톨이 나면, 그건 여전히 retry_limit이 그대로 적용돼야 한다 — 재기동이
+        스톨 재시도 한도를 흐리면 안 된다."""
+        codes = [CRAWL_RECYCLE_EXIT_CODE, CRAWL_STALL_EXIT_CODE, CRAWL_STALL_EXIT_CODE]
+        (code, stderr_tail, dt, attempt), calls, log_text = _run_with_codes(
+            monkeypatch, codes, retry_limit=1, durations=[1.0] * 3)
+        assert code == CRAWL_STALL_EXIT_CODE
+        assert attempt == 1  # 스톨 재시도만 카운트(한도 1 도달해 중단)
+        assert len(calls) == 3

@@ -10,10 +10,13 @@ from gonggu.resolve_links import links, runner
 
 def test_dump_linkbio_from_cache(monkeypatch):
     hub = 'https://link.inpock.co.kr/_pytest_dump'
-    # resolve가 파싱해 캐시에 남겼다고 가정(원본 dict에 이메일이 섞여 있음)
-    monkeypatch.setitem(links._linkbio_cache, hub,
-                        {'data': {'platform': 'inpock', 'username': '_pytest_dump',
-                                  'texts': ['📧 seller@example.com'], 'links': []}})
+    # resolve가 파싱해 영구 저장소에 남겼다고 가정(원본 dict에 이메일이 섞여 있음). 프로세스
+    # 로컬 캐시(links._linkbio_cache)가 아니라 load_persisted_linkbio_data를 통해 읽으므로
+    # (문제 8 수정), 이 함수가 돌려주는 값을 몽키패치한다 — 실제 파싱이 다른 프로세스(샤드)에서
+    # 일어났어도 _dump_linkbio가 정상 동작함을 검증하는 것과 같은 경계.
+    monkeypatch.setattr(runner, 'load_persisted_linkbio_data', lambda: {
+        hub: {'platform': 'inpock', 'username': '_pytest_dump',
+              'texts': ['📧 seller@example.com'], 'links': []}})
     item = {'platform': 'ig',
             'parent': {'post_id': '_PYTEST_POST', 'publish_date': '2026-08-06'},
             'products': [{'candidate_url': f'{hub};https://smartstore.naver.com/x/products/1'}]}
@@ -41,9 +44,9 @@ def test_dump_linkbio_from_cache(monkeypatch):
 def test_dump_linkbio_non_inpock_platform_and_email_sync_file(monkeypatch):
     # 인포크가 아닌 링크인바이오 플랫폼(링크트리)도 파싱본/이메일 추출 대상이어야 한다.
     hub = 'https://linktr.ee/_pytest_dump2'
-    monkeypatch.setitem(links._linkbio_cache, hub,
-                        {'data': {'platform': 'linktree', 'username': '_pytest_dump2',
-                                  'bio': '문의 contact@brand.com', 'links': []}})
+    monkeypatch.setattr(runner, 'load_persisted_linkbio_data', lambda: {
+        hub: {'platform': 'linktree', 'username': '_pytest_dump2',
+              'bio': '문의 contact@brand.com', 'links': []}})
     item = {'platform': 'ig',
             'parent': {'post_id': '_PYTEST_POST2', 'publish_date': '2026-08-06',
                        'user_id': '_pytest_user2'},
@@ -75,9 +78,32 @@ def test_dump_linkbio_non_inpock_platform_and_email_sync_file(monkeypatch):
             HIFEN_EMAIL_FILE.write_text(before_email)
 
 
+def test_linkbio_candidates_persists_across_process_boundary(monkeypatch):
+    """문제 8 회귀 테스트(2026-08-18) — 샤딩된 실행에서는 실제 파싱이 일어난 프로세스와
+    _dump_linkbio를 부르는 --finalize 프로세스가 다르다. links.linkbio_candidates()가 파싱에
+    성공하면 프로세스 메모리(_linkbio_cache)뿐 아니라 디스크(LINKBIO_HUB_CACHE_FILE)에도 남아,
+    메모리 캐시를 완전히 비운(다른 프로세스를 흉내 낸) 뒤에도 load_persisted_linkbio_data가
+    그 결과를 여전히 볼 수 있어야 한다."""
+    hub = 'https://link.inpock.co.kr/_pytest_persist'
+    fake_data = {'platform': 'inpock', 'username': '_pytest_persist', 'links': []}
+    monkeypatch.setattr(links, '_fetch_linkbio_candidates', lambda url: ([], fake_data))
+
+    cache_file = links.LINKBIO_HUB_CACHE_FILE
+    before = cache_file.read_text() if cache_file.exists() else None
+    try:
+        links.linkbio_candidates(hub)
+        links._linkbio_cache.clear()  # "다른 프로세스"를 흉내 — 메모리 캐시를 완전히 비운다
+        assert links.load_persisted_linkbio_data().get(hub) == fake_data
+    finally:
+        if before is None:
+            cache_file.unlink(missing_ok=True)
+        else:
+            cache_file.write_text(before)
+
+
 def test_dump_skips_when_no_cache(monkeypatch):
-    # 캐시에 없는 허브(이번 실행에 파싱 안 됨)면 아무것도 안 쓴다 — 재크롤하지 않는다.
-    monkeypatch.setattr(links, '_linkbio_cache', {})
+    # 영구 저장소에도 없는 허브(어느 프로세스도 파싱 안 함)면 아무것도 안 쓴다 — 재크롤하지 않는다.
+    monkeypatch.setattr(runner, 'load_persisted_linkbio_data', lambda: {})
     item = {'platform': 'ig', 'parent': {'post_id': '_PYTEST_NONE', 'publish_date': '2026-08-06'},
             'products': [{'candidate_url': 'https://link.inpock.co.kr/_never_parsed'}]}
     out_file = OUT_DIR / '2026-08-06.jsonl'

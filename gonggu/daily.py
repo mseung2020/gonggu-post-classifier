@@ -32,6 +32,7 @@ stderr(Playwright 노이즈 등)는 로그 파일에만 남는다 — 예전처�
 시작을 거부한다(classify/resolve/load 동시 2회 실행 금지 제약을 코드로 강제).
 """
 import collections
+import contextlib
 import datetime
 import os
 import pathlib
@@ -40,14 +41,19 @@ import sys
 import threading
 import time
 
-from gonggu.common import CRAWL_STALL_EXIT_CODE, ROOT
+from gonggu.common import CRAWL_RECYCLE_EXIT_CODE, CRAWL_STALL_EXIT_CODE, ROOT
 
 LOG_DIR = ROOT / 'data/logs'
 LOCK_FILE = ROOT / 'data/output/.daily.lock'
 
 # 스톨(먹통) 종료로 판단해 daily가 대신 재시도해줄 최대 횟수 — 0이면 예전처럼 자동 재시도 없이
 # 즉시 중단(사람이 --from으로 재개)한다. 환경변수로 넘기면 그 값이 이긴다.
-STAGE_STALL_RETRIES = int(os.environ.get('STAGE_STALL_RETRIES', '2'))
+#
+# 기본 6(2026-08-18, 속도개선 공사 — 원래 2였음): resolve_links를 RESOLVE_CONCURRENCY=60으로
+# 올리면서 스톨 빈도 자체가 늘었다(실측 — 같은 날 3연속 스톨로 재시도 2회를 다 쓰고 완전히
+# 중단된 적 있음). 재시도 자체는 체크포인트라 항상 안전한 조작이고, "가끔 걸려도 결국 끝까지
+# 밀어붙이는" 쪽이 지금 우선순위(빠른 처리)에 맞아 상한을 넉넉히 올려둔다.
+STAGE_STALL_RETRIES = int(os.environ.get('STAGE_STALL_RETRIES', '6'))
 
 # ⚠ uc를 데일리 대량 resolve/rescan에 상시 넣는 건 철회했다(2026-08-12). 이유: 이 맥의 최신
 # 크롬(v151) + undetected_chromedriver 조합이 동시성 높은 대량 경로에서 반복 크래시("Chrome이
@@ -58,12 +64,29 @@ STAGE_STALL_RETRIES = int(os.environ.get('STAGE_STALL_RETRIES', '2'))
 # RESOLVE_UC=1, RESOLVE_UC_HOSTS=..., UC_LOGIN_WAIT=0 을 넣으면 된다(권장하지 않음).
 
 # 동시성 두 손잡이는 별개다(2026-08-13): 여기 값은 "워커 수"(동시 처리 상품 수)고, 실제 뜨는
-# 크롬 개수는 config.MAX_BROWSERS(RAM 기준 ~10)가 따로 상한한다. 워커를 40으로 올려도 브라우저가
-# 필요한 작업은 크롬 10개 안에서만 돌지만, LLM#2/#3 호출은 브라우저를 안 먹어서 워커↑만큼 병렬로
+# 크롬 개수는 config.MAX_BROWSERS가 따로 상한한다. 워커를 40으로 올려도 브라우저가
+# 필요한 작업은 그 상한 안에서만 돌지만, LLM#2/#3 호출은 브라우저를 안 먹어서 워커↑만큼 병렬로
 # 빨라진다 — 그래서 LLM 바운드 단계(resolve/rescan는 fast-skip 후, backfill_inpock는 크롤 자체가
 # 없음)는 40이 이득이다. 반대로 몰 크롤=브라우저 바운드인 backfill_period는 워커를 올려봤자
-# 크롬 10개가 병목이고, 40이면 그 10개를 서로 뺏는 churn으로 예전처럼 얼어붙는다 — 그래서 낮게 둔다.
-# MAX_BROWSERS 자체를 올리는 건 16GB 맥에서 스왑→먹통 사고가 났던 값이라 손대지 않는다.
+# 크롬이 병목이고, 40이면 그걸 서로 뺏는 churn으로 예전처럼 얼어붙는다 — 그래서 낮게 둔다.
+#
+# resolve_links는 2026-08-18 속도개선 공사(A+B+C)에서 재조정했다 — 16GB 맥 기준 실측:
+#   MAX_BROWSERS: 자동계산 기본값(~10)보다 14가 7.6% 빠름(67건 매칭 비교, 크래시 없음).
+#     하드캡 16까지 테스트했지만 오히려 더 느렸다(스왑 압박 증가로 추정) — 14 확정, 그 이상 금지.
+#   ITEM_DELAY=0, LINK_LLM_TIMEOUT=45(+재시도 1회): 안티봇 대기·LLM 꼬리 지연을 깎아 초반
+#     구간 0.95초/건까지 나왔다(원래 기본 약 4.6~4.9초/건). 대신 차단율/에러율이 오르는지는
+#     계속 지켜볼 것 — 리스크를 알고 켠 값이다.
+#   RESOLVE_CONCURRENCY=60: 이 값 자체가 그 속도 향상의 상당 부분을 차지하지만, "한 포스트가
+#     상품 수십 개를 공유"하는 이상치 배치를 만나면 크롤 풀 스톨 빈도가 늘어난다(실측 — 같은 날
+#     3연속 스톨). 그래도 스톨은 체크포인트로 안전하게 자동 복구되므로(STAGE_STALL_RETRIES 참고),
+#     "느리지만 안 걸림"보다 "가끔 걸려도 빠름"을 택했다 — RESOLVE_SHARD_COUNT(워커 풀을 별도
+#     프로세스로 샤딩, resolve_links/runner.py 참고)를 명시적으로 켜면 이 트레이드오프 자체를
+#     줄일 수 있다(한 샤드만 스톨나고 나머지는 계속 진행).
+#   CRAWL_RECYCLE_SEC=240: 사용자가 직접 관찰 — 브라우저 풀을 오래 재사용할수록(약 5분 지나면)
+#     처리 속도가 눈에 띄게 떨어지고, 껐다 켜면 다시 빨라진다(메모리 누적으로 추정, 실측된 스왑
+#     사용량 증가와 일치). 4분(240초)마다 스톨이 아니어도 프로세스를 스스로 정리·재시작해 브라우저
+#     풀을 새로 띄운다 — daily는 이 재시작(CRAWL_RECYCLE_EXIT_CODE)을 실패로 안 세고 무제한
+#     자동으로 이어서 재개한다(crawl_pool.py 참고).
 # (모듈명, 이 단계 전용 동시성/기간 기본값) — 환경변수로 이미 지정돼 있으면 그 값이 이긴다.
 STAGES = [
     ('update_gonggu_stage', {}),                          # 6. 공구 상태 갱신
@@ -72,11 +95,16 @@ STAGES = [
     ('classify',            {'CONCURRENCY': '200'}),      # 2. LLM#1 공구 분류
     ('classify_yt_ppl',     {'CONCURRENCY': '200'}),      # 8-2. 유튜브 PPL 공구 판별(독립)
     ('transform',           {}),                          # 3. 보수적 게이트링
-    ('resolve_links',       {'RESOLVE_CONCURRENCY': '40'}),   # 4. 링크 해석(Playwright + fast-skip). 워커40/크롬10 — 남은 일 대부분이 LLM#2/#3 호출(브라우저 무관)이라 워커↑가 이득
+    ('resolve_links',       {'RESOLVE_CONCURRENCY': '60', 'MAX_BROWSERS': '14', 'ITEM_DELAY': '0',
+                              'LINK_LLM_TIMEOUT': '45', 'LINK_LLM_TIMEOUT_RETRY': '1',
+                              'CRAWL_RECYCLE_SEC': '240'}),  # 4. 링크 해석 — 2026-08-18 재튜닝(위 주석 참고)
     ('load',                {}),                          # 5. DB 적재
     ('rescan_inprogress',   {'RESCAN_CONCURRENCY': '10'}),    # 7. 진행중 미해석 재탐색. ⚠resolve와 달리 10 — 대상이 "이미 한 번 실패한 진행중 건"이라 브라우저 재검증(스토어메인/링크모음/non-uc 몰)이 몰려 브라우저 바운드다. 40에선 크롬10 churn으로 반복 정체(2026-08-13 실측). fast-skip 있어도 잔여 브라우저 부하가 resolve보다 큼
-    ('backfill_period_inpock', {'CONCURRENCY': '40'}),         # 9-0. 기간 백필(인포크, 크롤 없이 LLM만 — 브라우저 무관이라 높여도 안전)
-    ('backfill_period',     {'BACKFILL_PERIOD_CONCURRENCY': '8'}),  # 9. 공구기간 백필(몰 크롤=브라우저 바운드). ⚠40 금지 — 크롬10 초과예약 churn으로 얼던 그 단계(1037에서 멈춤). fast-skip도 아직 없음
+    # 9. 공구기간 백필 — 2026-08-18에 옛 9-0(backfill_period_inpock)과 하나로 병합(문제 10).
+    # Tier0(인포크 텍스트, 브라우저 무관 — 옛 9-0의 CONCURRENCY=40 그대로 이어옴)를 먼저 돌고,
+    # 거기서 못 찾은 것만 Tier1(몰 크롤=브라우저 바운드)로 넘어간다. ⚠BACKFILL_PERIOD_CONCURRENCY
+    # 40 금지 — 크롬10 초과예약 churn으로 얼던 그 단계(1037에서 멈춤, backfill_period.py 참고)
+    ('backfill_period',     {'PERIOD_INPOCK_CONCURRENCY': '40', 'BACKFILL_PERIOD_CONCURRENCY': '8'}),
     ('maintenance',         {}),                          # 10. 하우스키핑(컴팩션/로테이션 — 3단계 C2)
     # 인포크 허브 JSON 저장은 resolve_links 단계에서 파싱본을 그대로 떨구는 방식으로 흡수됐다
     # (2026-08-11, 중복 크롤 제거) — 별도 crawl_linkbio 단계는 데일리에서 제외. 예전에 이미 적재된
@@ -107,14 +135,20 @@ def _release_lock():
         pass
 
 
-def _run_stage(module, extra_env, log):
+def _run_stage(module, extra_env, log, extra_args=(), log_lock=None, tag=''):
     """한 단계를 서브프로세스로 실행 — stdout은 콘솔+로그, stderr는 로그에만.
-    반환: (exit code, stderr 마지막 20줄)."""
+    반환: (exit code, stderr 마지막 20줄).
+
+    log_lock: 샤딩 실행(2026-08-18)처럼 여러 _run_stage가 같은 log 파일 객체에 동시에 쓸 때만
+    넘긴다 — 단일 스레드 순차 실행(기존 동작)에서는 None이라 잠금 오버헤드가 없다.
+    tag: 콘솔/로그에 붙일 접두사(예: '[샤드 0/3] ') — 샤딩 시 여러 프로세스의 출력이 섞여도
+    어느 샤드인지 구분할 수 있게 한다."""
+    lock_ctx = log_lock if log_lock is not None else contextlib.nullcontext()
     # PYTHONUNBUFFERED=1: 서브프로세스 stdout이 파이프로 갈 때 블록버퍼링돼 진행 로그가 한참 안
     # 보이는 문제 방지(2026-08-11 — backfill_period_inpock가 flush 없이 돌아 "멈춘 듯" 보였음).
     # 사용자 지정 환경변수가 기본값을 이기되, 언버퍼링은 항상 강제한다.
     env = {**extra_env, **os.environ, 'PYTHONUNBUFFERED': '1'}
-    proc = subprocess.Popen([sys.executable, '-m', f'gonggu.{module}'],
+    proc = subprocess.Popen([sys.executable, '-m', f'gonggu.{module}', *extra_args],
                             cwd=ROOT, env=env, text=True, encoding='utf-8', errors='replace',
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stderr_tail = collections.deque(maxlen=20)
@@ -122,21 +156,24 @@ def _run_stage(module, extra_env, log):
     def _drain_stderr():
         for line in proc.stderr:
             stderr_tail.append(line.rstrip('\n'))
-            log.write(f'[stderr] {line}')
+            with lock_ctx:
+                log.write(f'[stderr] {tag}{line}')
 
     t = threading.Thread(target=_drain_stderr)
     t.start()
     for line in proc.stdout:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        log.write(line)
-        log.flush()
+        with lock_ctx:
+            sys.stdout.write(f'{tag}{line}')
+            sys.stdout.flush()
+            log.write(f'{tag}{line}')
+            log.flush()
     proc.stdout.close()
     t.join()
     return proc.wait(), list(stderr_tail)
 
 
-def _run_stage_with_stall_retry(module, extra_env, log, retry_limit=STAGE_STALL_RETRIES):
+def _run_stage_with_stall_retry(module, extra_env, log, retry_limit=STAGE_STALL_RETRIES,
+                                 extra_args=(), log_lock=None, tag=''):
     """_run_stage를 감싸서, 딱 CRAWL_STALL_EXIT_CODE(드라이버 먹통)로 죽었을 때만 최대
     retry_limit번 같은 단계를 다시 돈다 — 각 단계는 체크포인트라 재실행은 이미 끝난 건을
     건너뛰고 이어서 하는 것과 같다(순수 함수로 재시도 여부 판단을 분리해 실제 서브프로세스
@@ -147,15 +184,95 @@ def _run_stage_with_stall_retry(module, extra_env, log, retry_limit=STAGE_STALL_
     total_dt = 0.0
     while True:
         t0 = time.monotonic()
-        code, stderr_tail = _run_stage(module, extra_env, log)
+        code, stderr_tail = _run_stage(module, extra_env, log, extra_args=extra_args,
+                                        log_lock=log_lock, tag=tag)
         total_dt += time.monotonic() - t0
+        if code == CRAWL_RECYCLE_EXIT_CODE:
+            # 의도된 정기 재기동(2026-08-18) — 실패가 아니라 브라우저 풀을 건강하게 새로 띄우기
+            # 위한 자발적 종료라, STAGE_STALL_RETRIES(진짜 먹통용 제한)를 안 쓰고 무제한 재개한다.
+            # 남은 pending이 없어지면 그 실행 자체가 정상 종료(exit 0)로 끝나 이 루프를 벗어난다.
+            msg = f'  ♻ {tag}gonggu.{module} 정기 재기동(exit {CRAWL_RECYCLE_EXIT_CODE}) — 체크포인트로 이어서 계속'
+            print(msg, flush=True)
+            with (log_lock if log_lock is not None else contextlib.nullcontext()):
+                log.write(msg + '\n')
+            continue
         if code != CRAWL_STALL_EXIT_CODE or attempt >= retry_limit:
             return code, stderr_tail, total_dt, attempt
         attempt += 1
-        msg = (f'  ⚠ gonggu.{module} 드라이버 먹통 정지(exit {CRAWL_STALL_EXIT_CODE}) — '
+        msg = (f'  ⚠ {tag}gonggu.{module} 드라이버 먹통 정지(exit {CRAWL_STALL_EXIT_CODE}) — '
                f'체크포인트로 이어서 자동 재시도 {attempt}/{retry_limit}회째')
         print(msg, flush=True)
-        log.write(msg + '\n')
+        with (log_lock if log_lock is not None else contextlib.nullcontext()):
+            log.write(msg + '\n')
+
+
+def _split_evenly(total, n):
+    """total을 n개로 최대한 고르게 나눈 정수 리스트(합계 total, 각 항목 최소 1) — 샤드별
+    MAX_BROWSERS/RESOLVE_CONCURRENCY 배분에 쓴다. 나누지 않고 각 샤드에 원래 값을 그대로 주면
+    브라우저 총수가 샤드 수배로 뛰어 오늘(2026-08-18) 실측한 RAM 안전선(MAX_BROWSERS=14)을
+    그대로 넘어서므로, 반드시 전체 합이 원래 값을 넘지 않게 나눠야 한다."""
+    base, extra = divmod(total, n)
+    return [max(1, base + (1 if i < extra else 0)) for i in range(n)]
+
+
+def _run_resolve_links_sharded(module, extra_env, log, shard_count):
+    """resolve_links를 shard_count개의 독립 프로세스로 동시에 돌린다(2026-08-18, 속도개선
+    다음 라운드 E) — 각 프로세스는 자기 몫의 key 파티션만 처리하고, 자기 몫 안에서 스톨이
+    나면 그 샤드만(다른 샤드는 계속 진행) 최대 STAGE_STALL_RETRIES회 자동 재시도한다. "한
+    이상치 포스트가 워커 60개분 전체를 볼모로 잡는" 문제(2026-08-18 실측, gonggumoa/
+    V6RsKzkf7NA 3연속 스톨)의 블라스트 반경을 줄이는 게 목적.
+
+    MAX_BROWSERS/RESOLVE_CONCURRENCY뿐 아니라 **RESOLVE_FAST_CONCURRENCY(Tier0 동시성)와
+    MAX_PER_DOMAIN(도메인당 동시 접근 상한)도 전부 샤드 수만큼 나눠 배분**해 총량은 그대로
+    유지한다(_split_evenly 참고, 2026-08-18 점검에서 추가 — 문제 5). 안 나누면 샤드 하나짜리
+    설정값(RESOLVE_FAST_CONCURRENCY=200 등)이 샤드 수만큼 그대로 복제되어, Tier0 총
+    동시요청이 샤드 수배로 뛰고 같은 도메인(스마트스토어 등)에 대한 실질 동시 접근도
+    `MAX_PER_DOMAIN × 샤드수`가 되어 이 저장소가 실측 사고들로 맞춰온 안티봇 방어(429/403
+    유발)가 조용히 무력화된다.
+    ⚠ HOST_COOLDOWN_SEC(호스트별 차단 후 쿨다운)는 각 샤드 프로세스 메모리에만 있어서 여기서
+    나눌 수 있는 값이 아니다 — 한 샤드가 어떤 호스트의 차단을 감지해도 다른 샤드는 그 사실을
+    모른 채 계속 요청을 보낼 수 있다는 한계가 남는다(프로세스 간 공유 저장소가 필요한 별도
+    작업 — 지금은 위 두 값을 나누는 것만으로 "동시 접근량 자체가 샤드 수배가 되는" 가장 큰
+    위험은 없앤다).
+
+    전 샤드가 성공하면 `--finalize`를 한 번 더 돌려 RESOLUTION_FILE(모든 샤드가 이미 append
+    완료)을 근거로 RESOLVED_DIR을 재조립한다 — 샤드 각자가 finalize를 부르면 서로의 결과를
+    모른 채 덮어써서 최종 산출물에서 다른 샤드 몫이 누락된다(runner.finalize() docstring 참고).
+
+    반환: (최종 exit code, 실패/finalize의 stderr 마지막 줄들, 총 소요초, 전 샤드 재시도 합)."""
+    merged_env = {**extra_env, **os.environ}
+    browsers = _split_evenly(int(merged_env.get('MAX_BROWSERS', '14')), shard_count)
+    workers = _split_evenly(int(merged_env.get('RESOLVE_CONCURRENCY', '60')), shard_count)
+    fast_workers = _split_evenly(int(merged_env.get('RESOLVE_FAST_CONCURRENCY', '200')), shard_count)
+    per_domain = _split_evenly(int(merged_env.get('MAX_PER_DOMAIN', '4')), shard_count)
+    log_lock = threading.Lock()
+    results = [None] * shard_count
+
+    def _run_one(i):
+        shard_env = {**extra_env, 'RESOLVE_SHARD_COUNT': str(shard_count), 'RESOLVE_SHARD_INDEX': str(i),
+                     'MAX_BROWSERS': str(browsers[i]), 'RESOLVE_CONCURRENCY': str(workers[i]),
+                     'RESOLVE_FAST_CONCURRENCY': str(fast_workers[i]), 'MAX_PER_DOMAIN': str(per_domain[i])}
+        results[i] = _run_stage_with_stall_retry(module, shard_env, log, log_lock=log_lock,
+                                                  tag=f'[샤드{i}] ')
+
+    threads = [threading.Thread(target=_run_one, args=(i,)) for i in range(shard_count)]
+    t0 = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    total_dt = time.monotonic() - t0
+
+    retries_sum = sum(r[3] for r in results)
+    failed = [(i, r) for i, r in enumerate(results) if r[0] != 0]
+    if failed:
+        i, (code, stderr_tail, _, _) = failed[0]
+        note = [f'[샤드{i}이(가) 실패해 --finalize를 건너뜁니다]'] + list(stderr_tail)
+        return code, note, total_dt, retries_sum
+
+    fin_code, fin_stderr = _run_stage(module, extra_env, log, extra_args=('--finalize',),
+                                       log_lock=log_lock, tag='[finalize] ')
+    return fin_code, fin_stderr, total_dt, retries_sum
 
 
 def main():
@@ -191,7 +308,15 @@ def main():
                 header = f'\n=== gonggu.{module} ==='
                 print(header)
                 log.write(header + '\n')
-                code, stderr_tail, dt, retries = _run_stage_with_stall_retry(module, defaults, log)
+                shard_count = int({**defaults, **os.environ}.get('RESOLVE_SHARD_COUNT', '1'))
+                if module == 'resolve_links' and shard_count > 1:
+                    # 2026-08-18, 속도개선 다음 라운드 E — RESOLVE_SHARD_COUNT를 명시적으로 넘긴
+                    # 경우에만 옵트인(기본은 예전처럼 단일 프로세스). 스톨의 블라스트 반경을
+                    # 샤드 하나로 좁히는 게 목적 — _run_resolve_links_sharded docstring 참고.
+                    print(f'  ⚙ resolve_links를 {shard_count}개 프로세스로 샤딩해서 동시 실행합니다.')
+                    code, stderr_tail, dt, retries = _run_resolve_links_sharded(module, defaults, log, shard_count)
+                else:
+                    code, stderr_tail, dt, retries = _run_stage_with_stall_retry(module, defaults, log)
                 durations.append((module, dt, code, retries))
                 if code != 0:
                     retried_note = f' — 자동재시도 {retries}회 후에도 실패' if retries else ''

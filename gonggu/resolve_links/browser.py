@@ -17,6 +17,55 @@ from .urlutil import host_of
 # '재검증 중 차단'을 포함해야 reverify_uc(LIKE '%재검증 중 차단%')가 2단 uc 대상으로 주워간다.
 UC_SKIP_NOTE = '재검증 중 차단(네이버/오픈마켓 로그인월 호스트) — fast에서 브라우저 생략, uc 패스 대상'
 
+# ── 후보 하나가 실제로 어느 경로로 처리됐는지 세는 카운터(2026-08-18, 속도 개선 공사 A단계).
+# httpfetch.stats()는 "requests 패스트패스 자체를 시도한 것 중 몇 번 적중했는지"만 보여주는데,
+# 실제로 브라우저를 몇 번이나 띄웠는지(=RESOLVE_CONCURRENCY:MAX_BROWSERS 비율을 재는 근거,
+# 아이디어 C)는 그 앞뒤(링크인바이오 구조화로 아예 페치가 필요 없던 경우, uc 호스트라 페치 자체를
+# 생략한 경우)까지 합쳐야 알 수 있다. core.py가 각 분기에서 bump_via를 호출하고, fetch()도
+# 실제로 쓴 경로(via='http'/'browser'/'uc')를 여기서 직접 센다 — 한 곳(_via_lock)에 모아야
+# 두 파일이 각자 세다 이중집계/누락이 안 생긴다. 단위는 "상품 1건"이 아니라 "후보 URL 페치
+# 시도 1건"이다(finalize_pick 안에서 후보 하나가 한 번 더 fetch를 부를 수 있음) — runner.py의
+# 출력 문구도 그렇게 명시한다.
+_via_lock = threading.Lock()
+_via_stats = {}
+
+
+def bump_via(via):
+    with _via_lock:
+        _via_stats[via] = _via_stats.get(via, 0) + 1
+
+
+def via_stats():
+    with _via_lock:
+        return dict(_via_stats)
+
+
+# ── 브라우저 없는 빠른 패스(Tier0) 스위치(2026-08-18, 속도개선 공사 F단계) ──
+# runner.py가 한 프로세스 안에서 두 패스를 순차로(동시 아님) 돌린다: 먼저 이 스위치를 꺼서
+# 브라우저가 필요한 후보를 전부 'needs_browser'로 보류시키는 빠른 패스(링크인바이오 구조화/
+# uc_host_skip/http 패스트패스만, 실측상 후보의 약 80%), 그 다음 스위치를 켜서 보류된 나머지만
+# 기존 경로(MAX_BROWSERS 풀)로 재시도한다. 두 패스가 같은 프로세스에서 순차로 도니 전역 변수
+# 하나로 충분하다(동시에 두 값이 필요한 상황이 없음).
+_allow_browser = True
+
+
+def set_allow_browser(allow):
+    global _allow_browser
+    _allow_browser = allow
+
+
+def browser_allowed():
+    return _allow_browser
+
+
+# fetch()/fetch_with_browser()가 브라우저 차례인데 _allow_browser=False라 실제로 열지 않고
+# 돌려주는 공용 rec — status/error 둘 다 None이라 BLOCKED_STATUS_CODES/BLOCKED_TEXT_MARKERS
+# 검사도 자연히 통과(차단 아님)해서 uc 옵트인 분기도 안 걸린다. 호출부(core.py/picker.py)가
+# via=='needs_browser'를 보고 이 후보(또는 상품 전체)를 Tier1로 넘긴다.
+def _needs_browser_rec():
+    return {'status': None, 'final_url': None, 'title': None, 'og_image': None, 'jsonld': {},
+            'body_text': '', 'error': None, 'via': 'needs_browser'}
+
 
 def fast_skip_uc_host(url):
     """이 URL을 fast(무인) 경로에서 브라우저로 열지 말고 uc 패스(reverify_uc)로 넘길지 판단.
@@ -212,6 +261,9 @@ def fetch(page, url, wait_extra=1.5, referer=None):
     with domain_gate(url):
         rec = try_http_fetch(url, referer)
         if rec is None:
+            if not _allow_browser:
+                bump_via('needs_browser')
+                return _needs_browser_rec()
             rec = _browser_fetch(page, url, wait_extra, referer)
     # 도메인 게이트 밖에서 uc 재시도 — uc는 자체 락으로 전역 직렬화하므로 게이트를 겹쳐 잡지 않는다.
     final = rec.get('final_url') or ''
@@ -231,15 +283,23 @@ def fetch(page, url, wait_extra=1.5, referer=None):
         target = final if (_uc_enabled_for(final) and 'nid.naver.com' not in final) else url
         uc_rec = _uc_fetch(target)
         if not uc_rec.get('error'):
+            bump_via('uc')
             return uc_rec
+    bump_via(rec.get('via'))
     return rec
 
 
 def fetch_with_browser(page, url, wait_extra=1.5, referer=None):
     """requests 패스트패스를 건너뛰고 무조건 브라우저로 연다 — 결과 rec뿐 아니라 "page가 실제로
-    그 URL에 가 있는 상태"가 필요할 때 쓴다."""
+    그 URL에 가 있는 상태"가 필요할 때 쓴다. _allow_browser=False(Tier0 빠른 패스)면 실제로
+    열지 않고 needs_browser rec를 돌려준다 — 호출부가 이 후보(상품)를 Tier1로 넘긴다."""
+    if not _allow_browser:
+        bump_via('needs_browser')
+        return _needs_browser_rec()
     with domain_gate(url):
-        return _browser_fetch(page, url, wait_extra, referer)
+        rec = _browser_fetch(page, url, wait_extra, referer)
+    bump_via(rec.get('via'))
+    return rec
 
 
 def _browser_fetch(page, url, wait_extra, referer):

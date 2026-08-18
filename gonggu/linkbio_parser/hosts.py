@@ -22,6 +22,15 @@ _HOST_TO_PLATFORM = {
 }
 
 
+# 지원 도메인 전체를 공개 상수로도 노출한다 — prompts.py의 LLM#1/유튜브 PPL 프롬프트가
+# "링크모음" 판별 예시로 도메인 목록을 하드코딩해서 들고 있었는데, 실제 지원 목록(위
+# _HOST_TO_PLATFORM)과 따로 놀아 lit.link·taplink처럼 지원하지 않는 도메인이 예시로 남아있고
+# hity.io/instabio.cc/bio.site/linkon.id/linkseller.net처럼 실제 지원하는 도메인은 빠져있는
+# 드리프트가 있었다(2026-08-18 점검, 문제 11). 프롬프트가 여기서 동적으로 만들어 가져가게
+# 해서 이 목록이 유일한 출처가 되게 한다.
+SUPPORTED_HOSTS = tuple(_HOST_TO_PLATFORM.keys())
+
+
 def detect_platform(url: str) -> str:
     host = urlparse(url).hostname or ""
     platform = _HOST_TO_PLATFORM.get(host)

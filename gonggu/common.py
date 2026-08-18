@@ -19,6 +19,16 @@ load_dotenv(ROOT / '.env')
 # 하드코딩하면 한쪽만 고쳤을 때 조용히 어긋나므로 여기 한 곳에만 정의한다.
 CRAWL_STALL_EXIT_CODE = 3
 
+# crawl_pool.py가 CRAWL_RECYCLE_SEC 경과 후 "의도된 정기 재기동"으로 스스로 종료할 때 쓰는 exit
+# code(2026-08-18, 속도개선 공사 실측 근거) — 사용자가 직접 관찰: 오래 켜둔 브라우저 풀(같은
+# Playwright 브라우저를 재사용하며 수백 개 사이트를 오간)이 5분쯤 지나면 처리 속도가 눈에 띄게
+# 떨어지는데, 껐다 켜면(새 브라우저로) 다시 빨라진다 — 브라우저 하나가 오래 살수록 메모리를
+# 누적해(실측 확인된 스왑 사용량 증가와 일치) 시스템 전체가 느려지는 것으로 추정된다. 매번 사람이
+# 손으로 끄고 켜는 대신, 이 exit code로 daily가 "실패"가 아니라 "건강한 정기 재시작"으로 알아보고
+# 무제한(재시도 횟수 차감 없이) 자동으로 이어서 재개한다 — CRAWL_STALL_EXIT_CODE(진짜 먹통, 제한된
+# 횟수만 재시도)와는 의미가 다르므로 값도 별도로 둔다.
+CRAWL_RECYCLE_EXIT_CODE = 4
+
 
 def acquire_lock(name):
     """중복 실행 방지 락 — 이미 살아있는 동일 이름 실행이 있으면 SystemExit로 시작을 거부한다.
@@ -54,6 +64,13 @@ RAW_DIR = ROOT / 'data/01_raw'
 CLASSIFIED_DIR = ROOT / 'data/02_classified'
 LOAD_READY_DIR = ROOT / 'data/03_load_ready'
 RESOLVED_DIR = ROOT / 'data/04_resolved'
+
+# classify.py/classify_yt_ppl.py가 "이미 분류 성공한 key"인지 확인할 때 쓰는 작은 인덱스
+# (2026-08-18 점검, 문제 1/9) — CLASSIFIED_DIR 전체(실측 223MB+, 하루 5~12MB씩 증가)를 매일
+# 두 스크립트가 각자 다시 파싱하던 걸 대체한다. 두 스크립트가 다루는 key 공간은 fetch 단계
+# SQL에서부터 서로 배타적이라(같은 post_id/video_id가 양쪽에 동시에 걸릴 수 없음) 하나의
+# 파일을 공유해도 안전하다. load_classify_done_keys/record_classify_done_key 참고.
+CLASSIFY_DONE_KEYS_FILE = ROOT / 'data/output/classify_done_keys.jsonl'
 
 # prompts.CATEGORY_CLASSIFY_SYSTEM이 이 dict에서 카테고리 목록을 동적으로 생성하므로 여기만
 # 고치면 프롬프트도 자동으로 맞춰진다. classify_category.py/category_dashboard.py도 공유해서
@@ -328,3 +345,40 @@ def append_jsonl(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'a', encoding='utf-8') as f:
         f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+
+def _classify_key(record):
+    native_id = record.get('post_id') if record.get('platform') == 'ig' else record.get('video_id')
+    return f"{record.get('platform')}:{native_id}" if native_id else None
+
+
+def _bootstrap_classify_done_keys():
+    """CLASSIFY_DONE_KEYS_FILE이 아직 없을 때(최초 실행) 딱 한 번 CLASSIFIED_DIR 전체를 훑어
+    지금까지 성공 분류된 key를 모은다 — 이후로는 이 비용을 다시 치르지 않는다."""
+    keys = set()
+    for r in load_json_dir(CLASSIFIED_DIR):
+        if r.get('classification') and not r.get('classification_error'):
+            key = _classify_key(r)
+            if key:
+                keys.add(key)
+    return keys
+
+
+def load_classify_done_keys():
+    """classify.py/classify_yt_ppl.py가 공유하는 '이미 분류 성공' key 집합(2026-08-18, 문제
+    1/9). 파일이 있으면 그것만 읽는다(작고 하루 증가분만큼만 자람). 없으면(최초 실행)
+    CLASSIFIED_DIR 전체를 한 번 훑어 부트스트랩하고 파일로 남긴 뒤 돌려준다."""
+    if not CLASSIFY_DONE_KEYS_FILE.exists():
+        keys = _bootstrap_classify_done_keys()
+        CLASSIFY_DONE_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CLASSIFY_DONE_KEYS_FILE, 'w', encoding='utf-8') as f:
+            for k in sorted(keys):
+                f.write(json.dumps({'key': k}, ensure_ascii=False) + '\n')
+        return keys
+    return set(load_jsonl(CLASSIFY_DONE_KEYS_FILE).keys())
+
+
+def record_classify_done_key(key):
+    """key 하나를 CLASSIFY_DONE_KEYS_FILE에 append — classify.py/classify_yt_ppl.py가 성공
+    분류 결과를 CLASSIFIED_DIR에 저장하는 바로 그 자리에서 같이 호출한다."""
+    append_jsonl(CLASSIFY_DONE_KEYS_FILE, {'key': key})

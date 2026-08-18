@@ -3,6 +3,7 @@ import re
 import threading
 
 from gonggu import linkbio_parser
+from gonggu.common import ROOT, append_jsonl, load_jsonl
 
 from .antibot import is_excluded_marketplace
 from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT
@@ -14,6 +15,14 @@ from .config import BAD_DOMAINS, MAX_CANDIDATES, NON_PRODUCT_TEXT
 # 같은 URL을 여러 번 두들기는 걸 막기 위함 — thundering herd 방지).
 _linkbio_cache = {}
 _linkbio_cache_lock = threading.Lock()
+
+# 파싱 결과의 영구 저장소(2026-08-18 점검, 문제 8 수정) — 위 _linkbio_cache는 프로세스 메모리
+# 안에서만 산다. RESOLVE_SHARD_COUNT>1이면 runner.finalize()가 전 샤드 종료 후 완전히 새
+# 프로세스(`--finalize`)에서 한 번 불리는데, 그 프로세스의 _linkbio_cache는 항상 비어있어서
+# runner._dump_linkbio가 조용히 0건을 만들었다. 허브 파싱에 성공하는 즉시(어느 프로세스든)
+# 이 append-only 파일에도 같이 남겨서, _dump_linkbio가 프로세스 경계와 무관하게 지금까지
+# 파싱된 전체를 볼 수 있게 한다(RESOLUTION_FILE과 동일한 key-append-only 체크포인트 패턴).
+LINKBIO_HUB_CACHE_FILE = ROOT / 'data/output/linkbio_hub_cache.jsonl'
 
 
 def normalize_url(u):
@@ -77,8 +86,10 @@ def extract_collection_links(page):
 def linkbio_candidates(url):
     """_fetch_linkbio_candidates의 URL 단위 캐시 래퍼. 같은 URL을 여러 상품이 동시에 요청하면
     첫 요청만 실제로 계산하고 나머지는 그 결과를 기다렸다가 재사용한다.
-    파싱 원본(data)도 캐시에 함께 남겨, resolve가 끝난 뒤 cached_linkbio_data로 꺼내 날짜별
-    JSON으로 저장한다(인포크를 두 번 크롤하지 않기 위함)."""
+    파싱 원본(data)도 캐시에 함께 남겨, resolve가 끝난 뒤 load_persisted_linkbio_data로 꺼내
+    날짜별 JSON으로 저장한다(인포크를 두 번 크롤하지 않기 위함). 파싱에 성공하면 프로세스 메모리뿐
+    아니라 LINKBIO_HUB_CACHE_FILE에도 즉시 append한다 — 다른 프로세스(예: 샤딩된 실행의
+    --finalize)가 이 프로세스의 메모리를 못 봐도 파싱 결과를 볼 수 있게 하기 위함(문제 8)."""
     with _linkbio_cache_lock:
         entry = _linkbio_cache.get(url)
         if entry is None:
@@ -92,9 +103,18 @@ def linkbio_candidates(url):
         return entry['result']
     try:
         entry['result'], entry['data'] = _fetch_linkbio_candidates(url)
+        if entry['data'] is not None:
+            append_jsonl(LINKBIO_HUB_CACHE_FILE, {'key': url, 'data': entry['data']})
     finally:
         entry['event'].set()
     return entry['result']
+
+
+def load_persisted_linkbio_data():
+    """LINKBIO_HUB_CACHE_FILE 전체를 {hub_url: 파싱 원본 dict}로 복원한다 — 프로세스 경계와
+    무관하게(샤딩된 여러 프로세스가 각자 남긴 것 포함) 지금까지 파싱된 허브 전체를 본다.
+    runner._dump_linkbio가 cached_linkbio_data(프로세스 로컬) 대신 이걸 쓴다(문제 8 수정)."""
+    return {k: rec['data'] for k, rec in load_jsonl(LINKBIO_HUB_CACHE_FILE).items()}
 
 
 _HUB_URL_RE = re.compile(r'https?://[^\s;]+')
@@ -104,7 +124,7 @@ def extract_linkbio_hub_urls(text):
     """candidate_url 원문(여러 후보가 세미콜론/공백으로 섞인 텍스트)에서 linkbio_parser가
     지원하는 플랫폼(인포크/링크트리/litt.ly 등, hosts.py 참고)의 허브 URL만 뽑는다.
     normalize_url까지 거쳐서 core.resolve_product가 linkbio_candidates(url)를 부를 때 쓰는
-    키와 똑같이 맞춘다 — 그래야 cached_linkbio_data(url)로 캐시에서 그대로 찾을 수 있다
+    키와 똑같이 맞춘다 — 그래야 load_persisted_linkbio_data()의 결과에서 그대로 찾을 수 있다
     (resolve_links/runner.py의 일일 이메일/허브 파싱본 저장이 재크롤 없이 이걸로 동작한다)."""
     hubs, seen = [], set()
     for raw in _HUB_URL_RE.findall(text or ''):
@@ -119,15 +139,6 @@ def extract_linkbio_hub_urls(text):
     return hubs
 
 
-def cached_linkbio_data(url):
-    """resolve 중 이미 파싱해 둔 인포크 허브의 **원본 파싱 결과(dict)**를 캐시에서 꺼낸다.
-    아직 파싱 안 됐거나 미지원/실패면 None. resolve 끝에 이걸 모아 날짜별 JSON으로 저장한다
-    — 인포크를 다시 크롤하지 않고(메모리에만 있던 파싱을 파일로) 보존하기 위함."""
-    with _linkbio_cache_lock:
-        entry = _linkbio_cache.get(url)
-    return entry.get('data') if entry else None
-
-
 def _fetch_linkbio_candidates(url):
     """인포크/litt.ly/linktree 등 알려진 링크인바이오 플랫폼이면, Playwright로 렌더링하는
     대신 개발자가 공유해준 linkbio_parser로 requests 기반 구조화 데이터(상품명/가격/실제
@@ -135,7 +146,8 @@ def _fetch_linkbio_candidates(url):
     쓰니 더 정확하다(실측: viki105 계정 56개 상품을 2.5초에 정확한 이름+URL로 추출, 2026-07-20).
     지원 안 하는 플랫폼이거나 파싱 실패(페이지 구조 변경 등)면 (None, None)을 반환해 호출부가 기존
     Playwright 경로로 자연스럽게 넘어가게 한다.
-    반환: (후보 리스트, 파싱 원본 dict) — 원본은 cached_linkbio_data로 노출돼 날짜별 JSON 저장에 쓰인다."""
+    반환: (후보 리스트, 파싱 원본 dict) — 원본은 LINKBIO_HUB_CACHE_FILE에 영구 저장되고
+    load_persisted_linkbio_data로 노출돼 날짜별 JSON 저장에 쓰인다."""
     try:
         linkbio_parser.detect_platform(url)
     except ValueError:

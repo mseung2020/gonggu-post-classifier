@@ -30,10 +30,29 @@ class TestClassifyTarget:
         due, reason = classify_target('unresolved', None, TODAY_ISO)
         assert due and reason == '신규전환'
 
-    def test_requirement_2_error_always_due(self):
-        """② error는 이력/스케줄과 무관하게 무조건 대상."""
-        retired = {'attempts': 99, 'next_due': None}
-        due, reason = classify_target('error', retired, TODAY_ISO)
+    def test_requirement_2_error_due_regardless_of_backoff_schedule(self):
+        """② error는 unresolved/hold의 백오프 날짜(next_due)와 무관하게 대상 —
+        (그 상품이 unresolved였다면 이미 은퇴했을 next_due=None이어도 error는 여전히 포함)."""
+        would_be_retired_if_unresolved = {'attempts': 3, 'next_due': None}
+        due, reason = classify_target('error', would_be_retired_if_unresolved, TODAY_ISO)
+        assert due and '에러' in reason
+
+    def test_error_retires_after_max_attempts(self, monkeypatch):
+        """2026-08-18 추가 — error도 무한정은 아니다. RESCAN_ERROR_MAX_ATTEMPTS를 넘게
+        계속 error로만 끝난 상품은 은퇴시켜, 영구적 기술 문제가 매일 무한 재시도되는 것을
+        막는다(unresolved/hold의 백오프 소진 은퇴와 대칭)."""
+        monkeypatch.setattr(rs, 'RESCAN_ERROR_MAX_ATTEMPTS', 14)
+        just_under = {'attempts': 13, 'next_due': None}
+        at_cap = {'attempts': 14, 'next_due': None}
+        over_cap = {'attempts': 20, 'next_due': None}
+        assert classify_target('error', just_under, TODAY_ISO)[0] is True
+        due, reason = classify_target('error', at_cap, TODAY_ISO)
+        assert due is False and '은퇴' in reason
+        assert classify_target('error', over_cap, TODAY_ISO)[0] is False
+
+    def test_error_without_history_still_always_due(self):
+        """이력이 아예 없는 error(예: 방금 처음 error로 떨어진 상품)는 당연히 포함."""
+        due, reason = classify_target('error', None, TODAY_ISO)
         assert due and '에러' in reason
 
     def test_cooldown_not_due(self):
