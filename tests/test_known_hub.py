@@ -167,18 +167,18 @@ class TestDiagnosticVerdicts:
     후보 1순위'로 추천했다(실제로는 LLM#3가 cafe.naver.com 75회를 링크모음으로 오분류한 것)."""
 
     def test_flags_llm_mislabels_as_not_a_hub(self):
-        from gonggu._diag_unknown_hubs import is_definitely_not_a_hub
+        from scripts._diag_unknown_hubs import is_definitely_not_a_hub
         for host in ('cafe.naver.com', 'smartstore.naver.com', 'open.kakao.com',
                      'pf.kakao.com', 'm.blog.naver.com'):
             assert is_definitely_not_a_hub(host) is True, host
 
     def test_does_not_flag_real_hubs(self):
-        from gonggu._diag_unknown_hubs import is_definitely_not_a_hub
+        from scripts._diag_unknown_hubs import is_definitely_not_a_hub
         for host in ('page.im', 'linkbio.co', 'jiy1067.linkstory.co.kr'):
             assert is_definitely_not_a_hub(host) is False, host
 
     def test_registrable_handles_two_level_cctld(self):
-        from gonggu._diag_unknown_hubs import registrable
+        from scripts._diag_unknown_hubs import registrable
         assert registrable('jiy1067.linkstory.co.kr') == 'linkstory.co.kr'
         assert registrable('monansalim.tuk.link') == 'tuk.link'
         assert registrable('page.im') == 'page.im'

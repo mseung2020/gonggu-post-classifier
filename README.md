@@ -54,12 +54,34 @@ dev_gongguking DB
 하위 패키지입니다(각각 10개 안팎의 파일, 파일당 200줄 이하) — 구성은 각 패키지의
 `__init__.py` 상단 docstring 참고.
 
-**실행 규약(2026-08-05 패키지화 이후)**: 모든 모듈은 저장소 루트에서
+### 저장소 구조 (2026-08-20 정리)
+
+45개가 넘던 톱레벨 평평한 모듈을 책임별 하위 패키지로 나눴습니다:
+
+| 위치 | 무엇 | 예 |
+|---|---|---|
+| `gonggu/pipeline/` | daily.py가 순서대로 부르는 본줄기+보강 단계 | `classify.py`, `resolve_links/`, `uc_gate.py` |
+| `gonggu/enrich_detail/`, `gonggu/linkbio_parser/` | 이미 책임별로 나뉜 기존 하위 패키지(안 옮김) | — |
+| `gonggu/category/` | daily와 무관한 독립 서브파이프라인(LLM#4 제품 카테고리 분류, 수동 실행) | `classify_category.py` |
+| `gonggu/infra/` | 여러 단계가 공유하는 배관 — 절대 단독 실행 안 함 | `common.py`, `crawl_pool.py`, `uc_engine.py` |
+| `gonggu/tools/` | 사람이 필요할 때 돌리는 진단/유지보수 도구 | `unresolved_board.py`, `llm_usage_report.py` |
+| `scripts/` (저장소 최상위, `gonggu/` 밖) | 진짜 일회성 — 스키마 마이그레이션, 임시 진단(대부분 이미 반영됨, 재실행 거의 없음) | `_migrate_detail_blocked.py` |
+
+**실행 명령은 하나도 안 바뀝니다.** `gonggu/classify.py` 같은 옛 톱레벨 경로에는 얇은 호환
+shim이 남아 있습니다 — `python3 -m gonggu.classify`, `from gonggu.classify import X`,
+pyproject.toml의 `gonggu.classify:main` 진입점이 전부 예전 그대로 동작합니다(shim이
+`sys.modules`를 실제 위치의 모듈로 바꿔치기하는 방식이라 `import *`와 달리 밑줄로 시작하는
+내부 이름까지 안전합니다 — `tests/test_compat_shims.py`가 이 계약을 못박아 둡니다). **새
+코드는 옛 경로(shim)가 아니라 새 하위 패키지에 쓸 것.**
+
+**실행 규약(2026-08-05 패키지화, 2026-08-20 하위 패키지 정리)**: 모든 모듈은 저장소 루트에서
 `python3 -m gonggu.<모듈>`로 실행합니다(예: `python3 -m gonggu.classify`,
-`python3 -m gonggu.resolve_links`). 예전의 `python3 scripts/x.py` /
-`cd scripts && python3 -m resolve_links` 방식은 더 이상 쓰지 않습니다. `pip install -e .`를
-한 번 해두면 어느 디렉터리에서든 `gonggu-classify` 같은 짧은 명령으로도 실행할 수
-있습니다(pyproject.toml 참고). 코드를 고친 뒤에는 `python3 -m pytest`로 골든 diff를 확인합니다.
+`python3 -m gonggu.resolve_links`). `scripts/`의 일회성 스크립트도 같은 이유로
+`python3 -m scripts.<이름>`으로 실행합니다(`python3 scripts/x.py`처럼 경로로 직접 실행하면
+실행 위치에 따라 import가 갈라지는 문제가 있어 2026-08-05에 이미 한 번 걷어냈던 방식입니다 —
+`scripts/`를 부활시켰다고 그 문제까지 부활한 건 아닙니다). `pip install -e .`를 한 번 해두면
+어느 디렉터리에서든 `gonggu-classify` 같은 짧은 명령으로도 실행할 수 있습니다(pyproject.toml
+참고). 코드를 고친 뒤에는 `python3 -m pytest`로 골든 diff를 확인합니다.
 
 컬럼명/타입은 hifen DB의 대응 컬럼(`YT_video_lists.video_id`, `instagram_post.user_id` 등)과
 최대한 동일하게 맞춰져 있습니다 — 실제로 조인하진 않지만 봤을 때 바로 알아볼 수 있도록. 자세한
@@ -80,12 +102,10 @@ dev_gongguking DB
 - **출력**: `data/01_raw/<발행일>.jsonl` — 발행일별로 쪼개서 저장. 이번에 가져온 기간(`DAYS_BACK`)에
   해당하는 날짜 파일만 새로 씁니다(그 밖의 날짜 파일은 그대로 둠).
 - **명령**: `DAYS_BACK=7 python3 -m gonggu.fetch_source`
-- **알아둘 점**: `FETCH_FIRST`라는 환경변수는 이 스크립트가 아니라 `run_pipeline.py`에서만
-  쓰입니다 — `fetch_source.py`를 직접 실행할 땐 무의미(에러는 안 나지만 아무 효과 없음).
 
 ### 2. `classify.py` — LLM#1 공구 분류
 
-- **무엇**: 01_raw의 각 포스트를 LLM#1(DeepSeek, 프롬프트는 `gonggu/prompts.py`의
+- **무엇**: 01_raw의 각 포스트를 LLM#1(DeepSeek, 프롬프트는 `gonggu/infra/prompts.py`의
   `GONGGU_CLASSIFY_SYSTEM`)에 태워서 "공구인지(is_gonggu)", "상품이 몇 개인지(products 배열,
   상품마다 link_location/url_type/urls)", "공구 시작·종료일"을 뽑아냅니다. 아직 필터링은 안
   하고 판단 결과만 붙입니다.
@@ -182,7 +202,7 @@ dev_gongguking DB
     다른 서비스를 잡으려면 완전 일치로는 불가능합니다. 예전엔 완전 일치라서 이런 서비스를
     구조적으로 하나도 못 잡았고(실측: `linkstory.co.kr` 서브도메인 15종, `tuk.link` 6종),
     `link.inpock.com`처럼 TLD만 다른 변형도 샜습니다. **목록에는 등록 도메인만 넣으세요.**
-  - **미등록 허브는 이력에서 캐냅니다**: `python3 -m gonggu._diag_unknown_hubs` — LLM#3가
+  - **미등록 허브는 이력에서 캐냅니다**: `python3 -m scripts._diag_unknown_hubs` — LLM#3가
     "링크모음"이라 판정했는데 위 목록에 없는 호스트를 등장·실패율·서브도메인 수와 함께 뽑아
     추가 후보를 골라줍니다. 판단이 세 가지로 나뉩니다:
     - `★ 추가 후보` — DOM 추출이 잘 되는 곳. `KNOWN_HUB_HOSTS`에 넣으면 LLM#3 홉을 아낍니다.
@@ -530,8 +550,8 @@ pip install -e .              # (선택) gonggu-classify 같은 짧은 명령을
 
 LLM#1~#4(공구판별/링크선택/페이지판별/카테고리분류) + 유튜브 PPL 공구 판별(8번,
 `classify_yt_ppl.py` 전용)까지 전부 DeepSeek API를 직접 호출합니다 — Dify 같은 외부
-워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드(`gonggu/common.py`의
-`call_llm`, `gonggu/prompts.py`의 시스템 프롬프트들) 안에 그대로 있습니다. `.env`에
+워크플로우 도구에 의존하지 않고, 프롬프트와 호출 로직이 이 저장소 코드(`gonggu/infra/common.py`의
+`call_llm`, `gonggu/infra/prompts.py`의 시스템 프롬프트들) 안에 그대로 있습니다. `.env`에
 `DEEPSEEK_KEY`만 채우면 됩니다(`DEEPSEEK_MODEL` 기본값은 `deepseek-v4-pro`).
 `YT_PPL_GONGGU_SYSTEM`은 `GONGGU_CLASSIFY_SYSTEM`(LLM#1)과 판단 기준이 완전히 다른
 별도 프롬프트입니다 — 서로 절대 공유하지 않습니다.
@@ -570,7 +590,7 @@ LIMIT=100 UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=10 python3 -m gonggu.resolve_link
 (`maintenance`는 그날 쓴 파일을 정리하는 단계라 맨 뒤로 옮겼습니다).
 
 - **`rm -rf`가 사라졌습니다.** 예전에는 매일 uc 신뢰를 버리고 다시 쌓았는데 대부분의 날은
-  프로필이 멀쩡해서 낭비였습니다. **uc 게이트**(`gonggu/uc_gate.py`)가 먼저 비대화형으로
+  프로필이 멀쩡해서 낭비였습니다. **uc 게이트**(`gonggu/pipeline/uc_gate.py`)가 먼저 비대화형으로
   "지금 uc로 네이버가 뚫리는가"를 확인하고(`uc_healthcheck.probe` — 창이 잠깐 떴다 닫힙니다)
   살아있으면 그대로 통과, 죽었을 때만 프로필을 초기화하고 워밍업을 띄웁니다.
 - **워밍업을 띄울지는 `sys.stdin.isatty()`로 정합니다.** cron/nohup으로 돌리면 stdin이 TTY가
@@ -703,19 +723,17 @@ python3 -m gonggu.purge_marketplace_links --yes      # 실제 삭제(--status로
 
 ### 한 번에 자동으로 (1~5번만)
 
-`run_pipeline.py`가 1~5번을 정해진 순서로 이어 부르는 오케스트레이터입니다. **6·7·8·9번(공구
-상태 갱신, 진행중 재탐색, 유튜브 PPL 공구 판별, 공구기간 보강)은 아직 포함되어 있지 않으므로
-따로 실행해야 합니다.**
+`daily.py`의 `--until`로 원하는 단계까지만 돌릴 수 있습니다 — 예전엔 이 용도로 1~5번만 커버하는
+별도 오케스트레이터(`run_pipeline.py`)가 있었는데, `daily.py`가 uc/이메일 보강까지 포함한 완전한
+상위호환이라 2026-08-20에 지웠습니다.
 
 ```bash
-python3 -m gonggu.run_pipeline                              # 이미 fetch했다는 전제, 1~5단계 순서대로
-FETCH_FIRST=1 python3 -m gonggu.run_pipeline                 # 원본부터 새로 가져오는 것부터 시작
-FETCH_FIRST=1 DAYS_BACK=14 python3 -m gonggu.run_pipeline    # 최근 14일치로 새로 가져오기
-python3 -m gonggu.run_pipeline --skip-resolve                # 링크 해석 건너뛰고 원본 후보로 바로 load
-python3 -m gonggu.run_pipeline --skip-load                   # DB에 안 넣고 03_load_ready까지만 확인
+python3 -m gonggu.daily --until load                # fetch부터 load까지(옛 run_pipeline과 동등)
+python3 -m gonggu.daily --from classify --until load   # 이미 fetch했다는 전제로 이어서
 ```
 
-끝나면 `dev_gongguking`의 4개 테이블 현재 행 수를 보여줍니다.
+`--skip-resolve`/`--skip-load` 같은 부분 스킵은 없습니다 — 대신 `--until transform`(링크 해석 전
+원본 후보까지만)이나 개별 `--only <단계>`로 필요한 지점까지만 실행하세요.
 
 ### 파일 형식 참고
 
@@ -771,8 +789,8 @@ grep/head로 한 줄씩 바로 들여다볼 수 있고, classify.py처럼 계속
   남긴다(포스트 원문·프로필 소개글·LLM들의 판단 근거까지 다 같이 저장되어 있어서 결과를 사람이
   직접 하나씩 읽고 판단하기 좋음).
   ```bash
-  python3 -m gonggu._diag_sample            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
-  python3 -m gonggu._diag_sample 500 80     # 포스트 500개, 상품 80개
+  python3 -m scripts._diag_sample            # 포스트 300개 랜덤 -> 후보 있는 상품 50개 랜덤
+  python3 -m scripts._diag_sample 500 80     # 포스트 500개, 상품 80개
   ```
 - `python3 -m gonggu.maintenance` — 데이터 하우스키핑(2026-08-05, 대공사 3단계). append-only
   체크포인트(link_resolution/period_backfill) 컴팩션(같은 key의 옛 줄 제거 — last-wins 규약이라

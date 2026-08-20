@@ -1,64 +1,18 @@
-#!/usr/bin/env python3
-"""신규 모듈(기존 파이프라인과 완전 독립) 1/2 — hifen DB의 brand 테이블(유튜브 PPL/브랜드
-협찬 영상 전체)에서 "공구"/"공동구매" 키워드가 없는 것만 가져와 data/01_raw_yt_ppl/에
-저장한다. LLM 호출은 없는 순수 fetch 단계 — 판별은 classify_yt_ppl.py가 담당한다.
+"""호환 shim(2026-08-20 리포 정리) — 실제 코드는 gonggu/pipeline/fetch_yt_ppl.py로 옮겼다.
 
-"공구"/"공동구매" 키워드가 있는 영상은 fetch_source.py가 이미 처리하므로 이 쿼리 자체에서
-제외한다 — 두 fetch 경로가 다루는 video_id가 SQL 단계에서부터 상호 배타적이라 겹치지 않는다.
+`python3 -m gonggu.fetch_yt_ppl` 같은 예전 호출과 `from gonggu.fetch_yt_ppl import X` 같은 예전 import가
+전부 그대로 동작하게 하는 게 이 파일의 유일한 역할이다 — 옮긴 뒤 손댈 파일이 아니다.
+새 코드는 gonggu/pipeline/fetch_yt_ppl.py에 쓸 것."""
+import sys
 
-사용법:
-    DAYS_BACK=7 python3 scripts/fetch_yt_ppl.py
-결과: data/01_raw_yt_ppl/<발행일>.jsonl (이번에 가져온 기간에 해당하는 날짜 파일만 새로 씀,
-    fetch_source.py의 data/01_raw/와는 별도 디렉터리라 서로 덮어쓰지 않음)
-"""
-import datetime
-import os
+from gonggu.pipeline import fetch_yt_ppl as _real
 
-from gonggu.common import ROOT, connect_src, dump_jsonl_sharded, post_date_key
-
-DAYS_BACK = int(os.environ.get('DAYS_BACK', '7'))
-RAW_DIR_YT_PPL = ROOT / 'data/01_raw_yt_ppl'
-
-YT_PPL_QUERY = """
-SELECT video_id, channel_id, title, video_url, video_description AS caption,
-       brand1, sponsored_type, publishDate
-FROM brand
-WHERE publishDate >= %s
-  AND COALESCE(video_description, '') NOT LIKE '%%공구%%'
-  AND COALESCE(video_description, '') NOT LIKE '%%공동구매%%'
-"""
-
-
-def fetch_yt_ppl(conn, since):
-    with conn.cursor() as cur:
-        cur.execute(YT_PPL_QUERY, (since,))
-        rows = cur.fetchall()
-    out = []
-    for r in rows:
-        out.append({
-            'platform': 'yt',
-            'video_id': r['video_id'],
-            'channel_id': r['channel_id'],
-            'video_url': r['video_url'],
-            'publishDate': str(r['publishDate']),
-            'title': r['title'] or '',
-            'description': f"[제목] {r['title'] or ''}\n\n{r['caption'] or ''}",
-            'brand_name': r['brand1'] or '',
-            'sponsored_type': r['sponsored_type'],
-        })
-    return out
-
-
-def main():
-    since = datetime.date.today() - datetime.timedelta(days=DAYS_BACK)
-    conn = connect_src()
-    try:
-        rows = fetch_yt_ppl(conn, since)
-    finally:
-        conn.close()
-    dump_jsonl_sharded(RAW_DIR_YT_PPL, rows, post_date_key)
-    print(f'{since} 이후 brand 테이블(공구 키워드 제외) {len(rows)}건 -> {RAW_DIR_YT_PPL}/*.jsonl (날짜별)')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ != '__main__':
+    # 일반 import(`import gonggu.fetch_yt_ppl`, `from gonggu.fetch_yt_ppl import X`, pyproject.toml의
+    # `gonggu.fetch_yt_ppl:main` 진입점 포함)는 sys.modules 자체를 실제 모듈로 바꿔치기한다 — `import *`와
+    # 달리 밑줄로 시작하는 이름까지 그대로 넘어가므로 테스트가 내부 헬퍼를 직접 import해도 안전하다.
+    sys.modules[__name__] = _real
+else:
+    # `python3 -m gonggu.fetch_yt_ppl`로 실행된 경우 — 위 스왑은 sys.modules['__main__']을 덮어써서
+    # 실행 중인 프로세스를 망가뜨리므로 하지 않고, 대신 실제 main()을 직접 부른다.
+    _real.main()

@@ -130,3 +130,62 @@ class TestUnknownStageArm:
         assert classify_target('unresolved', None, TODAY_ISO)[0] is True
         exhausted = {'attempts': 5, 'next_due': None}
         assert classify_target('unresolved', exhausted, TODAY_ISO)[0] is False
+
+
+class TestUcOwnership:
+    """uc 패스 소유 물량은 rescan이 손대지 않는다(2026-08-20).
+
+    resolve가 네이버/오픈마켓 로그인월 호스트를 '재검증 중 차단 — uc 패스 대상'으로 넘기는데,
+    rescan은 RESOLVE_UC를 안 켜므로 같은 fast-skip에 또 걸려 똑같은 노트를 다시 쓴다. 실측:
+    후보 풀의 18.3%(638건), 실행 중 처리 670건 중 99건(14.8%)이 그렇게 재생산됐다.
+    ⚠ 진짜 문제는 속도가 아니라 백오프 오염 — 이 no-op이 시도 횟수를 태워서 uc만 풀 수 있는
+    건이 rescan에서 '은퇴(백오프 소진)'가 돼버린다."""
+
+    UC_NOTE = '재검증 중 차단(네이버/오픈마켓 로그인월 호스트) — fast에서 브라우저 생략, uc 패스 대상'
+
+    def test_is_uc_owned(self):
+        assert rs.is_uc_owned(self.UC_NOTE) is True
+        assert rs.is_uc_owned('링크모음 후보(conf=medium) 재검증 중 차단(로그인월/캡차) — 확인 불가로 포기') is True
+        assert rs.is_uc_owned('LLM#2가 적합한 링크를 못 찾음: 후보 전부 무관') is False
+        assert rs.is_uc_owned('로그인월_차단 — HTTP 403') is False   # 이건 rescan이 봐도 됨
+        assert rs.is_uc_owned('') is False
+        assert rs.is_uc_owned(None) is False
+
+    def test_uc_owned_excluded_even_when_new(self):
+        """신규전환(이력 없음)이라도 uc 소유면 제외 — 안 그러면 첫 시도부터 no-op을 태운다."""
+        due, reason = classify_target('unresolved', None, TODAY_ISO, note=self.UC_NOTE)
+        assert due is False and 'uc 패스 소유' in reason
+
+    def test_non_uc_note_still_included(self):
+        due, reason = classify_target('unresolved', None, TODAY_ISO,
+                                      note='LLM#2가 적합한 링크를 못 찾음')
+        assert due is True and reason == '신규전환'
+
+    def test_error_beats_uc_ownership(self):
+        """기술 실패(error)는 uc와 무관하게 재시도할 가치가 있다 — 순서가 뒤집히면 안 된다."""
+        due, reason = classify_target('error', None, TODAY_ISO, note=self.UC_NOTE)
+        assert due is True and reason == '에러(무조건)'
+
+    def test_note_defaults_to_none(self):
+        """note를 안 넘기는 옛 호출부가 있어도 동작이 안 바뀐다(기본 None = uc 소유 아님)."""
+        assert classify_target('unresolved', None, TODAY_ISO)[0] is True
+
+    def test_select_carries_link_note(self):
+        from gonggu.platforms import PLATFORMS
+        sql = rs._select_sql(PLATFORMS['ig'], 0)
+        assert 'pp.link_note' in sql, 'note로 걸러내려면 SELECT에 실려야 한다'
+
+
+class TestBackoffDefaultShrunk:
+    """백오프 기본값 1,2,4,7 -> 1,2 (2026-08-20). 회차별 성과 실측(이력 8,570건)에서
+    3회차부터 절벽이었다 — 1회 23.1% -> 2회 12.1% -> 3회 2.4% -> 4회 1.8%. 3·4회차(시도
+    2,747건)를 없애면 헛시도의 35%를 아끼고 잃는 done은 65건(2.4%)뿐이다."""
+
+    def test_default_is_two_retries(self):
+        assert rs.BACKOFF_DAYS == [1, 2]
+
+    def test_default_gives_three_total_attempts(self, monkeypatch):
+        monkeypatch.setattr(rs, 'BACKOFF_DAYS', [1, 2])
+        assert next_due(1, TODAY) == '2026-08-07'
+        assert next_due(2, TODAY) == '2026-08-08'
+        assert next_due(3, TODAY) is None   # 3차(마지막) 시도 후 은퇴

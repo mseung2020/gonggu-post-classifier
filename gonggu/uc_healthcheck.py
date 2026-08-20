@@ -1,67 +1,18 @@
-#!/usr/bin/env python3
-"""데일리 시작 시 네이버 uc 신뢰(로그인 쿠키) 상태를 **비대화형**으로 점검한다(2026-08-11).
+"""호환 shim(2026-08-20 리포 정리) — 실제 코드는 gonggu/pipeline/uc_healthcheck.py로 옮겼다.
 
-uc를 resolve/rescan의 기본 tier로 상시화하면서, 매 데일리 앞에 "지금 uc로 네이버가 뚫리는가"를
-한 번 확인해 둔다. 로그인월/캡차가 뜨면 경고만 남기고(데일리는 계속 진행) — 그날 네이버 건은 uc가
-통과 못 해 unresolved로 남고 다음 실행에 재시도된다. 쿠키를 갱신하려면 사람이 한 번:
-    python3 -m gonggu.enrich_detail.warmup_naver_uc
+`python3 -m gonggu.uc_healthcheck` 같은 예전 호출과 `from gonggu.uc_healthcheck import X` 같은 예전 import가
+전부 그대로 동작하게 하는 게 이 파일의 유일한 역할이다 — 옮긴 뒤 손댈 파일이 아니다.
+새 코드는 gonggu/pipeline/uc_healthcheck.py에 쓸 것."""
+import sys
 
-⚠ 항상 exit 0 — 이 점검이 데일리를 멈추면 안 된다(무인 안전). UC_LOGIN_WAIT=0을 강제해 사람을
-기다리지 않는다. 실제 크롬 창이 잠깐 떴다 닫힌다(화면 세션이 있는 맥에서 데일리를 돌린다는 전제).
+from gonggu.pipeline import uc_healthcheck as _real
 
-2026-08-20: 판정부를 probe()로 분리했다 — daily의 uc 게이트(gonggu.uc_gate)가 같은 판정을
-"쿠키가 살아있으면 워밍업을 건너뛴다"는 결정에 재사용한다. 이 파일 단독 실행(아래 main)의
-동작·출력은 그대로다.
-
-사용법:
-    python3 -m gonggu.uc_healthcheck
-    UC_HEALTHCHECK_URL="<확인할 스마트스토어 URL>" python3 -m gonggu.uc_healthcheck
-"""
-import os
-
-DEFAULT_URL = 'https://smartstore.naver.com/main'
-
-
-def probe():
-    """지금 uc로 네이버가 뚫리는지 실제로 한 번 열어보고 (ok, 사유) 를 돌려준다.
-
-    예외를 절대 밖으로 안 낸다 — 호출자(데일리 게이트/헬스체크)가 이 판정 때문에 멈추면 안 된다.
-    크롬 창이 잠깐 떴다 닫히며(close_sync), 실패 경로에서도 반드시 닫는다 — 예전에는 fetch_sync가
-    던지면 close_sync를 안 불러 드라이버가 남을 수 있었다.
-    """
-    os.environ.setdefault('UC_LOGIN_WAIT', '0')  # 사람 안 기다림(비대화형)
-    url = os.environ.get('UC_HEALTHCHECK_URL', DEFAULT_URL)
-    try:
-        from gonggu.uc_engine import close_sync, fetch_sync, looks_challenged
-    except Exception as e:
-        return False, f'uc 엔진 import 실패: {str(e)[:140]}'
-    try:
-        final_url, html = fetch_sync(url)
-    except Exception as e:
-        return False, f'uc 엔진 실행 실패: {str(e)[:140]}'
-    finally:
-        try:
-            # 다음 단계가 자기 프로세스에서 새 드라이버를 깨끗이 띄우게 이 창은 닫는다.
-            close_sync()
-        except Exception:
-            pass
-    if (not html) or 'nid.naver.com' in (final_url or '') or looks_challenged(html[:8000]):
-        return False, '신뢰 만료(로그인월/캡차 감지)'
-    return True, '신뢰 정상'
-
-
-def main():
-    ok, reason = probe()
-    if ok:
-        print('  ✓ 네이버 uc 신뢰 정상 — resolve/rescan에서 네이버·오픈마켓을 uc로 통과합니다.')
-        return
-    if reason.startswith('신뢰 만료'):
-        print('  ⚠ 네이버 uc 신뢰 만료(로그인월/캡차 감지) — 이번 실행의 네이버 건은 unresolved로')
-        print('     남을 수 있습니다. 쿠키 갱신(사람 1회): python3 -m gonggu.enrich_detail.warmup_naver_uc')
-    else:
-        print(f'  ⚠ {reason} — 이번 실행에서 네이버 건을 못 뚫을 수 있습니다.')
-        print('     크롬/드라이버 상태 점검 또는 워밍업 재실행: python3 -m gonggu.enrich_detail.warmup_naver_uc')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ != '__main__':
+    # 일반 import(`import gonggu.uc_healthcheck`, `from gonggu.uc_healthcheck import X`, pyproject.toml의
+    # `gonggu.uc_healthcheck:main` 진입점 포함)는 sys.modules 자체를 실제 모듈로 바꿔치기한다 — `import *`와
+    # 달리 밑줄로 시작하는 이름까지 그대로 넘어가므로 테스트가 내부 헬퍼를 직접 import해도 안전하다.
+    sys.modules[__name__] = _real
+else:
+    # `python3 -m gonggu.uc_healthcheck`로 실행된 경우 — 위 스왑은 sys.modules['__main__']을 덮어써서
+    # 실행 중인 프로세스를 망가뜨리므로 하지 않고, 대신 실제 main()을 직접 부른다.
+    _real.main()

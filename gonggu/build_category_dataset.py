@@ -1,101 +1,18 @@
-#!/usr/bin/env python3
-"""제품 카테고리 분류(gonggu_category_classify.yml)용 입력 데이터를 만든다.
-dev_gongguking(DST)의 gonggu_post_product/gonggu_video_product에서 제품명을,
-hifen(SRC)의 instagram_post_description/YT_video_lists_detail에서 설명(캡션)을 가져와
-post_id/video_id 자연키로 파이썬에서 합친다 — 두 DB가 서로 다른 서버라 SQL JOIN이 안 됨.
+"""호환 shim(2026-08-20 리포 정리) — 실제 코드는 gonggu/category/build_category_dataset.py로 옮겼다.
 
-사용법:
-    python3 scripts/build_category_dataset.py [출력경로]
-    (출력경로 생략 시 ~/Desktop/gonggu_category_input.jsonl)
-"""
-import json
-import pathlib
+`python3 -m gonggu.build_category_dataset` 같은 예전 호출과 `from gonggu.build_category_dataset import X` 같은 예전 import가
+전부 그대로 동작하게 하는 게 이 파일의 유일한 역할이다 — 옮긴 뒤 손댈 파일이 아니다.
+새 코드는 gonggu/category/build_category_dataset.py에 쓸 것."""
 import sys
 
-from gonggu.common import connect_dst, connect_src
+from gonggu.category import build_category_dataset as _real
 
-OUT_DEFAULT = pathlib.Path.home() / 'Desktop' / 'gonggu_category_input.jsonl'
-
-FETCH_POST_PRODUCTS = """
-SELECT pp.post_id AS content_id, pp.product_name AS product_name, p.gonggu_stage AS gonggu_stage
-FROM gonggu_post_product pp
-JOIN gonggu_post p ON p.post_id = pp.post_id
-"""
-
-FETCH_VIDEO_PRODUCTS = """
-SELECT vp.video_id AS content_id, vp.product_name AS product_name, v.title AS title,
-       v.gonggu_stage AS gonggu_stage
-FROM gonggu_video_product vp
-JOIN gonggu_video v ON v.video_id = vp.video_id
-"""
-
-
-def _chunks(seq, n=1000):
-    for i in range(0, len(seq), n):
-        yield seq[i:i + n]
-
-
-def fetch_descriptions(conn, ids, table, id_col, desc_col):
-    out = {}
-    ids = sorted(set(ids))
-    with conn.cursor() as cur:
-        for chunk in _chunks(ids):
-            fmt = ','.join(['%s'] * len(chunk))
-            cur.execute(f'SELECT {id_col}, {desc_col} FROM {table} WHERE {id_col} IN ({fmt})', chunk)
-            for r in cur.fetchall():
-                out[r[id_col]] = r[desc_col] or ''
-    return out
-
-
-def main():
-    out_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else OUT_DEFAULT
-
-    dst = connect_dst()
-    try:
-        with dst.cursor() as cur:
-            cur.execute(FETCH_POST_PRODUCTS)
-            post_rows = cur.fetchall()
-            cur.execute(FETCH_VIDEO_PRODUCTS)
-            video_rows = cur.fetchall()
-    finally:
-        dst.close()
-
-    src = connect_src()
-    try:
-        desc_ig = fetch_descriptions(
-            src, [r['content_id'] for r in post_rows],
-            'instagram_post_description', 'post_id', 'description')
-        desc_yt = fetch_descriptions(
-            src, [r['content_id'] for r in video_rows],
-            'YT_video_lists_detail', 'video_id', 'video_description')
-    finally:
-        src.close()
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, 'w', encoding='utf-8') as f:
-        for r in post_rows:
-            rec = {
-                'platform': '인스타',
-                'content_id': r['content_id'],
-                'product_name': r['product_name'],
-                'title': '',
-                'description': desc_ig.get(r['content_id'], ''),
-                'gonggu_stage': r['gonggu_stage'],
-            }
-            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-        for r in video_rows:
-            rec = {
-                'platform': '유튜브',
-                'content_id': r['content_id'],
-                'product_name': r['product_name'],
-                'title': r['title'] or '',
-                'description': desc_yt.get(r['content_id'], ''),
-                'gonggu_stage': r['gonggu_stage'],
-            }
-            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-
-    print(f'{len(post_rows) + len(video_rows)}건 저장 -> {out_path}')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ != '__main__':
+    # 일반 import(`import gonggu.build_category_dataset`, `from gonggu.build_category_dataset import X`, pyproject.toml의
+    # `gonggu.build_category_dataset:main` 진입점 포함)는 sys.modules 자체를 실제 모듈로 바꿔치기한다 — `import *`와
+    # 달리 밑줄로 시작하는 이름까지 그대로 넘어가므로 테스트가 내부 헬퍼를 직접 import해도 안전하다.
+    sys.modules[__name__] = _real
+else:
+    # `python3 -m gonggu.build_category_dataset`로 실행된 경우 — 위 스왑은 sys.modules['__main__']을 덮어써서
+    # 실행 중인 프로세스를 망가뜨리므로 하지 않고, 대신 실제 main()을 직접 부른다.
+    _real.main()

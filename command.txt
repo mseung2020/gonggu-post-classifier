@@ -28,7 +28,7 @@
 #   9  rescan_inprogress    진행중인데 못 찾은 링크 재탐색       README §7
 #  10  backfill_period      공구기간 백필 (Tier0 인포크→Tier1 몰) README §9
 #  11  sync_emails          크리에이터 이메일 → hifen DB         실패해도 계속
-#  12  uc_gate              uc 신뢰 관문 (필요할 때만 워밍업)     실패해도 계속 / gonggu/uc_gate.py
+#  12  uc_gate              uc 신뢰 관문 (필요할 때만 워밍업)     실패해도 계속 / gonggu/pipeline/uc_gate.py
 #  13  reverify_uc          차단 unresolved를 uc로 재검증        실패해도 계속 / 시간예산 30분
 #  14  maintenance          하우스키핑(컴팩션/로테이션)          실패해도 계속 / 항상 마지막
 #
@@ -189,4 +189,4 @@ python3 -m gonggu.llm_usage_report
 ggstat / ggclean
 
 # ── 일회성 스키마 마이그레이션(이미 반영했으면 다시 돌릴 필요 없음) ──
-python3 -m gonggu._migrate_detail_blocked   # detail_status ENUM에 'blocked' 추가(상세 2단 백필 도입 시 1회)
+python3 -m scripts._migrate_detail_blocked   # detail_status ENUM에 'blocked' 추가(상세 2단 백필 도입 시 1회)

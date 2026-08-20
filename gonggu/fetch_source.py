@@ -1,92 +1,18 @@
-#!/usr/bin/env python3
-"""1단계: hifen DB(읽기 전용)에서 최근 N일치 "공구/공동구매" 키워드 매칭 인스타그램/유튜브
-포스트를 뽑아 LLM#1 입력 스키마(description/publish_date/creator_description)로 정규화한다.
-원본 컬럼명(post_id/user_id/url/publish_date, video_id/channel_id/publishDate/video_url)은
-그대로 들고 있다가 load.py에서 gonggu_post/gonggu_video 컬럼에 그대로 꽂아 넣는다.
+"""호환 shim(2026-08-20 리포 정리) — 실제 코드는 gonggu/pipeline/fetch_source.py로 옮겼다.
 
-사용법:
-    DAYS_BACK=7 python3 scripts/fetch_source.py
-결과: data/01_raw/<발행일>.jsonl (날짜별 — 이번에 가져온 기간에 해당하는 날짜만 새로 씀)
-"""
-import datetime
-import os
+`python3 -m gonggu.fetch_source` 같은 예전 호출과 `from gonggu.fetch_source import X` 같은 예전 import가
+전부 그대로 동작하게 하는 게 이 파일의 유일한 역할이다 — 옮긴 뒤 손댈 파일이 아니다.
+새 코드는 gonggu/pipeline/fetch_source.py에 쓸 것."""
+import sys
 
-from gonggu.common import RAW_DIR, connect_src, dump_jsonl_sharded, post_date_key
+from gonggu.pipeline import fetch_source as _real
 
-DAYS_BACK = int(os.environ.get('DAYS_BACK', '7'))
-
-IG_QUERY = """
-SELECT p.post_id AS post_id, p.user_id AS user_id, p.url AS url,
-       p.publish_date AS publish_date, d.description AS caption,
-       GROUP_CONCAT(DISTINCT u.external_url SEPARATOR ';') AS creator_bio_urls
-FROM instagram_post p
-JOIN instagram_post_description d ON d.post_id = p.post_id
-LEFT JOIN instagram_user_external_url u ON u.user_id = p.user_id COLLATE utf8mb4_unicode_ci
-WHERE p.publish_date >= %s
-  AND (d.description LIKE '%%공구%%' OR d.description LIKE '%%공동구매%%')
-GROUP BY p.post_id, p.user_id, p.url, p.publish_date, d.description
-"""
-
-YT_QUERY = """
-SELECT d.video_id AS video_id, v.channel_id AS channel_id,
-       CONCAT('https://www.youtube.com/watch?v=', d.video_id) AS video_url,
-       d.publishDate AS publishDate, d.title AS title, d.video_description AS caption
-FROM YT_video_lists_detail d
-LEFT JOIN YT_video_lists v ON v.video_id = d.video_id
-WHERE d.publishDate >= %s
-  AND (d.video_description LIKE '%%공구%%' OR d.video_description LIKE '%%공동구매%%')
-"""
-
-
-def fetch_ig(conn, since):
-    with conn.cursor() as cur:
-        cur.execute(IG_QUERY, (since,))
-        rows = cur.fetchall()
-    out = []
-    for r in rows:
-        out.append({
-            'platform': 'ig',
-            'post_id': r['post_id'],
-            'user_id': r['user_id'],
-            'url': r['url'],
-            'publish_date': str(r['publish_date']),
-            'description': r['caption'] or '',
-            'creator_description': r['creator_bio_urls'] or '',
-        })
-    return out
-
-
-def fetch_yt(conn, since):
-    with conn.cursor() as cur:
-        cur.execute(YT_QUERY, (since,))
-        rows = cur.fetchall()
-    out = []
-    for r in rows:
-        out.append({
-            'platform': 'yt',
-            'video_id': r['video_id'],
-            'channel_id': r['channel_id'],
-            'video_url': r['video_url'],
-            'publishDate': str(r['publishDate']),
-            'title': r['title'] or '',
-            'description': f"[제목] {r['title'] or ''}\n\n{r['caption'] or ''}",
-            'creator_description': '',
-        })
-    return out
-
-
-def main():
-    since = datetime.date.today() - datetime.timedelta(days=DAYS_BACK)
-    conn = connect_src()
-    try:
-        ig = fetch_ig(conn, since)
-        yt = fetch_yt(conn, since)
-    finally:
-        conn.close()
-    posts = ig + yt
-    dump_jsonl_sharded(RAW_DIR, posts, post_date_key)
-    print(f'{since} 이후 — ig {len(ig)}건, yt {len(yt)}건, 총 {len(posts)}건 -> {RAW_DIR}/*.jsonl (날짜별)')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ != '__main__':
+    # 일반 import(`import gonggu.fetch_source`, `from gonggu.fetch_source import X`, pyproject.toml의
+    # `gonggu.fetch_source:main` 진입점 포함)는 sys.modules 자체를 실제 모듈로 바꿔치기한다 — `import *`와
+    # 달리 밑줄로 시작하는 이름까지 그대로 넘어가므로 테스트가 내부 헬퍼를 직접 import해도 안전하다.
+    sys.modules[__name__] = _real
+else:
+    # `python3 -m gonggu.fetch_source`로 실행된 경우 — 위 스왑은 sys.modules['__main__']을 덮어써서
+    # 실행 중인 프로세스를 망가뜨리므로 하지 않고, 대신 실제 main()을 직접 부른다.
+    _real.main()

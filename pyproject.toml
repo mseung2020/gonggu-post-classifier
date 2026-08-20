@@ -4,6 +4,10 @@
 # 설치해서 쓰기: `pip install -e .` 후 어느 디렉터리에서든 gonggu-classify 같은 명령 사용 가능
 #
 # 의존성 목록은 requirements.txt 한 곳에서만 관리한다(아래 dynamic 설정이 그대로 읽어감).
+#
+# 2026-08-20 리포 정리: 아래 `gonggu.<모듈>:main` 경로들은 실제 코드가 아니라 호환 shim을
+# 가리킨다(예: gonggu/fetch_source.py는 gonggu/pipeline/fetch_source.py로 옮긴 뒤 남긴 재노출
+# 파일). shim이 sys.modules를 실제 모듈로 바꿔치기하므로 여기 경로는 손댈 필요 없다.
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -34,7 +38,6 @@ gonggu-update-stage = "gonggu.update_gonggu_stage:main"
 gonggu-rescan = "gonggu.rescan_inprogress:main"
 gonggu-enrich-detail = "gonggu.enrich_detail.runner:main"
 gonggu-backfill-period = "gonggu.backfill_period:main"
-gonggu-pipeline = "gonggu.run_pipeline:main"
 gonggu-daily = "gonggu.daily:main"
 gonggu-maintenance = "gonggu.maintenance:main"
 gonggu-check-db = "gonggu.check_db:main"

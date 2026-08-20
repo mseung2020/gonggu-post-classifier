@@ -1,39 +1,18 @@
-#!/usr/bin/env python3
-"""네이버에 직접 로그인한 뒤 그 세션(쿠키)을 저장해서, resolve_links의 모든 워커가 로그인된
-상태로 스마트스토어/블로그 등에 접근하게 한다 — 익명 세션은 로그인월로 튕기는 페이지를
-로그인 상태면 그대로 통과할 수 있어서, 안티봇 위험 없이(계정 자체가 실제로 로그인한 것이므로)
-차단률을 줄이는 효과를 기대한다. 저장된 세션은 browser.py의 new_context_page가 자동으로
-불러와 쓴다 — 이 스크립트를 다시 실행하지 않는 한 계속 재사용됨(만료되면 다시 실행).
+"""호환 shim(2026-08-20 리포 정리) — 실제 코드는 gonggu/tools/login_naver.py로 옮겼다.
 
-브라우저 창이 뜨고 네이버 로그인 페이지로 이동한다. 직접 아이디/비번(+필요하면 2단계 인증)을
-입력해서 로그인을 마친 뒤, 이 터미널로 돌아와 Enter를 누르면 그 시점의 쿠키를 저장한다.
+`python3 -m gonggu.login_naver` 같은 예전 호출과 `from gonggu.login_naver import X` 같은 예전 import가
+전부 그대로 동작하게 하는 게 이 파일의 유일한 역할이다 — 옮긴 뒤 손댈 파일이 아니다.
+새 코드는 gonggu/tools/login_naver.py에 쓸 것."""
+import sys
 
-⚠ data/auth/session_state.json에는 실제 로그인 쿠키가 그대로 들어있다 — .gitignore에서
-data/auth/*를 이미 막아두었지만, 이 파일을 다른 곳에 복사/공유하지 말 것(계정 탈취 위험).
+from gonggu.tools import login_naver as _real
 
-사용법:
-    python3 scripts/login_naver.py
-"""
-from playwright.sync_api import sync_playwright
-
-from gonggu.resolve_links.config import AUTH_STATE_FILE
-
-
-def main():
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=False)
-        ctx = browser.new_context(locale='ko-KR')
-        page = ctx.new_page()
-        page.goto('https://nid.naver.com/nidlogin.login')
-        print('브라우저 창에서 네이버에 로그인하세요(2단계 인증 포함).')
-        input('로그인을 마쳤으면 이 터미널로 돌아와 Enter를 누르세요...')
-
-        AUTH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ctx.storage_state(path=str(AUTH_STATE_FILE))
-        print(f'로그인 세션 저장됨 -> {AUTH_STATE_FILE}')
-        print('다음 resolve_links 실행부터 이 세션을 자동으로 불러와 씁니다.')
-        browser.close()
-
-
-if __name__ == '__main__':
-    main()
+if __name__ != '__main__':
+    # 일반 import(`import gonggu.login_naver`, `from gonggu.login_naver import X`, pyproject.toml의
+    # `gonggu.login_naver:main` 진입점 포함)는 sys.modules 자체를 실제 모듈로 바꿔치기한다 — `import *`와
+    # 달리 밑줄로 시작하는 이름까지 그대로 넘어가므로 테스트가 내부 헬퍼를 직접 import해도 안전하다.
+    sys.modules[__name__] = _real
+else:
+    # `python3 -m gonggu.login_naver`로 실행된 경우 — 위 스왑은 sys.modules['__main__']을 덮어써서
+    # 실행 중인 프로세스를 망가뜨리므로 하지 않고, 대신 실제 main()을 직접 부른다.
+    _real.main()

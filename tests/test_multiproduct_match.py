@@ -1,6 +1,6 @@
 """다중상품 기간 백필의 상품명 매칭 로직 검증 — 링크 자산 보존을 위해 "애매하면 스킵"이
 정확히 동작하는지 못박는다(잘못 매칭해 엉뚱한 기간을 넣느니 NULL로 두는 게 낫다)."""
-from gonggu._migrate_multiproduct_periods import match_periods
+from scripts._migrate_multiproduct_periods import match_periods
 
 
 def test_exact_match_both():

@@ -138,3 +138,28 @@ class TestRetryOnNewSourceOnly:
         assert _should_skip(rec, TODAY, {'mall:new'}) is True     # 새 소스가 있어도 쿨다운 우선
         rec2 = {'status': 'not_found', 'attempts': 1, 'checked_at': '2026-08-01'}  # 쿨다운 지남
         assert _should_skip(rec2, TODAY, set()) is False
+
+
+class TestMergeSources:
+    """_finish의 sources 병합(2026-08-20 회귀 버그 수정).
+
+    ⚠ 원래 코드는 `prev.get('sources')`를 `if prev else` 가드 없이 불러서, prev가 None인
+    가장 흔한 경우(체크포인트에 이력이 없는 첫 시도 항목)마다 AttributeError로 죽었다. 실전에서
+    11,898건 중 거의 전부가 이 경로를 타면서 발견됨 — 크롤 풀이 항목당 예외를 삼켜 프로세스는
+    안 죽었지만 기간을 하나도 못 찾았다."""
+
+    def test_first_attempt_has_no_prev(self):
+        """가장 흔한 경우 — 체크포인트에 이력이 없는 첫 시도. 여기서 실제로 죽었었다."""
+        assert bp._merge_sources(None, {'inpock:aaaa'}) == ['inpock:aaaa']
+
+    def test_merges_with_existing_sources(self):
+        prev = {'attempts': 1, 'sources': ['inpock:old1']}
+        assert bp._merge_sources(prev, {'inpock:new2'}) == ['inpock:new2', 'inpock:old1']
+
+    def test_prev_without_sources_key(self):
+        """옛 기록(sources 필드 자체가 없던 시절)도 죽지 않아야 한다."""
+        assert bp._merge_sources({'attempts': 2}, {'mall:x'}) == ['mall:x']
+
+    def test_dedupes(self):
+        prev = {'sources': ['inpock:a']}
+        assert bp._merge_sources(prev, {'inpock:a'}) == ['inpock:a']

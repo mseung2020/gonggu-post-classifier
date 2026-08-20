@@ -1,6 +1,6 @@
 """link_note 소급 백필의 key 파싱 검증 — jsonl key(platform:native_id:sort_order)를
 DB 매칭용 (code, native_id, sort_order)로 정확히 되돌리는지 못박는다."""
-from gonggu._migrate_link_note import parse_key
+from scripts._migrate_link_note import parse_key
 
 
 def test_basic_ig():

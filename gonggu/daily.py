@@ -19,7 +19,7 @@
 
 이제 `python3 -m gonggu.daily` 한 줄이다. `rm -rf`가 사라진 게 핵심 변화 — 매일 신뢰를 버리고
 다시 쌓는 대신 uc 게이트가 쿠키가 살아있는지 먼저 보고 죽었을 때만 초기화+워밍업한다
-(gonggu/uc_gate.py). 상세수집(enrich_detail) 3단계는 아직 여기 없다 — STAGES 끝 주석 참고.
+(gonggu/pipeline/uc_gate.py). 상세수집(enrich_detail) 3단계는 아직 여기 없다 — STAGES 끝 주석 참고.
 
 순서 제약(README의 "매일 돌리는 순서" 그대로): 6(update_gonggu_stage)이 7(rescan)/9(backfill)
 보다 먼저 와야 그날의 '진행중'/'판단불가' 상태가 확정된 뒤 그걸 기준으로 대상을 고를 수 있고,
@@ -223,7 +223,7 @@ STAGES = [
     {'id': 'sync_emails', 'module': 'sync_hifen_emails', 'env': {}, 'critical': False},
     # 12. uc 신뢰 관문 — 쿠키가 살아있으면 그대로 통과(대부분의 날), 죽었으면 그때만 프로필
     #     초기화 + 워밍업. 무인 실행(stdin이 TTY 아님)이면 워밍업을 못 하니 uc 단계를 건너뛴다.
-    #     자세한 설계는 gonggu/uc_gate.py 참고.
+    #     자세한 설계는 gonggu/pipeline/uc_gate.py 참고.
     {'id': 'uc_gate', 'kind': 'gate', 'critical': False},
     # 13. 차단 계열 unresolved를 uc로 재시도.
     #     ⚠ 이 단계는 큐를 비우는 단계가 아니라 매일 30분씩 갉는 단계다 — 유입(하루 약 436건)이

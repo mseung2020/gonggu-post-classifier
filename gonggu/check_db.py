@@ -1,48 +1,18 @@
-#!/usr/bin/env python3
-"""소스/타겟 DB 연결과 타겟 테이블 스키마를 확인하는 1회성 점검 스크립트."""
-import os
-import pathlib
+"""호환 shim(2026-08-20 리포 정리) — 실제 코드는 gonggu/tools/check_db.py로 옮겼다.
 
-import pymysql
-from dotenv import load_dotenv
+`python3 -m gonggu.check_db` 같은 예전 호출과 `from gonggu.check_db import X` 같은 예전 import가
+전부 그대로 동작하게 하는 게 이 파일의 유일한 역할이다 — 옮긴 뒤 손댈 파일이 아니다.
+새 코드는 gonggu/tools/check_db.py에 쓸 것."""
+import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-load_dotenv(ROOT / '.env')
+from gonggu.tools import check_db as _real
 
-
-def connect(prefix):
-    return pymysql.connect(
-        host=os.environ[f'{prefix}_DB_HOST'],
-        port=int(os.environ.get(f'{prefix}_DB_PORT', 3306)),
-        user=os.environ[f'{prefix}_DB_USER'],
-        password=os.environ[f'{prefix}_DB_PASSWORD'],
-        database=os.environ[f'{prefix}_DB_NAME'],
-        connect_timeout=10,
-    )
-
-
-def main():
-    print('--- SRC (hifen) 연결 확인 ---')
-    src = connect('SRC')
-    with src.cursor() as cur:
-        cur.execute('SELECT COUNT(*) FROM instagram_post')
-        print('instagram_post 행 수:', cur.fetchone()[0])
-    src.close()
-    print('SRC OK')
-
-    print('--- DST (dev_gongguking) 연결 확인 ---')
-    dst = connect('DST')
-    with dst.cursor() as cur:
-        cur.execute('SHOW TABLES LIKE "gonggu_%"')
-        tables = [r[0] for r in cur.fetchall()]
-        print('gonggu_* 테이블:', tables)
-        for t in tables:
-            cur.execute(f'DESCRIBE {t}')
-            cols = [r[0] for r in cur.fetchall()]
-            print(f'  {t} 컬럼:', cols)
-    dst.close()
-    print('DST OK')
-
-
-if __name__ == '__main__':
-    main()
+if __name__ != '__main__':
+    # 일반 import(`import gonggu.check_db`, `from gonggu.check_db import X`, pyproject.toml의
+    # `gonggu.check_db:main` 진입점 포함)는 sys.modules 자체를 실제 모듈로 바꿔치기한다 — `import *`와
+    # 달리 밑줄로 시작하는 이름까지 그대로 넘어가므로 테스트가 내부 헬퍼를 직접 import해도 안전하다.
+    sys.modules[__name__] = _real
+else:
+    # `python3 -m gonggu.check_db`로 실행된 경우 — 위 스왑은 sys.modules['__main__']을 덮어써서
+    # 실행 중인 프로세스를 망가뜨리므로 하지 않고, 대신 실제 main()을 직접 부른다.
+    _real.main()
