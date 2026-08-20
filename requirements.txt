@@ -10,8 +10,6 @@ openpyxl
 # requirements에 빠져 있어서 새 환경에서 import 단계에 죽었음(2026-08-05 감사에서 발견).
 beautifulsoup4
 lxml
-# 테스트(대공사 0단계부터): 저장소 루트에서 `python3 -m pytest`로 실행
-pytest
 # enrich_detail의 네이버 전용 uc 엔진(DETAIL_NAVER_ENGINE=uc — 스마트스토어가 Playwright를
 # 탐지·차단할 때의 우회, gonggu/enrich_detail/naver_uc.py 참고). 설치된 진짜 크롬이 필요.
 undetected-chromedriver
