@@ -48,6 +48,18 @@ STALL_TIMEOUT = float(os.environ.get('CRAWL_STALL_TIMEOUT', '300'))
 # 안 세고 무제한 자동 재개한다(common.CRAWL_RECYCLE_EXIT_CODE 참고). 0(기본)이면 꺼짐 — 옵트인.
 RECYCLE_AFTER_SEC = float(os.environ.get('CRAWL_RECYCLE_SEC', '0'))
 
+# 재기동 전 드레인 유예(초, 2026-08-19 실측 근거) — 예전엔 재기동이 os._exit로 즉사시켜서, 큐에서
+# 꺼내 처리 중이던 항목(브라우저를 쥔 워커 수만큼)이 체크포인트에 남지 못하고 통째로 버려졌다.
+# 데이터가 유실되진 않지만(다음 실행이 체크포인트를 다시 읽어 재시도) 크롤과 LLM 호출을 처음부터
+# 다시 하므로 시간과 토큰을 재지출한다 — resolve_links 로그 실측(2026-08-19, 재기동 8회 구간):
+# 사이클당 완료 24.4건인데 폐기 14건+ = Tier1 브라우저 작업의 약 35%가 재작업이었다.
+#
+# 이제 재기동 시각이 되면 (1) 새 항목만 그만 꺼내게 막고 (2) 진행 중인 것들이 끝날 때까지 이
+# 유예만큼 기다린 뒤 (3) 종료한다. CRAWL_RECYCLE_SEC 주기가 주는 "브라우저 신선도" 이점은 그대로
+# 두고 재작업만 없애는 게 목적이라, 주기를 늘리는 것(= 열화를 다시 부르는 선택)과는 다르다.
+# 유예 안에 안 끝난 워커(먹통 드라이버 등)는 예전처럼 버리고 나간다. 0이면 예전 동작(즉시 종료).
+RECYCLE_DRAIN_SEC = float(os.environ.get('CRAWL_RECYCLE_DRAIN_SEC', '90'))
+
 
 def _should_abort(idle, done, total, timeout):
     """풀이 멈췄다고 판단할 조건 — 타임아웃 켜짐 & 아직 남은 항목이 있는데 idle이 임계 초과.
@@ -62,6 +74,19 @@ def _should_recycle(elapsed, done, total, recycle_after):
     return recycle_after > 0 and done < total and elapsed > recycle_after
 
 
+def _should_finish_drain(draining_for, inflight, drain_grace):
+    """드레인 종료 조건 — 진행 중인 항목이 다 끝났거나(정상, 재작업 0건) 유예를 넘겼을 때(먹통
+    워커는 포기하고 나간다 — 예전 즉시종료 동작이 이 경우에만 남는다). _should_abort/
+    _should_recycle과 대칭되는 순수 함수."""
+    return inflight <= 0 or draining_for > drain_grace
+
+
+def _drain_message(elapsed, done, total, inflight, grace):
+    return (f'\n♻ 브라우저 풀 정기 재기동 준비(가동 약 {elapsed}초, {done}/{total} 처리) — 새 항목을 '
+            f'그만 꺼내고 진행 중인 {inflight}건이 끝나는 대로 재시작합니다(최대 {int(grace)}초 대기). '
+            f'의도된 재시작이며 실패가 아닙니다.')
+
+
 def _stall_message(idle, done, total, warn_hint=None):
     hint = f' (동시성 {warn_hint}를 낮추면 빈도가 줄어듭니다)' if warn_hint else ''
     return (f'\n✗ 크롤 풀이 약 {idle}초간 한 건도 진척이 없습니다 ({done}/{total} 처리 후 정지) — '
@@ -69,9 +94,13 @@ def _stall_message(idle, done, total, warn_hint=None):
             f'  재개: python3 -m gonggu.daily --from <이 단계>  (각 단계는 멱등이라 이미 끝난 건은 건너뜁니다)')
 
 
-def _recycle_message(elapsed, done, total):
+def _recycle_message(elapsed, done, total, dropped=0):
+    """dropped>0이면 드레인 유예 안에 못 끝낸 항목을 버리고 나간다는 뜻 — 그 건들은 체크포인트에
+    안 남아 다음 실행이 처음부터 다시 한다(재작업). 0이면 재작업 없이 깨끗하게 끊은 것이다."""
+    tail = (f' 진행 중이던 {dropped}건은 유예 안에 못 끝나 다음 실행에서 다시 처리합니다.'
+            if dropped > 0 else ' 진행 중이던 항목은 모두 마치고 끊었습니다(재작업 없음).')
     return (f'\n♻ 브라우저 풀을 정기적으로 재기동합니다(가동 약 {elapsed}초, {done}/{total} 처리 후) — '
-            f'오래 재사용된 브라우저의 메모리 누적을 정리하기 위한 의도된 재시작이며 실패가 아닙니다.\n'
+            f'오래 재사용된 브라우저의 메모리 누적을 정리하기 위한 의도된 재시작이며 실패가 아닙니다.{tail}\n'
             f'  재개: python3 -m gonggu.daily --from <이 단계>  (각 단계는 멱등이라 이미 끝난 건은 건너뜁니다)')
 
 
@@ -134,10 +163,15 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
     lock = threading.Lock()
 
     # 스톨 워치독용 진척 추적 — 항목 하나가 끝날 때마다(성공/실패 무관) last/done을 갱신한다.
+    # inflight는 "큐에서 꺼냈지만 아직 안 끝난" 개수 — 정기 재기동 드레인이 이걸 보고 기다린다.
     total_items = len(items)
-    progress = {'last': time.monotonic(), 'done': 0}
+    progress = {'last': time.monotonic(), 'done': 0, 'inflight': 0}
     prog_lock = threading.Lock()
     stop_watchdog = threading.Event()
+    # 드레인 신호 — stop_intake가 서면 워커는 새 항목을 안 꺼내고(진행 중인 건만 마치고) 빠진다.
+    # recycle_pending은 "이 종료는 정기 재기동이다"를 메인 스레드에 알린다(아래 join 뒤 처리).
+    stop_intake = threading.Event()
+    recycle_pending = threading.Event()
     pool_started = time.monotonic()
     # use_playwright=False면 애초에 브라우저가 하나도 없으니 "브라우저 풀 재기동"은 의미가
     # 없다 — 무시한다(위 use_playwright docstring 참고). STALL_TIMEOUT은 브라우저 유무와
@@ -154,21 +188,46 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
             with prog_lock:
                 idle = time.monotonic() - progress['last']
                 done = progress['done']
+                inflight = progress['inflight']
             if _should_abort(idle, done, total_items, STALL_TIMEOUT):
                 _abort(_stall_message(int(idle), done, total_items, warn_hint))
                 return
             elapsed = time.monotonic() - pool_started
-            if _should_recycle(elapsed, done, total_items, effective_recycle):
-                _recycle(_recycle_message(int(elapsed), done, total_items))
+            if not _should_recycle(elapsed, done, total_items, effective_recycle):
+                continue
+            recycle_pending.set()
+            if RECYCLE_DRAIN_SEC <= 0:      # 옛 동작 — 진행 중인 건을 버리고 즉시 종료
+                _recycle(_recycle_message(int(elapsed), done, total_items, dropped=inflight))
                 return
+            # 드레인 — 새 항목 공급을 끊고 진행 중인 건만 마치게 한다. 이 구간에서는 스톨
+            # 워치독을 보지 않는다: 진척이 멈추는 게 정상(새로 안 꺼내니까)이라 그대로 두면
+            # 의도된 재기동(exit 4, 무제한 재개)을 스톨(exit 3, 재시도 제한)로 오인한다.
+            stop_intake.set()
+            print(_drain_message(int(elapsed), done, total_items, inflight, RECYCLE_DRAIN_SEC), flush=True)
+            drain_started = time.monotonic()
+            # 촘촘히 폴링 — 드레인이 끝나는 즉시 나가야 메인 스레드의 join보다 먼저 종료한다
+            # (늦어서 join이 먼저 끝나면 호출자가 "이 패스 정상 완료"로 오해한다 — 그래서
+            # 아래 join 뒤에도 recycle_pending 확인이 이중으로 있다).
+            while not stop_watchdog.wait(0.5):
+                with prog_lock:
+                    inflight, done = progress['inflight'], progress['done']
+                if _should_finish_drain(time.monotonic() - drain_started, inflight, RECYCLE_DRAIN_SEC):
+                    _recycle(_recycle_message(int(time.monotonic() - pool_started), done,
+                                              total_items, dropped=max(0, inflight)))
+                    return
+            return
 
     def _worker_loop(wid, page, state):
         ctx = SimpleNamespace(page=page, worker_id=wid, lock=lock, state=state)
-        while True:
+        # stop_intake는 정기 재기동 드레인 신호 — 새 항목만 안 꺼내고 빠진다(진행 중인 건은
+        # 아래 finally까지 정상적으로 마친다). 남은 큐는 체크포인트가 있으니 다음 실행이 잇는다.
+        while not stop_intake.is_set():
             try:
                 item = work_q.get_nowait()
             except queue.Empty:
                 break
+            with prog_lock:
+                progress['inflight'] += 1
             try:
                 handle(ctx, item)
             except Exception as e:
@@ -178,10 +237,13 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
                 with lock:
                     print(f'  ⚠ (w{wid}) 항목 처리 중 예외 — 이 항목만 건너뜀: {str(e)[:120]}',
                           flush=True)
-            # 진척 갱신 — 워치독이 "풀 전체 무진척"을 이걸로 판단한다(성공/실패 무관, 항목 1건 완료).
-            with prog_lock:
-                progress['last'] = time.monotonic()
-                progress['done'] += 1
+            finally:
+                # 진척 갱신 — 워치독이 "풀 전체 무진척"을 이걸로 판단한다(성공/실패 무관, 항목 1건
+                # 완료). inflight 감소는 finally에 둔다 — 여기서 새면 드레인이 영원히 안 끝난다.
+                with prog_lock:
+                    progress['last'] = time.monotonic()
+                    progress['done'] += 1
+                    progress['inflight'] -= 1
             if page is not None:
                 # 브라우저를 더 안 쓰게 됐는데 기다리는 워커가 있으면 넘겨준다 — sleep 전에
                 # (어차피 자는 동안 브라우저를 붙잡고 있을 이유가 없다). 사용 여부는
@@ -219,4 +281,11 @@ def run_crawl_pool(items, handle, *, concurrency, item_delay=0.0,
     for t in threads:
         t.join()
     stop_watchdog.set()   # 정상 종료 — 워치독 깨워 즉시 끝냄(데몬이라 안 깨워도 무방하지만 깔끔히)
+    if recycle_pending.is_set():
+        # 드레인이 워치독의 0.5초 폴링보다 빨리 끝난 경우 — 워치독이 종료를 부르기 전에 워커가
+        # 다 빠져 여기까지 왔다. 그냥 반환하면 호출자가 "이 패스를 다 끝냈다"고 오해해서 남은
+        # 큐를 건너뛴 채 다음 단계로 가버리므로(daily는 exit 4를 봐야 이어서 재개한다) 여기서
+        # 확실히 재기동으로 끝낸다. 드레인을 정상적으로 마쳤으니 버린 항목은 없다(dropped=0).
+        _recycle(_recycle_message(int(time.monotonic() - pool_started), progress['done'],
+                                  total_items, dropped=0))
     return n_workers

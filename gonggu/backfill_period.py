@@ -51,6 +51,7 @@ update_gonggu_stage.py와 마찬가지로 transform.py의 _compute_stage를 재�
     BACKFILL_PERIOD_CONCURRENCY=4 python3 -m gonggu.backfill_period  # Tier1(몰 크롤) 동시성
 """
 import datetime
+import hashlib
 import os
 import sys
 
@@ -144,26 +145,55 @@ def _fetch_targets(conn):
     return targets
 
 
-def _should_skip(rec, today):
+def _source_sig(inpock, code, r):
+    """지금 이 상품에 대해 "검사할 수 있는 소스"의 지문 집합(2026-08-19).
+
+    같은 소스를 같은 내용으로 다시 LLM에 태우면 답도 같다 — 재시도가 값을 하려면 **읽을 거리가
+    달라져야** 한다. 그래서 횟수/날짜가 아니라 이 지문이 바뀌었는지로 재시도를 정한다.
+      inpock:<해시>  인포크 텍스트가 있음(해시라서 크리에이터가 나중에 기간을 적어 넣으면 바뀜)
+      mall:<해시>    링크가 done이라 확정 상품페이지를 크롤할 수 있음(URL이 바뀌면 지문도 바뀜)
+
+    근거(실측 2026-08-19): 2회차 이상에서 기간을 찾은 35건이 **전부 몰 크롤(상품 페이지)**에서
+    나왔다 — 1회차엔 링크가 아직 unresolved라 없던 소스가 그 사이 생긴 것이다. 반대로 소스가
+    그대로인 채 반복한 시도는 사실상 전부 헛수고였다(2회차 0.8%, 3회차 1053건 시도에 1건)."""
+    sigs = set()
+    nid = r[PLATFORMS[code].id_col]
+    text = inpock.get((code, nid))
+    if text:
+        sigs.add('inpock:' + hashlib.md5(text.encode('utf-8')).hexdigest()[:8])
+    if r['link_status'] == 'done':
+        url = r.get('candidate_url') or ''
+        sigs.add('mall:' + hashlib.md5(url.encode('utf-8')).hexdigest()[:8])
+    return sigs
+
+
+def _should_skip(rec, today, sig):
     """체크포인트 기록을 보고 이번 실행 대상에서 뺄지 결정한다(Tier0/Tier1 공통, 어느 티어에서
-    나온 기록이든 정책은 하나)."""
+    나온 기록이든 정책은 하나).
+
+    sig는 _source_sig가 준 "지금 읽을 수 있는 소스" 지문 집합.
+    - 이미 찾았으면 끝.
+    - 전에 안 보던 소스가 생겼으면 쿨다운/횟수와 무관하게 다시 본다(새 정보가 생긴 것이므로).
+      MAX_ATTEMPTS는 폭주 방지 상한으로만 남긴다.
+    - 새 소스가 없으면(= 읽을 거리가 그대로면) 다시 봐야 할 이유가 없다. 예전엔 쿨다운 5일마다
+      MAX_ATTEMPTS까지 같은 걸 또 읽었고, 그 재시도 6468회가 건진 게 35건(0.54%)이었다.
+
+    ⚠ sources가 없는 옛 기록은 지문을 모르므로 예전 규칙(쿨다운+횟수)을 그대로 적용한다 —
+    갑자기 7481건이 전부 재시도 대상이 되는 걸 막는다. 실측상 손해도 없다: 옛 규칙으로 이미
+    영구 스킵된 1052건 중 지금 몰 소스가 생긴 건이 0건이었다."""
     if not rec:
         return False
     if rec['status'] == 'found':
         return True
     if rec.get('attempts', 0) >= MAX_ATTEMPTS:
         return True
-    checked = rec.get('checked_at')
+    tried = set(rec.get('sources') or [])
+    if tried:                       # 새 정책이 기록한 지문이 있는 경우
+        return not (sig - tried)    # 새 소스가 없으면 스킵, 있으면 즉시 재검사
+    checked = rec.get('checked_at')  # 옛 기록 — 예전 규칙 유지
     if checked and (today - datetime.date.fromisoformat(checked)).days < RETRY_COOLDOWN_DAYS:
         return True
     return False
-
-
-def _has_any_source(inpock, code, r):
-    """이번 실행에서 시도해볼 소스가 하나라도 있는지 — 인포크 텍스트도 없고 링크도 아직
-    확정 전이면 검사 자체가 불가능하므로, 재시도 횟수를 늘리지 않고 조용히 건너뛴다."""
-    nid = r[PLATFORMS[code].id_col]
-    return (code, nid) in inpock or r['link_status'] == 'done'
 
 
 def _page_text_or_raise(page, url):
@@ -209,10 +239,14 @@ def main():
 
     checkpoint = load_jsonl(CHECKPOINT_FILE)
     today = datetime.date.today()
-    eligible = [t for t in raw_targets if not _should_skip(checkpoint.get(t[1]), today)]
+    # 소스 지문을 먼저 구해서(_source_sig) 스킵 판단과 "시도할 소스가 있나" 판단에 같이 쓴다.
+    sigs = {t[1]: _source_sig(inpock, t[0], t[2]) for t in raw_targets}
+    eligible = [t for t in raw_targets if not _should_skip(checkpoint.get(t[1]), today, sigs[t[1]])]
     checkpoint_skipped = len(raw_targets) - len(eligible)
 
-    actionable = [t for t in eligible if _has_any_source(inpock, t[0], t[2])]
+    # 인포크 텍스트도 없고 링크도 아직 확정 전이면 검사 자체가 불가능하다 — 재시도 횟수를
+    # 늘리지 않고 조용히 건너뛴다(지문이 비었다는 게 곧 "읽을 소스가 없다"는 뜻).
+    actionable = [t for t in eligible if sigs[t[1]]]
     no_source_skipped = len(eligible) - len(actionable)
 
     limit = int(os.environ.get('LIMIT', '0')) or len(actionable)
@@ -231,8 +265,13 @@ def main():
         found = bool(start or end)
         prev = checkpoint.get(key)
         attempts = (prev.get('attempts', 0) if prev else 0) + 1
+        # 이번에 읽을 수 있었던 소스 지문을 이전 것과 합쳐 남긴다 — 다음 실행은 이 집합에
+        # 없는 지문이 생겼을 때만 다시 본다(_should_skip 참고). 합집합인 이유: 예전에 읽었던
+        # 소스를 잊어버리면 그게 "새 소스"로 되살아나 무한 재시도가 된다.
+        sources = sorted(set(prev.get('sources') or []) | sigs.get(key, set()))
         result = {'key': key, 'status': 'found' if found else 'not_found',
                   'checked_at': datetime.date.today().isoformat(), 'attempts': attempts,
+                  'sources': sources,
                   'period_start': start, 'period_end': end, 'note': (note or '')[:200], 'tier': tier}
         with ctx.lock:
             if found:

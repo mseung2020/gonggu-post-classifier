@@ -1,6 +1,6 @@
 """링크 해석의 핵심 상태 기계 — 후보 URL 하나하나를 시도하며 done/hold/unresolved/error를
 가른다(post -> 프로필/링크모음 -> 상품 흐름의 오케스트레이션 본체)."""
-from .antibot import is_excluded_marketplace, is_non_mall
+from .antibot import is_excluded_marketplace, is_known_hub, is_non_mall
 from .browser import UC_SKIP_NOTE, bump_via, fast_skip_uc_host, fetch, fetch_with_browser
 from .config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS
 from .links import extract_collection_links, linkbio_candidates, normalize_url
@@ -118,6 +118,23 @@ def _resolve_one_candidate(page, current_url, product, ctx):
     if fast_skip_uc_host(current_url):
         bump_via('uc_host_skip')  # 페치 자체를 생략(2026-08-18, 속도개선 A단계 진단)
         return {'status': 'unresolved', 'final_url': None, 'note': UC_SKIP_NOTE}
+
+    # 도메인만으로 "링크모음"임이 확실한 곳(2026-08-19) — LLM#3에게 페이지 종류를 물어보는 홉을
+    # 건너뛰고 바로 DOM 추출로 간다. 아래 일반 경로는 requests로 열어보고 → LLM#3에게 묻고 →
+    # "링크모음이네" 하고 브라우저로 다시 여는데, 답을 이미 아는 도메인에서 그 왕복이 통째로
+    # 낭비다(실측 근거는 config.KNOWN_HUB_HOSTS 주석).
+    if is_known_hub(current_url):
+        r = fetch_with_browser(page, current_url)
+        if r['error']:
+            return {'status': 'error', 'final_url': None, 'note': r['error']}
+        if r.get('via') == 'needs_browser':
+            return {'status': 'needs_browser', 'final_url': None,
+                    'note': '브라우저 필요(알려진 링크모음 DOM 추출) — Tier0에서는 보류'}
+        links = extract_collection_links(page)
+        if not links:
+            return {'status': 'unresolved', 'final_url': None, 'note': '링크모음인데 후보 링크 추출 실패'}
+        return finalize_pick(page, links, product, ctx, r['final_url'] or current_url, '링크모음',
+                              prefetched_final=False)
 
     r = fetch(page, current_url)
     if r['error']:

@@ -73,6 +73,12 @@ def parent_exists_sql(p):
     return f'SELECT id FROM {p.parent_table} WHERE {p.id_col} = %s'
 
 
+def parent_keys_sql(p):
+    """이미 적재된 부모의 자연키 전체 — load가 "이 건이 이미 있나"를 건건이 묻지 않고
+    한 번에 받아 메모리에서 확인하려고 쓴다(load.py의 _existing_keys 참고)."""
+    return f'SELECT {p.id_col} FROM {p.parent_table}'
+
+
 def product_insert_sql(p):
     cols = ', '.join((p.id_col,) + PRODUCT_INSERT_COLS)
     vals = ', '.join(f'%({c})s' for c in (p.id_col,) + PRODUCT_INSERT_COLS)

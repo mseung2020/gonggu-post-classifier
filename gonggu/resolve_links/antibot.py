@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 from gonggu import linkbio_parser
 
 from .config import (BROKEN_PATH_SEGMENTS, DISCONTINUED_MARKERS, EXCLUDED_MARKETPLACE_DOMAINS,
-                     NON_MALL_DOMAINS, UC_LOGINWALL_HOSTS)
+                     KNOWN_HUB_HOSTS, NON_MALL_DOMAINS, UC_LOGINWALL_HOSTS)
 from .urlutil import host_of
 
 
@@ -27,6 +27,19 @@ def is_excluded_marketplace(url):
     s.click.aliexpress.com. purge_marketplace_links와 같은 매칭 규칙."""
     h = host_of(url or '')
     return any(h == d or h.endswith('.' + d) for d in EXCLUDED_MARKETPLACE_DOMAINS)
+
+
+def is_known_hub(url):
+    """도메인만 보고 "이건 링크모음 페이지"라고 확신할 수 있는지(2026-08-19, config.KNOWN_HUB_HOSTS).
+
+    linkbio_parser가 지원하는 도메인과는 다르다 — 그쪽은 구조화 파서가 있어서 브라우저 없이
+    끝나지만, 여긴 파서가 없어 결국 브라우저로 DOM을 긁어야 한다. 그래도 "페이지 종류가 뭐냐"를
+    LLM#3에게 물어보는 홉은 건너뛸 수 있다(도메인이 이미 답이므로).
+
+    is_excluded_marketplace와 같은 접미사 규칙 — `jiy1067.linkstory.co.kr`처럼 계정마다 서브도메인이
+    다른 서비스를 잡으려면 완전 일치로는 안 된다(linkbio_parser/hosts.py의 같은 교훈)."""
+    h = host_of(url or '')
+    return any(h == d or h.endswith('.' + d) for d in KNOWN_HUB_HOSTS)
 
 
 def is_linkbio_hub(url):

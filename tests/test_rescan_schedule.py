@@ -90,3 +90,43 @@ class TestLifecycle:
         assert attempt_days == ['2026-08-06', '2026-08-07', '2026-08-09',
                                 '2026-08-13', '2026-08-20']  # 5회, 이후 영구 보류
         assert rec['next_due'] is None
+
+
+class TestUnknownStageArm:
+    """stage='판단불가' 상품을 재탐색 대상에 넣는 선택지(2026-08-19).
+
+    교착 때문에 생겼다: 링크를 찾으려면 rescan이 필요한데 rescan은 stage='진행중'만 보고,
+    stage가 진행중이 되려면 기간이 필요한데, 기간을 찾는 backfill_period의 몰 크롤은
+    link_status='done'만 본다 — 링크가 unresolved면 어느 쪽도 못 들어간다.
+    실측(2026-08-19): unresolved+hold 27518건 중 rescan이 보던 건 1643건(6%)뿐이었고
+    판단불가에 갇힌 게 9827건이었다. 이 팔을 켜면 후보 풀이 3058 → 11803으로 늘었다."""
+
+    def test_off_by_default_keeps_old_sql(self):
+        from gonggu.platforms import PLATFORMS
+        sql = rs._select_sql(PLATFORMS['ig'], 0)
+        assert '판단불가' not in sql
+        assert "gonggu_stage = '진행중'" in sql and "link_status = 'error'" in sql
+
+    def test_on_adds_recent_unknown_stage_arm(self):
+        from gonggu.platforms import PLATFORMS
+        p = PLATFORMS['ig']
+        sql = rs._select_sql(p, 30)
+        assert "gonggu_stage = '판단불가'" in sql
+        assert 'DATE_SUB(CURDATE(), INTERVAL %s DAY)' in sql   # 기간은 파라미터로
+        assert f'p.{p.date_col}' in sql
+        # 기존 두 팔은 그대로 살아있어야 한다(회귀 방지)
+        assert "gonggu_stage = '진행중'" in sql and "link_status = 'error'" in sql
+
+    def test_placeholder_count_matches_bound_params(self):
+        """SQL의 %s 개수와 _fetch_candidates가 넘기는 파라미터 개수가 어긋나면 실행 시점에야
+        터진다 — 여기서 못박는다."""
+        from gonggu.platforms import PLATFORMS
+        for p in PLATFORMS.values():
+            assert rs._select_sql(p, 0).count('%s') == 0
+            assert rs._select_sql(p, 30).count('%s') == 1
+
+    def test_unknown_stage_products_follow_the_same_schedule(self):
+        """판단불가라고 특별 취급하지 않는다 — 이력 없으면 신규전환, 그 뒤엔 백오프/은퇴."""
+        assert classify_target('unresolved', None, TODAY_ISO)[0] is True
+        exhausted = {'attempts': 5, 'next_due': None}
+        assert classify_target('unresolved', exhausted, TODAY_ISO)[0] is False

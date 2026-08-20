@@ -51,13 +51,32 @@ def stage_with_forced_end(start, end):
     return stage, False
 
 
+# 재검토 대상 SELECT. 두 팔이다:
+#   ① 날짜가 있고 아직 '종료'가 아닌 행 — 원래 목적(오늘 날짜 기준 재계산).
+#   ② gonggu_stage가 NULL인 행 — 정상화(2026-08-19 추가).
+#
+# ②가 왜 필요한가: _compute_stage는 절대 NULL을 안 준다(날짜가 둘 다 없으면 '판단불가'). 그런데
+# 실측(2026-08-19)에서 stage가 NULL인 상품이 1380건 있었고, created_at이 전부 2026-07-21~08-07에
+# 몰려 있었다 — 기간/스테이지를 상품 단위로 옮기던 시기(2026-08-06)에 남은 잔재로 보인다.
+# 그 행들은 어디서도 안 잡혔다:
+#   - 여기: `gonggu_stage != '종료'`가 NULL이면 NULL(=거짓)이라 애초에 선택이 안 됐고, 설령
+#     고쳐도 두 번째 조건(날짜 둘 중 하나는 있어야 함)에서 또 빠졌다.
+#   - backfill_period: stage='판단불가'만 봄  /  rescan_inprogress: stage='진행중'만 봄
+# 결과적으로 1380건(그중 unresolved 1032·hold 32)이 어느 단계도 손대지 않는 사각지대에 있었다.
+# NULL을 '판단불가'로 정상화하면 backfill_period가 기간을 찾고, 그러면 stage가 제대로 서면서
+# rescan까지 이어진다. NULL-안전 비교를 위해 `!=` 대신 `<=>`(NULL-safe equal)의 부정을 쓴다.
+_SELECT_SQL = """
+SELECT id, gonggu_start_date, gonggu_end_date, gonggu_stage
+FROM {table}
+WHERE (NOT (gonggu_stage <=> '종료')
+       AND (gonggu_start_date IS NOT NULL OR gonggu_end_date IS NOT NULL))
+   OR gonggu_stage IS NULL
+"""
+
+
 def _update_table(conn, table):
     with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT id, gonggu_start_date, gonggu_end_date, gonggu_stage "
-            f"FROM {table} "
-            f"WHERE gonggu_stage != '종료' AND (gonggu_start_date IS NOT NULL OR gonggu_end_date IS NOT NULL)"
-        )
+        cur.execute(_SELECT_SQL.format(table=table))
         rows = cur.fetchall()
 
     changed = 0

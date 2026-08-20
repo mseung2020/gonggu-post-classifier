@@ -23,7 +23,7 @@ from gonggu.crawl_pool import run_crawl_pool
 
 from .config import (HTTP_FAST_PATH, HTTP_MIN_BODY_TEXT, ITEM_DELAY, ITEM_DELAY_SMART,
                      MAX_BROWSERS, RESOLUTION_FILE, RESOLVE_CONCURRENCY, RESOLVE_FAST_CONCURRENCY)
-from .browser import set_allow_browser, via_stats
+from .browser import permit_stats, set_allow_browser, via_stats
 from .httpfetch import body_too_short_samples
 from .httpfetch import stats as httpfetch_stats
 from .core import resolve_product
@@ -169,6 +169,32 @@ def _print_resolution_diagnostics(hs, via, body_samples=()):
         parts += [f'{k} {v}건' for k, v in via.items() if k not in order]
         print(f'  ㄴ 후보 URL 처리 경로(후보 URL 페치 시도 {total_via}건 기준, 상품 건수와 다름): '
               + ', '.join(parts))
+    _print_permit_diagnostics(permit_stats())
+
+
+def _print_permit_diagnostics(ps):
+    """브라우저 허가증(MAX_BROWSERS개)을 쥔 채 실제로는 브라우저를 안 쓴 시간의 비율.
+
+    한 상품은 브라우저→LLM#3→브라우저→LLM#2→…를 오가는데, 허가증은 그 전체 구간 동안 잡혀
+    있다(LazyPage는 상품 경계에서만 놓는다). LLM을 기다리는 동안에도 14개뿐인 허가증 하나가
+    묶여 있다는 뜻이다. 이 비율이 높으면 "크롤 단계와 LLM 단계를 분리"하는 구조 변경이 값을
+    하고, 낮으면 지금 구조가 이미 알차게 쓰고 있는 것이다 — 감이 아니라 이 숫자로 정한다.
+    (허가증을 LLM 직전에 놓는 단순 처방은 답이 아니다: 허가증=살아있는 크롬 수라 놓으려면
+    닫아야 하고 재기동에 3.9초가 든다. 무조건 넘기기가 1.8배 느렸다는 실측도 이미 있다 —
+    browser.LazyPage.release_if_contended 주석.)"""
+    if not ps.get('sessions') or ps.get('idle_ratio') is None:
+        return
+    held, busy = ps['held_sec'], ps['busy_sec']
+    print(f"  ㄴ 브라우저 허가증 점유: 총 {held:.0f}초 중 실제 브라우저 작업 {busy:.0f}초 "
+          f"— 유휴 {ps['idle_ratio']:.0%} (허가증 세션 {ps['sessions']}회)")
+    # 유휴율의 나머지 반쪽 — 실제로 줄 선 시간이 있어야 그 유휴가 손해다.
+    wait, waits = ps.get('wait_sec', 0.0), ps.get('waits', 0)
+    if waits:
+        print(f"     ㄴ 허가증 대기: 총 {wait:.0f}초 / {waits}회 (평균 {wait / waits:.1f}초) "
+              f"— 크롤/LLM 단계를 분리하면 이 대기 중 상당 부분을 회수할 수 있다")
+    else:
+        print('     ㄴ 허가증 대기: 없음 — 아무도 안 기다렸으니 위 유휴는 손해가 아니다'
+              '(구조 변경으로 회수할 게 없음)')
 
 
 def load_resolutions():

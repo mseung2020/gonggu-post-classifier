@@ -2,6 +2,7 @@
 import pymysql
 
 from gonggu.load import _is_duplicate_entry, _item_key, split_unresolved
+from gonggu.platforms import PLATFORMS
 
 
 def _item(platform, native_id):
@@ -49,6 +50,7 @@ class _FakeCursor:
     def __init__(self, db):
         self.db = db
         self._found = False
+        self._rows = []
 
     def __enter__(self):
         return self
@@ -58,7 +60,14 @@ class _FakeCursor:
 
     def execute(self, sql, params=None):
         if sql.startswith('SELECT id FROM'):
+            self.db.exists_queries += 1
             self._found = params[0] in self.db.existing or params[0] in self.db.staged
+        elif sql.startswith('SELECT post_id FROM') or sql.startswith('SELECT video_id FROM'):
+            # 자연키 일괄 조회(2026-08-20) — 테스트 항목은 전부 'ig'라 yt 테이블은 비어 있다.
+            self.db.bulk_key_queries += 1
+            col = 'post_id' if 'gonggu_post' in sql else 'video_id'
+            self._rows = ([{col: k} for k in sorted(self.db.existing)]
+                          if col == 'post_id' else [])
         elif '_product' in sql.split('(')[0]:
             pass  # 상품 INSERT — 부모가 성공했으면 항상 성공한다고 가정
         elif sql.startswith('INSERT INTO'):
@@ -72,6 +81,9 @@ class _FakeCursor:
     def fetchone(self):
         return {'id': 1} if self._found else None
 
+    def fetchall(self):
+        return self._rows
+
 
 class _FakeConn:
     def __init__(self, existing=(), fail_keys=(), race_dup_keys=()):
@@ -80,6 +92,8 @@ class _FakeConn:
         self.fail_keys = set(fail_keys)    # INSERT가 일반 오류로 터지는 키
         self.race_dup_keys = set(race_dup_keys)  # 경합(1062)을 흉내내는 키
         self.commits = 0
+        self.exists_queries = 0    # 건별 존재확인 왕복 횟수
+        self.bulk_key_queries = 0  # 자연키 일괄 조회 횟수
 
     def cursor(self):
         return _FakeCursor(self)
@@ -133,3 +147,63 @@ class TestLoadAllBatching:
         inserted, skipped, failed = load_all(conn, self._items(['A', 'B', 'C']), batch_size=1)
         assert (inserted, skipped, failed) == (2, 0, 1)
         assert conn.existing == {'A', 'C'}
+
+
+class TestExistingKeysCache:
+    """존재확인 일괄 조회(2026-08-20) — 예전엔 항목마다 `SELECT ... WHERE post_id=%s`를 던졌다.
+    이 단계는 매일 04_resolved **전체**(누적)를 훑으며 그날 새 것만 넣는 구조라 대부분이
+    "이미 있음" 확인에만 쓰이는 왕복이었다: 실측 45,566건 중 43,737건(96%)이 스킵이었고
+    존재확인 1건이 6.06ms라 그 왕복만 약 276초. 같은 키를 한 번에 가져오면 0.16초다."""
+
+    def _items(self, keys):
+        return [_item('ig', k) for k in keys]
+
+    def test_no_per_item_exists_query_on_happy_path(self):
+        from gonggu.load import load_all
+        conn = _FakeConn(existing=['B'])
+        load_all(conn, self._items(['A', 'B', 'C', 'D']), batch_size=2)
+        assert conn.bulk_key_queries == len(PLATFORMS)   # 플랫폼당 한 번씩만
+        assert conn.exists_queries == 0, '정상 경로에서 건별 존재확인이 남아 있다'
+
+    def test_same_key_twice_in_input_inserts_once(self):
+        """메모리 집합을 쓰면 "방금 넣은 것"을 스스로 기억해야 한다 — 안 그러면 같은 키가
+        두 번 들어간 입력에서 UNIQUE 충돌이 나고 배치가 통째로 롤백된다."""
+        from gonggu.load import load_all
+        conn = _FakeConn()
+        inserted, skipped, failed = load_all(conn, self._items(['A', 'A', 'B']), batch_size=50)
+        assert (inserted, skipped, failed) == (2, 1, 0)
+        assert conn.existing == {'A', 'B'}
+
+    def test_rollback_restores_the_key_set(self):
+        """배치가 롤백되면 DB는 되돌아가는데 메모리 집합만 "넣었다"로 남으면 그 건을 영영
+        스킵하게 된다 — 롤백 시 집합도 배치 시작 시점으로 되돌려야 한다."""
+        from gonggu.load import load_all
+        conn = _FakeConn(fail_keys=['B'])
+        inserted, skipped, failed = load_all(conn, self._items(['A', 'B', 'C']), batch_size=50)
+        assert (inserted, skipped, failed) == (2, 0, 1)
+        assert conn.existing == {'A', 'C'}, 'A/C가 폴백에서 재적재되지 않았다'
+
+    def test_key_set_updated_after_failed_batch_fallback(self):
+        """폴백으로 실제 들어간 것들이 집합에 반영돼야, 뒤 배치가 같은 키를 또 넣으려 하지 않는다."""
+        from gonggu.load import load_all
+        conn = _FakeConn(fail_keys=['B'])
+        # 1번 배치(A,B) 실패 → 폴백에서 A 적재. 2번 배치에 A가 또 나와도 스킵돼야 한다.
+        inserted, skipped, failed = load_all(conn, self._items(['A', 'B', 'A', 'C']), batch_size=2)
+        assert failed == 1 and conn.existing == {'A', 'C'}
+        assert inserted == 2 and skipped == 1
+
+    def test_existing_keys_reads_every_platform(self):
+        from gonggu.load import existing_keys
+        conn = _FakeConn(existing=['P1'])
+        with conn.cursor() as cur:
+            keys = existing_keys(cur)
+        assert ('ig', 'P1') in keys
+        assert conn.bulk_key_queries == len(PLATFORMS)
+
+    def test_load_item_without_known_still_queries_db(self):
+        """known=None이면 예전 동작(건건이 DB에 묻기) — 단건 폴백 경로가 이걸 쓴다."""
+        from gonggu.load import load_item
+        conn = _FakeConn(existing=['P1'])
+        with conn.cursor() as cur:
+            assert load_item(cur, 'ig', {'post_id': 'P1'}, []) is False
+        assert conn.exists_queries == 1

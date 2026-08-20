@@ -46,6 +46,25 @@ NON_PRODUCT_TEXT = ('고객센터', '고객센타', '고객상담', 'cs', '문�
                      '이용약관', '개인정보', '블로그', '유튜브', '인스타그램', '페이스북', '후기',
                      '이벤트', '공식홈페이지')
 MAX_CANDIDATES = 80  # cafe.naver.com류 커뮤니티 페이지는 게시판 네비게이션까지 다 잡혀서 넘칠 수 있음
+
+# "링크모음인 건 확실한데 구조화 파서는 없는" 호스트(2026-08-19 추가). linkbio_parser가 지원하는
+# 도메인(SUPPORTED_HOSTS)은 브라우저 없이 구조화 데이터로 끝나지만, 이쪽은 파서가 없어서 결국
+# 브라우저로 열고 DOM에서 <a>를 긁어야 한다. 그래도 도메인만으로 "이건 링크모음"임을 알 수 있으니
+# LLM#3에게 "이 페이지 뭐야?"를 물어보는 홉 하나를 통째로 건너뛴다(그리고 requests 패스트패스로
+# 열었다가 링크모음인 걸 알고 브라우저로 다시 여는 중복 페치도 없앤다).
+#
+# 목록 근거 — 체크포인트 이력 실측(2026-08-19, `python3 -m gonggu._diag_unknown_hubs`로 재생산):
+# LLM#3가 "링크모음"이라 판정했는데 SUPPORTED_HOSTS에 없던 호스트가 129종·752회였다. 그중
+# "DOM 추출이 실제로 성공하는" 곳만 여기 넣는다 — 추출까지 실패하는 곳(page.im 58/58,
+# link.snscommerce.com 12/12, link.favoriit.com 11/11)은 넣어봐야 브라우저만 쓰고 빈손이라 제외.
+#   linkstory.co.kr  72회 중 실패 1   (계정별 서브도메인 15종)
+#   tuk.link         65회 중 실패 5   (계정별 서브도메인 6종)
+#   linkbio.co       57회 중 실패 0
+#   wiredy.io        67회 중 실패 28  (절반은 성공 — 넣는 쪽이 이득)
+# ⚠ 접미사 매칭이다(is_known_hub 참고) — 등록 도메인만 적을 것. 계정별 서브도메인을 일일이
+# 넣으려 하지 말 것(그게 linkbio_parser/hosts.py가 완전일치라서 겪던 바로 그 문제다).
+KNOWN_HUB_HOSTS = tuple(h for h in os.environ.get(
+    'RESOLVE_KNOWN_HUB_HOSTS', 'linkstory.co.kr,tuk.link,linkbio.co,wiredy.io').split(',') if h)
 ITEM_DELAY = float(os.environ.get('ITEM_DELAY', '3'))  # 상품 사이 대기(초, 워커별) — 안티봇/레이트리밋 완화
 # ITEM_DELAY를 "이번 항목에서 실제로 브라우저를 쓴 경우"에만 적용(4단계 D1, 2026-08-05).
 # 근거: 이 대기는 무거운 브라우저 접근의 안티봇 완화가 목적인데, requests 패스트패스/링크바이오

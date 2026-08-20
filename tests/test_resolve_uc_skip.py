@@ -28,9 +28,19 @@ def test_fast_skip_gated_by_resolve_uc(monkeypatch):
 
 
 def test_uc_skip_note_matches_reverify_filter():
-    """fast-skip 노트를 reverify_uc의 LIKE 필터가 반드시 잡아야 2단으로 넘어간다(정합 회귀 가드)."""
-    core_marker = reverify_uc.BLOCKED_NOTE_LIKE.strip('%')       # '재검증 중 차단'
-    assert core_marker and core_marker in UC_SKIP_NOTE
+    """fast-skip 노트를 reverify_uc의 LIKE 필터가 반드시 잡아야 2단으로 넘어간다(정합 회귀 가드).
+    2026-08-19 대상 확대로 패턴이 여러 개(BLOCKED_NOTE_LIKES)가 됐다 — 그중 하나라도 잡으면 된다."""
+    markers = [p.strip('%') for p in reverify_uc.BLOCKED_NOTE_LIKES]
+    assert markers and any(m in UC_SKIP_NOTE for m in markers), \
+        f'fast-skip 노트({UC_SKIP_NOTE!r})를 reverify_uc 패턴 {markers}가 아무도 못 잡는다'
+
+
+def test_uc_skip_note_survives_reverify_filters():
+    """LIKE로 잡히는 것만으로는 부족하다 — 확대와 함께 들어온 파이썬 필터(죽은 페이지 제외 /
+    uc 대상 판정)까지 통과해야 실제로 큐에 들어간다(2026-08-19 확대 회귀 가드)."""
+    assert reverify_uc._has_dead_marker(UC_SKIP_NOTE) is False
+    due, reason = reverify_uc.classify_target(UC_SKIP_NOTE, 'https://smartstore.naver.com/x/products/1', None)
+    assert due is True, f'fast-skip 건이 2단에서 걸러진다: {reason}'
 
 
 def test_core_direct_uc_host_skips_browser(monkeypatch):

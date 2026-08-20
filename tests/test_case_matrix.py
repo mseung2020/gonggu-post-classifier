@@ -27,8 +27,11 @@ def test_조합축은_모두_AXES에_정의된_축이다():
     known = {c for c, _ in cm.AXES}
     assert set(cm.COMBO_CORE) <= known
     assert set(cm.COMBO_FULL) == known
-    for rax, cax, _ in cm.CROSSTABS:
+    for entry in cm.CROSSTABS:
+        rax, cax = entry[0], entry[1]
         assert rax in known and cax in known
+        if len(entry) > 3:
+            assert entry[3] in cm._CROSSTAB_FILTERS, f'{entry[3]} 필터 키가 정의 안 됨'
 
 
 def test_LIKE절_조립():
@@ -60,7 +63,7 @@ def test_두_플랫폼_SELECT의_컬럼수가_같다():
 def _fake_rows():
     base = {c: 'x' for c, _ in cm.AXES}
     base.update({c: 0 for c, _ in cm.OX_FLAGS})
-    base.update({'platform': 'ig', 'parent_key': 'p1'})
+    base.update({'platform': 'ig', 'parent_key': 'p1', 'link_status': 'unresolved'})
     r1 = dict(base)
     r2 = dict(base, parent_key='p2', c_period='A_시작O_종료O', ox_start=1)
     r3 = dict(base, parent_key='p2', c_period='A_시작O_종료O', ox_start=1)
@@ -82,6 +85,29 @@ def test_리포트_생성이_예외없이_끝나고_핵심문구를_포함한다
     # O/X 표의 머리글이 OX_FLAGS 순서대로 들어있다
     for _, header in cm.OX_FLAGS:
         assert header in md
+
+
+def test_url_type_교차표는_done과_미해결을_분리해서_집계한다():
+    """url_type은 원본 후보 판정을 write-once로 유지하는데 candidate_url은 resolve_links가
+    done으로 확정하는 순간 최종 도착 URL로 덮어쓴다(2026-08-18) — 그래서 done 행은 url_type과
+    도메인이 달라도 정상이다. 두 표가 섞이지 않고 각자의 부분집합만 세는지 확인한다."""
+    base = {c: 'x' for c, _ in cm.AXES}
+    base.update({c: 0 for c, _ in cm.OX_FLAGS})
+    base.update({'platform': 'ig', 'parent_key': 'p1'})
+    # done 2건(허브→몰로 정상 귀결, url_type과 c_urlkind 불일치) + 미해결 1건(진짜 오분류 후보)
+    r_done1 = dict(base, parent_key='p1', link_status='done',
+                   c_urltype='링크모음', c_urlkind='05_네이버_스마트·브랜드스토어')
+    r_done2 = dict(base, parent_key='p2', link_status='done',
+                   c_urltype='링크모음', c_urlkind='12_자사몰(빌더도메인)')
+    r_unresolved = dict(base, parent_key='p3', link_status='unresolved',
+                         c_urltype='링크모음', c_urlkind='05_네이버_스마트·브랜드스토어')
+    rows = [r_done1, r_done2, r_unresolved]
+
+    md = cm.build_report(rows)
+    assert '미해결만(done 제외' in md
+    assert 'link_status=done만' in md
+    assert '(해당 2건 대상)' in md   # done 표
+    assert '(해당 1건 대상)' in md   # 미해결 표
 
 
 def test_emit_sql이_뷰와_예제쿼리를_만든다(tmp_path):

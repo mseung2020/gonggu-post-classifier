@@ -2,6 +2,7 @@
 setup/teardown, 예외에도 워커 생존, 세션 저장은 워커 0번만. 실제 Playwright 없이
 LazyPage/sync_playwright를 페이크로 바꿔 검증한다."""
 import threading
+import time
 
 import gonggu.crawl_pool as cp
 
@@ -241,6 +242,105 @@ class TestRecycleWatchdog:
         assert aborted == []  # 스톨로 오인해 _abort를 부르면 안 됨
         release.set()
         assert done.wait(5)
+
+
+class TestRecycleDrain:
+    """재기동 드레인(2026-08-19) — 예전 재기동은 os._exit로 즉사시켜서 "큐에서 꺼내 처리 중이던"
+    항목이 체크포인트에 못 남고 통째로 재작업이 됐다(resolve_links 실측: 완료 24.4건/사이클 대비
+    폐기 14건+ = Tier1 브라우저 작업의 약 35%). 이제 재기동 시각이 되면 새 항목 공급만 끊고
+    진행 중인 건은 마치게 한 뒤 종료한다 — 주기(신선도)는 그대로 두고 재작업만 없앤다."""
+
+    def test_should_finish_drain_truth_table(self):
+        assert cp._should_finish_drain(draining_for=1, inflight=3, drain_grace=90) is False  # 아직 진행 중
+        assert cp._should_finish_drain(draining_for=1, inflight=0, drain_grace=90) is True   # 다 끝남 — 즉시
+        assert cp._should_finish_drain(draining_for=91, inflight=3, drain_grace=90) is True  # 유예 초과 — 포기
+        assert cp._should_finish_drain(draining_for=1, inflight=-1, drain_grace=90) is True  # 방어(음수)
+
+    def test_recycle_message_distinguishes_clean_drain_from_dropped(self):
+        assert '재작업 없음' in cp._recycle_message(250, 1200, 5000)              # 기존 3인자 호출 유지
+        assert '3건' in cp._recycle_message(250, 1200, 5000, dropped=3)
+        assert '의도된' in cp._recycle_message(250, 1200, 5000, dropped=3)        # 실패 어조 아님은 유지
+
+    def test_inflight_items_finish_before_recycle(self, monkeypatch):
+        """핵심 계약 — 재기동이 걸려도 이미 시작한 항목은 끝까지 처리된다(재작업 0건).
+        시작한 항목 수와 끝낸 항목 수가 같아야 하고, 재기동은 dropped=0으로 보고돼야 한다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.0)
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 0.3)
+        monkeypatch.setattr(cp, 'RECYCLE_DRAIN_SEC', 5.0)
+        msgs = []
+        monkeypatch.setattr(cp, '_recycle', lambda msg: msgs.append(msg))
+        monkeypatch.setattr(cp, '_abort', lambda msg: msgs.append('ABORT'))
+
+        started, finished = [], []
+        lock = threading.Lock()
+
+        def handle(ctx, item):
+            with lock:
+                started.append(item)
+            time.sleep(0.05)          # 재기동 시점에 반드시 몇 건이 '진행 중'이도록
+            with lock:
+                finished.append(item)
+
+        cp.run_crawl_pool(list(range(60)), handle, concurrency=4)
+        assert sorted(started) == sorted(finished), '시작만 하고 안 끝난 항목이 있다 = 재작업 발생'
+        assert msgs and 'ABORT' not in msgs
+        assert '재작업 없음' in msgs[-1], f'드레인이 깨끗하게 안 끝났다: {msgs[-1]}'
+        assert len(finished) < 60, '재기동이 걸리기 전에 다 끝나버려 이 테스트가 의미 없어졌다'
+
+    def test_drain_stops_taking_new_items(self, monkeypatch):
+        """드레인이 시작되면 남은 큐는 손대지 않는다 — 다음 실행이 체크포인트로 이어받는 몫이다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.0)
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 0.2)
+        monkeypatch.setattr(cp, 'RECYCLE_DRAIN_SEC', 5.0)
+        monkeypatch.setattr(cp, '_recycle', lambda msg: None)
+        seen = []
+        lock = threading.Lock()
+
+        def handle(ctx, item):
+            time.sleep(0.02)
+            with lock:
+                seen.append(item)
+
+        cp.run_crawl_pool(list(range(200)), handle, concurrency=2)
+        assert 0 < len(seen) < 200, f'드레인 후에도 큐를 계속 비웠다({len(seen)}/200)'
+
+    def test_drain_disabled_keeps_old_immediate_exit(self, monkeypatch):
+        """CRAWL_RECYCLE_DRAIN_SEC=0이면 예전처럼 즉시 종료하고, 버린 건수를 보고한다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.0)
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 0.2)
+        monkeypatch.setattr(cp, 'RECYCLE_DRAIN_SEC', 0.0)
+        msgs = []
+        fired = threading.Event()
+        monkeypatch.setattr(cp, '_recycle', lambda msg: (msgs.append(msg), fired.set()))
+        release = threading.Event()
+
+        done = threading.Event()
+        threading.Thread(target=lambda: (cp.run_crawl_pool(list(range(40)), lambda c, i: release.wait(0.05),
+                                                           concurrency=2), done.set()), daemon=True).start()
+        assert fired.wait(3), '드레인을 꺼도 재기동 자체는 발동해야 한다'
+        assert '재작업 없음' not in msgs[0], '즉시 종료인데 재작업이 없다고 보고했다'
+        release.set()
+        assert done.wait(5)
+
+    def test_normal_completion_never_recycles(self, monkeypatch):
+        """재기동 임계에 안 걸리고 다 끝나면, join 뒤 이중확인이 오발동하면 안 된다."""
+        pages = []
+        _patch(monkeypatch, pages)
+        monkeypatch.setattr(cp, 'STALL_TIMEOUT', 0.0)
+        monkeypatch.setattr(cp, 'RECYCLE_AFTER_SEC', 30.0)   # 충분히 길어 안 걸림
+        recycled = []
+        monkeypatch.setattr(cp, '_recycle', lambda msg: recycled.append(msg))
+        seen = []
+        lock = threading.Lock()
+        cp.run_crawl_pool(list(range(20)), lambda c, i: (lock.acquire(), seen.append(i), lock.release()),
+                          concurrency=4)
+        assert sorted(seen) == list(range(20)) and recycled == []
 
 
 class TestNoPlaywrightMode:

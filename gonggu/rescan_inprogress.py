@@ -66,6 +66,26 @@ BACKOFF_DAYS = [int(d) for d in os.environ.get('RESCAN_BACKOFF_DAYS', '1,2,4,7')
 RESCAN_ERROR_MAX_ATTEMPTS = int(os.environ.get('RESCAN_ERROR_MAX_ATTEMPTS', '14'))
 STATE_FILE = ROOT / 'data/output/rescan_state.jsonl'
 
+# stage='판단불가'인 상품도 재탐색 대상에 넣는 기간(일). 0이면 끔(예전 동작).
+#
+# 왜 필요한가(2026-08-19 실측) — 이 단계의 문은 gonggu_stage='진행중'인데, 그 문에 못 들어오는
+# 교착이 있었다:
+#     링크를 찾으려면      → rescan이 필요한데, rescan은 stage='진행중'만 본다
+#     stage가 진행중이 되려면 → 기간을 찾아야 하는데
+#     기간을 찾으려면      → backfill_period Tier1(몰 크롤)이 필요한데, 그건 link_status='done'만 본다
+#     그런데 링크는 아직 unresolved다 ← 처음으로 돌아감
+# 빠져나갈 길이 backfill Tier0(인포크 텍스트) 하나뿐이라, 그게 없거나 실패하면 아무도 다시
+# 안 건드린다. 실측 규모: unresolved+hold 27518건 중 rescan이 보던 건 1643건(6%)뿐이었고,
+# 판단불가에 갇힌 게 9827건이었다.
+#
+# 기간 제한을 두는 이유: 오래된 공구는 이미 끝나서 링크를 다시 찾아도 가치가 떨어진다. 다만
+# 실측 분포상 이 풀은 의외로 신선하다 — 7일 이내 18%, 30일 이내 누적 89%, 90일 초과 0건.
+# 그래서 30일이면 대부분(8745건)을 덮으면서 낡은 11%는 뺀다.
+#
+# ⚠ 켜는 첫 실행은 이 물량이 전부 "신규전환"으로 잡혀 한 번 크게 돈다 — LIMIT으로 며칠에
+# 나눠 흘리는 걸 권한다. 그 뒤로는 백오프 스케줄이 알아서 물량을 떨어뜨린다.
+RESCAN_UNKNOWN_STAGE_DAYS = int(os.environ.get('RESCAN_UNKNOWN_STAGE_DAYS', '0'))
+
 
 def next_due(attempts, today):
     """attempts번째 시도를 마친 직후의 다음 예정일(ISO). 백오프를 다 썼으면 None(은퇴)."""
@@ -100,13 +120,20 @@ def classify_target(status, rec, today_iso, force=False):
     return False, '쿨다운 대기'
 
 
-def _select_sql(p):
+def _select_sql(p, unknown_stage_days=0):
     """재탐색 후보 SELECT — 테이블/컬럼명은 platforms.py 메타에서(2단계 B4). 스케줄 필터링은
     파이썬(체크포인트)에서 하므로 SQL은 후보 풀 전체를 가져온다(SELECT 자체는 싸다 —
-    비싼 건 크롤링이고, 그건 스케줄이 줄여준다)."""
+    비싼 건 크롤링이고, 그건 스케줄이 줄여준다).
+
+    unknown_stage_days>0이면 stage='판단불가'인 최근 상품도 후보에 넣는다(2026-08-19,
+    RESCAN_UNKNOWN_STAGE_DAYS 주석의 교착 근거 참고). 0이면 예전 동작(진행중+에러만)."""
     parent_cols = ', '.join(f'p.{c}' for c in p.parent_ctx_cols)
     # 진행중 판정을 상품(pp) 기준으로 — 기간/스테이지가 상품 단위로 이전됨(2026-08-06).
     # 예고 달력처럼 같은 포스트라도 상품마다 진행 상태가 다르므로 상품 stage로 골라야 정확하다.
+    unknown_arm = ''
+    if unknown_stage_days > 0:
+        unknown_arm = (f"   OR (pp.gonggu_stage = '판단불가' AND pp.link_status IN ('unresolved', 'hold')\n"
+                       f"       AND p.{p.date_col} >= DATE_SUB(CURDATE(), INTERVAL %s DAY))\n")
     return f"""
 SELECT pp.id AS row_id, pp.product_name, pp.link_location, pp.url_type, pp.candidate_url,
        pp.sort_order, pp.link_status, {parent_cols}, p.classification_note
@@ -114,7 +141,7 @@ FROM {p.product_table} pp
 JOIN {p.parent_table} p ON p.{p.id_col} = pp.{p.id_col}
 WHERE (pp.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold'))
    OR pp.link_status = 'error'
-"""
+{unknown_arm}"""
 
 
 # updated_at을 NOW()로 직접 강제 갱신하는 이유(2026-08-05): MySQL은 값이 하나도 안 바뀌면
@@ -122,11 +149,13 @@ WHERE (pp.gonggu_stage = '진행중' AND pp.link_status IN ('unresolved', 'hold'
 UPDATE_SQL = {code: product_update_link_sql(p) for code, p in PLATFORMS.items()}
 
 
-def _fetch_candidates(conn):
+def _fetch_candidates(conn, unknown_stage_days=None):
+    days = RESCAN_UNKNOWN_STAGE_DAYS if unknown_stage_days is None else unknown_stage_days
     out = []
     with conn.cursor() as cur:
         for code, p in PLATFORMS.items():
-            cur.execute(_select_sql(p))
+            sql = _select_sql(p, days)
+            cur.execute(sql, (days,) if days > 0 else ())
             for r in cur.fetchall():
                 parent = parent_ctx_from_row(p, r)
                 product = {'product_name': r['product_name'], 'link_location': r['link_location'],

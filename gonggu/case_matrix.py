@@ -288,13 +288,38 @@ CROSSTABS = [
     ('c_linkstatus', 'c_depth', 'link_status × URL 상세페이지여부'),
     ('c_stage', 'c_period', 'gonggu_stage × 공구기간 NULL패턴  (종료+종료일X = 강제종료 추정)'),
     ('c_stage', 'c_linkstatus', 'gonggu_stage × link_status'),
-    ('c_urltype', 'c_urlkind', 'url_type(LLM) × 실제 도메인유형  (불일치 = LLM 오분류 후보)'),
+    # 2026-08-18: url_type은 transform.py가 LLM#1의 "원본 후보 URL" 판정을 한 번 쓰고 다시는
+    # 안 바꾸는데, candidate_url은 resolve_links가 done으로 확정하는 순간 "최종 도착 URL"로
+    # 덮어써진다(예: url_type="링크모음"인 인포크 링크가 스마트스토어 상품으로 확정되면
+    # candidate_url은 스마트스토어가 됨) — 서로 다른 시점의 값이라 done 행은 불일치가
+    # 정상이고 오분류 신호가 아니다. done/미해결을 분리해 각각 맞는 라벨을 붙인다.
+    ('c_urltype', 'c_urlkind',
+     'url_type(LLM) × candidate_url 도메인유형 — 미해결만(done 제외, 아직 원본 후보에 가까움 → 불일치=LLM 오분류 후보)',
+     'not_done'),
+    ('c_urltype', 'c_urlkind',
+     'url_type(원본 링크유형) × 최종 확정 도메인(link_status=done만) — 정상 해석 결과 분포다. 불일치는 오류가 아니라 허브·단축링크가 다른 도메인으로 귀결된 정상 케이스',
+     'done'),
     ('c_detail', 'c_linkstatus', 'detail_status × link_status'),
     ('c_detail', 'c_urlkind', 'detail_status × 도메인유형'),
     ('c_unres', 'platform', '미해결 세부사유 × 플랫폼'),
     ('c_unres', 'c_stage', '미해결 세부사유 × gonggu_stage'),
     ('c_loc', 'c_urlkind', 'link_location × 도메인유형'),
 ]
+
+# CROSSTABS 4번째 요소(선택) — 원본 rows를 서브셋으로 거르는 필터 키.
+# Python 집계(build_report/write_xlsx/_one_sheet_ops)는 'py', --emit-sql은 'sql'을 쓴다.
+_CROSSTAB_FILTERS = {
+    'not_done': {'py': lambda r: r['link_status'] != 'done', 'sql': "link_status <> 'done'"},
+    'done': {'py': lambda r: r['link_status'] == 'done', 'sql': "link_status = 'done'"},
+}
+
+
+def _crosstab_filter(entry):
+    """CROSSTABS 항목에서 (rax, cax, title, py_filter_or_None)을 뽑는다."""
+    rax, cax, title = entry[0], entry[1], entry[2]
+    filt = _CROSSTAB_FILTERS[entry[3]]['py'] if len(entry) > 3 else None
+    return rax, cax, title, filt
+
 
 # "전체 조합" 표에 쓰는 축 묶음
 COMBO_CORE = ['platform', 'c_period', 'c_stage', 'c_loc', 'c_urlkind', 'c_linkstatus', 'c_detail']
@@ -366,8 +391,11 @@ def build_report(rows):
 
     # 2) 교차표
     md += ['---', '', '## 2. 2축 교차표', '']
-    for i, (rax, cax, title) in enumerate(CROSSTABS, 1):
-        rkeys, ckeys, cells = _crosstab(rows, rax, cax)
+    for i, entry in enumerate(CROSSTABS, 1):
+        rax, cax, title, filt = _crosstab_filter(entry)
+        subset = [r for r in rows if filt(r)] if filt else rows
+        sub_n = len(subset)
+        rkeys, ckeys, cells = _crosstab(subset, rax, cax)
         headers = [f'{dict(AXES)[rax]} ↓ / {dict(AXES)[cax]} →'] + ckeys + ['합계']
         body = []
         for rk in rkeys:
@@ -375,9 +403,10 @@ def build_report(rows):
             line.append(f'**{sum(cells[(rk, ck)] for ck in ckeys):,}**')
             body.append(line)
         tot = ['**합계**'] + [f'**{sum(cells[(rk, ck)] for rk in rkeys):,}**' for ck in ckeys] \
-              + [f'**{n:,}**']
+              + [f'**{sub_n:,}**']
         body.append(tot)
-        md += [f'### 2.{i} {title}', '', _md_table(headers, body), '']
+        sub_note = f' (해당 {sub_n:,}건 대상)' if filt else ''
+        md += [f'### 2.{i} {title}{sub_note}', '', _md_table(headers, body), '']
 
     # 3) O/X 조합 표 (핵심 요청)
     md += ['---', '', '## 3. O/X 조합 표 — 실제 존재하는 조합만',
@@ -584,16 +613,19 @@ def write_xlsx(rows, path):
     _xl_num(ws, [3])
 
     # --- 02~ 교차표(축 2개짜리) ---
-    for i, (rax, cax, title) in enumerate(CROSSTABS, 1):
-        rkeys, ckeys, cells = _crosstab(rows, rax, cax)
+    for i, entry in enumerate(CROSSTABS, 1):
+        rax, cax, title, filt = _crosstab_filter(entry)
+        subset = [r for r in rows if filt(r)] if filt else rows
+        sub_n = len(subset)
+        rkeys, ckeys, cells = _crosstab(subset, rax, cax)
         ws = _xl_sheet(wb, f'X{i:02d}_{_AXIS_SHORT[rax]}×{_AXIS_SHORT[cax]}')
-        ws.append([title])
+        ws.append([title if not filt else f'{title} (해당 {sub_n:,}건 대상)'])
         ws['A1'].font = Font(bold=True)
         ws.append([f'{dict(AXES)[rax]} ↓ / {dict(AXES)[cax]} →'] + ckeys + ['합계'])
         for rk in rkeys:
             vals = [cells[(rk, ck)] for ck in ckeys]
             ws.append([rk] + [v or None for v in vals] + [sum(vals)])
-        ws.append(['합계'] + [sum(cells[(rk, ck)] for rk in rkeys) or None for ck in ckeys] + [n])
+        ws.append(['합계'] + [sum(cells[(rk, ck)] for rk in rkeys) or None for ck in ckeys] + [sub_n])
         for cell in ws[ws.max_row]:
             cell.font = Font(bold=True)
         for r in range(3, ws.max_row + 1):
@@ -665,7 +697,7 @@ def write_xlsx(rows, path):
     _xl_num(ws, [4])
 
     # --- 00 시트 맨 아래에 목차 (시트가 20개라 어디에 뭐가 있는지 먼저 보이게) ---
-    xdesc = {f'X{i:02d}': t for i, (_, _, t) in enumerate(CROSSTABS, 1)}
+    xdesc = {f'X{i:02d}': e[2] for i, e in enumerate(CROSSTABS, 1)}
     pdesc = {'01_': '축별 단독 분포 — 모든 라벨 축의 값·건수·비율',
              '20_': f'핵심 {len(COMBO_CORE)}축 조합 전수',
              '30_': f'O/X {len(OX_FLAGS)}플래그 조합 전수 (한 줄 = 한 케이스)',
@@ -736,15 +768,18 @@ def _one_sheet_ops(rows):
         ops.append(('gap',))
 
     h2('§4. 2축 교차표')
-    for i, (rax, cax, title) in enumerate(CROSSTABS, 1):
-        rkeys, ckeys, cells = _crosstab(rows, rax, cax)
-        ops.append(('note', f'4.{i} {title}'))
+    for i, entry in enumerate(CROSSTABS, 1):
+        rax, cax, title, filt = _crosstab_filter(entry)
+        subset = [r for r in rows if filt(r)] if filt else rows
+        sub_n = len(subset)
+        rkeys, ckeys, cells = _crosstab(subset, rax, cax)
+        ops.append(('note', f'4.{i} {title}' + (f' (해당 {sub_n:,}건 대상)' if filt else '')))
         body = []
         for rk in rkeys:
             vals = [cells[(rk, ck)] for ck in ckeys]
             body.append([rk] + [v or None for v in vals] + [sum(vals)])
         body.append(['합계'] + [sum(cells[(rk, ck)] for rk in rkeys) or None
-                              for ck in ckeys] + [n])
+                              for ck in ckeys] + [sub_n])
         ops.append(('tbl', [f'{_AXIS_SHORT[rax]} ↓ / {_AXIS_SHORT[cax]} →'] + ckeys + ['합계'],
                     body, {'num': list(range(2, len(ckeys) + 3)),
                            'boldlast': True, 'boldfirstcol': True}))
@@ -908,9 +943,11 @@ def emit_sql(path):
     parts += [
         '-- ============ 예제 2) 2축 교차표 ============',
     ]
-    for rax, cax, title in CROSSTABS:
+    for entry in CROSSTABS:
+        rax, cax, title = entry[0], entry[1], entry[2]
+        where = f" WHERE {_CROSSTAB_FILTERS[entry[3]]['sql']}" if len(entry) > 3 else ''
         parts.append(f"-- {title}\nSELECT {rax}, {cax}, COUNT(*) AS `건수` "
-                     f"FROM v_gonggu_case_axes GROUP BY {rax}, {cax} "
+                     f"FROM v_gonggu_case_axes{where} GROUP BY {rax}, {cax} "
                      f"ORDER BY {rax}, `건수` DESC;\n")
     ox = [c for c, _ in OX_FLAGS]
     ox_sel = ',\n       '.join(f"IF({c}, 'O', 'X') AS `{h}`" for c, h in OX_FLAGS)

@@ -31,8 +31,12 @@ python3 -m gonggu.sync_hifen_emails
 # ── 1.5. 네이버 uc 갱신 (daily 끝난 뒤, 사람이 곁에서 · 낮은 동시성) ──
 # 링크 해석(resolve_links) 단계에서 로그인월/차단으로 unresolved 남은 것만 uc로 재시도.
 # 2단계 상세수집(섹션 2)의 uc와 크롬 하나를 공유하니 서로 동시 실행 금지, 워밍업은 1회로 둘 다 커버.
+# ⚠ 2026-08-19 대상 확대: 예전엔 note가 '재검증 중 차단'인 4건뿐이었는데 '로그인월_차단'까지
+#   넓혀 실측 702건이 대상이다(죽은 페이지·uc 비대상은 자동 제외, 3회 실패하면 은퇴).
+#   사람이 곁에 붙는 패스라 한 번에 다 돌리지 말고 LIMIT으로 끊어서. 실행하면 사유별 분포를 찍어준다.
+rm -rf ~/.gonggu_uc_profile
 python3 -m gonggu.enrich_detail.warmup_naver_uc                                     # 워밍업 1회(창에서 로그인/확인 통과)
-UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=10 python3 -m gonggu.resolve_links.reverify_uc # unresolved(로그인월·차단)만 uc로 재시도 → done
+LIMIT=100 UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=10 python3 -m gonggu.resolve_links.reverify_uc # 차단 계열 unresolved를 uc로 재시도 → done
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -53,6 +57,7 @@ DETAIL_CONCURRENCY=10 python3 -m gonggu.enrich_detail
 # (2) uc 크롤링만 — 3단계 분리 1단계. 워밍업 먼저(1.5와 공유, 이미 했으면 생략).
 #     크롤링 결과(detail_crawled*.jsonl)는 LLM 결과와 별도 파일로 영구 보존 — 나중에 프롬프트
 #     고쳐서 LLM만 다시 돌려도(FORCE_RELLM=1) 재크롤링 불필요.
+rm -rf ~/.gonggu_uc_profile
 python3 -m gonggu.enrich_detail.warmup_naver_uc
 UC_LOGIN_WAIT=0 DETAIL_MODE=uc python3 -m gonggu.enrich_detail.crawl_stage
 
@@ -67,11 +72,13 @@ python3 -m gonggu.enrich_detail.load_stage
 #   신뢰 쿠키 프로필을 N벌 복제해서(cp -R ~/.gonggu_uc_profile ~/.gonggu_uc_profile_N) 진짜
 #   병렬(각자 다른 UC_PROFILE). crawl_stage.py가 2026-08-18부터 샤드 파일 전체(detail_crawled*.jsonl)를
 #   합쳐서 중복 체크하므로, 아래처럼 샤딩했다 안 했다 오가도 이미 크롤링된 건 안전하게 건너뛴다.
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_1 SHARD_COUNT=5 SHARD_INDEX=0 python3 -m gonggu.enrich_detail.crawl_stage
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_2 SHARD_COUNT=5 SHARD_INDEX=1 python3 -m gonggu.enrich_detail.crawl_stage
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_3 SHARD_COUNT=5 SHARD_INDEX=2 python3 -m gonggu.enrich_detail.crawl_stage
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_4 SHARD_COUNT=5 SHARD_INDEX=3 python3 -m gonggu.enrich_detail.crawl_stage
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_5 SHARD_COUNT=5 SHARD_INDEX=4 python3 -m gonggu.enrich_detail.crawl_stage
+rm -rf ~/.gonggu_uc_profile_1
+rm -rf ~/.gonggu_uc_profile_2
+UC_PROFILE=$HOME/.gonggu_uc_profile_1 python3 -m gonggu.enrich_detail.warmup_naver_uc
+UC_PROFILE=$HOME/.gonggu_uc_profile_2 python3 -m gonggu.enrich_detail.warmup_naver_uc
+
+UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_1 SHARD_COUNT=2 SHARD_INDEX=0 python3 -m gonggu.enrich_detail.crawl_stage
+UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_PROFILE=$HOME/.gonggu_uc_profile_2 SHARD_COUNT=2 SHARD_INDEX=1 python3 -m gonggu.enrich_detail.crawl_stage
 
 # ── (참고, 이제 안 씀) uc 단일실행 — 상품 1건마다 크롤링+LLM+DB를 한 번에 처리하던 예전 방식.
 #   2026-08-18부터 uc는 항상 위 3단계 분리로 진행하기로 해서 더 이상 안 쓴다.

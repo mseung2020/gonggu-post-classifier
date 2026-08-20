@@ -172,7 +172,10 @@ def _log_usage(model, usage):
     if not usage:
         return
     entry = {
-        'ts': datetime.datetime.now().isoformat(timespec='seconds'),
+        # 타임존 오프셋을 붙인다(2026-08-19 요금 개편) — 단가가 UTC 시각 기준 피크/오프피크로
+        # 2배 갈리므로, naive 로컬 시각만 남기면 리포트가 머신 타임존을 추측해야 한다.
+        # 앞부분은 여전히 로컬 날짜라 llm_usage_report의 날짜 필터(startswith)는 그대로 동작한다.
+        'ts': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
         'model': model,
         'prompt_tokens': usage.get('prompt_tokens'),
         'completion_tokens': usage.get('completion_tokens'),

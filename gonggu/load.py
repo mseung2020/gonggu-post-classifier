@@ -12,7 +12,8 @@ import os
 import pymysql
 
 from gonggu.common import LOAD_READY_DIR, RESOLVED_DIR, connect_dst, load_json_dir
-from gonggu.platforms import PLATFORMS, native_id, parent_exists_sql, parent_insert_sql, product_insert_sql
+from gonggu.platforms import (PLATFORMS, native_id, parent_exists_sql, parent_insert_sql,
+                              parent_keys_sql, product_insert_sql)
 
 
 def _item_key(item):
@@ -64,13 +65,42 @@ def load_items():
 # 복제되어 있던 구조를 접었다. 생성된 문자열이 리팩터링 전과 동일함은 tests/test_platforms.py가 보증.
 
 
-def load_item(cur, code, parent, products):
-    """부모 1건 + 상품 N건 INSERT. 이미 있으면(자연키 기준) 아무것도 안 하고 False."""
+def existing_keys(cur):
+    """이미 적재된 부모 자연키 전체를 {(code, key)} 집합으로 한 번에 읽는다(4단계, 2026-08-20).
+
+    왜: 예전엔 load_item이 항목마다 `SELECT ... WHERE post_id=%s`를 던졌다. 그런데 이 단계는
+    매일 04_resolved **전체**(누적)를 훑으면서 그날 새로 생긴 것만 넣는 구조라, 대부분이
+    "이미 있음" 확인에만 쓰이는 왕복이 된다 — 실측(2026-08-20): 45,566건 중 43,737건(96%)이
+    스킵이었고, 존재확인 1건이 6.06ms라 그 왕복만 약 276초였다. 같은 키를 한 번에 가져오면
+    0.16초다. 소배치 커밋(4단계 D2)이 커밋 왕복을 1/50로 줄였는데 이 확인 왕복은 건당 1회로
+    남아 있어서, 이 단계 시간의 거의 전부를 차지하고 있었다.
+
+    ⚠ 경합 안전성: 다른 프로세스가 그 사이에 같은 키를 넣으면 이 집합은 낡은 정보가 된다.
+    그래도 안전한 이유는 DB의 UNIQUE(post_id/video_id)가 최종 방어선이고, 그 충돌(errno 1062)을
+    _is_duplicate_entry가 이미 "실패가 아니라 스킵"으로 처리하기 때문이다(2026-08-05 감사 A4).
+    즉 이 집합은 왕복을 줄이는 캐시일 뿐 정확성의 근거가 아니다."""
+    keys = set()
+    for code, p in PLATFORMS.items():
+        cur.execute(parent_keys_sql(p))
+        keys |= {(code, r[p.id_col]) for r in cur.fetchall()}
+    return keys
+
+
+def load_item(cur, code, parent, products, known=None):
+    """부모 1건 + 상품 N건 INSERT. 이미 있으면(자연키 기준) 아무것도 안 하고 False.
+
+    known이 주어지면 그 집합으로 존재를 판단하고(DB 왕복 없음), 넣은 키는 집합에 추가한다 —
+    같은 실행 안에 같은 키가 두 번 나오는 입력에서도 두 번 INSERT하지 않기 위함이다.
+    known=None이면 예전처럼 건건이 DB에 묻는다(테스트/단건 경로 호환)."""
     p = PLATFORMS[code]
     key = parent[p.id_col]
-    cur.execute(parent_exists_sql(p), (key,))
-    if cur.fetchone():
-        return False
+    if known is not None:
+        if (code, key) in known:
+            return False
+    else:
+        cur.execute(parent_exists_sql(p), (key,))
+        if cur.fetchone():
+            return False
     # 유튜브: 캡션에 링크가 있던 영상은 채널 정보란까지 긁어볼 필요가 없어서 external_url이
     # 없을 수 있어 기본값 None을 깔아준다(인스타 INSERT에는 이 컬럼이 없어 그냥 무시됨).
     # is_calendar_feed도 스키마 개편 전(2026-08-06)에 만들어진 옛 03 파일엔 없을 수 있어 기본 0.
@@ -82,6 +112,8 @@ def load_item(cur, code, parent, products):
         cur.execute(product_insert_sql(p),
                     {'link_status': None, 'gonggu_start_date': None, 'gonggu_end_date': None,
                      'gonggu_stage': None, 'link_note': None, **prod, p.id_col: key})
+    if known is not None:
+        known.add((code, key))
     return True
 
 
@@ -94,11 +126,15 @@ def _is_duplicate_entry(e):
     return isinstance(e, pymysql.err.IntegrityError) and e.args and e.args[0] == 1062
 
 
-def _load_one_committed(conn, cur, item):
-    """한 건 처리 + 즉시 커밋(예전 방식). 반환: 'inserted' | 'skipped' | 'failed'."""
+def _load_one_committed(conn, cur, item, known=None):
+    """한 건 처리 + 즉시 커밋(예전 방식). 반환: 'inserted' | 'skipped' | 'failed'.
+
+    ⚠ known은 일부러 안 넘긴다(기본 None) — 여기로 오는 건 "배치가 실패해서 롤백된 뒤" 다시
+    보는 경로다. 롤백으로 DB 상태가 되돌아갔는데 메모리 집합엔 "넣었다"가 남아 있으면 그
+    건을 영영 스킵하게 된다. 그래서 이 경로만은 DB에 직접 물어 진실을 다시 확인한다."""
     key = native_id(item['platform'], item['parent'])
     try:
-        ok = load_item(cur, item['platform'], item['parent'], item['products'])
+        ok = load_item(cur, item['platform'], item['parent'], item['products'], known)
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -118,18 +154,30 @@ def load_all(conn, items, batch_size):
     반환: (inserted, skipped, failed)."""
     counts = {'inserted': 0, 'skipped': 0, 'failed': 0}
     with conn.cursor() as cur:
+        # 존재확인용 자연키를 한 번에 읽어둔다(existing_keys 주석 — 예전엔 건당 왕복이라
+        # 45,566건에 약 276초였다). 실패 배치의 건별 재처리는 이 집합을 안 쓰고 DB에 직접 묻는다.
+        known = existing_keys(cur)
         for i in range(0, len(items), batch_size):
             batch = items[i:i + batch_size]
+            snapshot = set(known)   # 롤백되면 메모리 집합도 이 시점으로 되돌려야 진실과 안 어긋난다
             try:
-                results = [load_item(cur, it['platform'], it['parent'], it['products'])
+                results = [load_item(cur, it['platform'], it['parent'], it['products'], known)
                            for it in batch]
                 conn.commit()
                 counts['inserted'] += sum(1 for ok in results if ok)
                 counts['skipped'] += sum(1 for ok in results if not ok)
             except Exception:
                 conn.rollback()  # 이 배치에서 이미 실행된 INSERT까지 전부 되돌리고 건별로 재시도
+                known.clear()
+                known.update(snapshot)
                 for it in batch:
                     counts[_load_one_committed(conn, cur, it)] += 1
+                # 건별 재처리로 실제 들어간 것들을 집합에 반영(다음 배치가 또 넣으려 하지 않게).
+                for it in batch:
+                    p = PLATFORMS[it['platform']]
+                    cur.execute(parent_exists_sql(p), (it['parent'][p.id_col],))
+                    if cur.fetchone():
+                        known.add((it['platform'], it['parent'][p.id_col]))
     return counts['inserted'], counts['skipped'], counts['failed']
 
 

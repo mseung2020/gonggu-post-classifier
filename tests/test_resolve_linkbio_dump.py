@@ -8,6 +8,19 @@ from gonggu.crawl_linkbio import OUT_DIR
 from gonggu.resolve_links import links, runner
 
 
+def _read_records(path):
+    """JSONL을 **운영 코드와 같은 방식**으로 읽는다(common.load_jsonl은 `for line in f`).
+
+    ⚠ str.splitlines()를 쓰면 안 된다 — 그건 '\\n' 말고도 U+2028(LINE SEPARATOR), U+2029,
+    \\x0b, \\x0c, \\x85까지 줄바꿈으로 보는데 JSON은 아니다. 실제로 2026-08-20에 어떤
+    크리에이터 bio에 U+2028이 하나 들어오면서 레코드 하나가 반토막 나 이 테스트 3개가
+    한꺼번에 깨졌다(파일 자체는 멀쩡했고, 운영 경로도 멀쩡했다 — 테스트만 다르게 읽고 있었다)."""
+    if not path.exists():
+        return []
+    with open(path, encoding='utf-8') as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
 def test_dump_linkbio_from_cache(monkeypatch):
     hub = 'https://link.inpock.co.kr/_pytest_dump'
     # resolve가 파싱해 영구 저장소에 남겼다고 가정(원본 dict에 이메일이 섞여 있음). 프로세스
@@ -24,7 +37,7 @@ def test_dump_linkbio_from_cache(monkeypatch):
     before = out_file.read_text() if out_file.exists() else None
     try:
         runner._dump_linkbio([item])
-        recs = [json.loads(x) for x in out_file.read_text().splitlines() if x.strip()]
+        recs = _read_records(out_file)
         mine = [r for r in recs if r.get('key') == 'ig:_PYTEST_POST']
         assert mine, '게시일 파일에 이 포스트 레코드가 있어야'
         rec = mine[-1]
@@ -56,14 +69,14 @@ def test_dump_linkbio_non_inpock_platform_and_email_sync_file(monkeypatch):
     before_email = HIFEN_EMAIL_FILE.read_text() if HIFEN_EMAIL_FILE.exists() else None
     try:
         runner._dump_linkbio([item])
-        recs = [json.loads(x) for x in out_file.read_text().splitlines() if x.strip()]
+        recs = _read_records(out_file)
         mine = [r for r in recs if r.get('key') == 'ig:_PYTEST_POST2']
         assert mine, '링크트리 허브를 가진 포스트도 게시일 파일에 남아야'
         rec = mine[-1]
         assert rec['hub_urls'] == [hub]
         assert rec['emails'] == 'contact@brand.com'
 
-        email_recs = [json.loads(x) for x in HIFEN_EMAIL_FILE.read_text().splitlines() if x.strip()]
+        email_recs = _read_records(HIFEN_EMAIL_FILE)
         mine_email = [r for r in email_recs if r.get('key') == '_pytest_user2']
         assert mine_email, '이메일이 발견된 ig 계정은 HIFEN_EMAIL_FILE에도 남아야'
         assert mine_email[-1]['emails'] == ['contact@brand.com']
@@ -110,7 +123,7 @@ def test_dump_skips_when_no_cache(monkeypatch):
     before = out_file.read_text() if out_file.exists() else None
     try:
         runner._dump_linkbio([item])
-        recs = [json.loads(x) for x in out_file.read_text().splitlines() if x.strip()] if out_file.exists() else []
+        recs = _read_records(out_file)
         assert not [r for r in recs if r.get('key') == 'ig:_PYTEST_NONE']
     finally:
         if before is None:

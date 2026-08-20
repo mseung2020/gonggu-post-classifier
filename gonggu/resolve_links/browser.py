@@ -40,6 +40,74 @@ def via_stats():
         return dict(_via_stats)
 
 
+# ── 허가증 점유 계측(2026-08-19) ────────────────────────────────────────────
+# 브라우저 허가증(MAX_BROWSERS개)은 LazyPage가 브라우저를 띄울 때 잡고 _teardown에서 놓는다.
+# 그 사이에는 LLM#2/#3 호출도 들어가는데(한 상품이 브라우저→LLM→브라우저→LLM을 오간다) 그동안
+# 브라우저는 아무 일도 안 하면서 14개뿐인 허가증 하나를 계속 점유한다.
+#
+# "그러면 LLM 호출 전에 허가증을 놓으면 되지 않나"가 자연스러운 발상인데, 허가증은 곧 살아있는
+# 크롬 프로세스 수라 놓으려면 브라우저를 닫아야 하고(안 닫고 놓으면 MAX_BROWSERS를 넘겨 뜬다 =
+# 2026-07-30 스왑 사고), 다시 띄우는 데 3.9초가 든다. 즉 이득이 나려면 "LLM 대기가 3.9초보다
+# 충분히 길고, 그 순간 실제로 기다리는 워커가 있어야" 한다 — 감으로 정할 문제가 아니다.
+# (관련 실측이 이미 있다: LazyPage.release_if_contended 주석 — 무조건 넘기기는 1.8배 느렸다.)
+#
+# 그래서 고치기 전에 재기부터 한다. held는 허가증을 쥐고 있던 총 시간, busy는 그중 실제로
+# 브라우저가 페이지를 여느라 쓴 시간. busy/held가 낮을수록 "허가증을 놀리고 있다"는 뜻이고,
+# 그 차이가 클 때만 구조 변경(크롤 단계와 LLM 단계 분리)이 값을 한다.
+_permit_lock = threading.Lock()
+_permit_stats = {'held_sec': 0.0, 'busy_sec': 0.0, 'sessions': 0,
+                 'wait_sec': 0.0, 'waits': 0}
+# 지금 허가증을 쥐고 있는 워커들의 획득 시각 {소유자 id: monotonic}. ⚠ 이게 없으면 held가
+# "닫힌 브라우저"만 세는데(_teardown에서만 누적) busy는 살아있는 워커 것까지 다 세서 분모만
+# 빠진다 — 실제로 첫 실측(2026-08-20)에서 "총 449초 중 작업 1202초, 유휴 -168%"라는 음수가
+# 나왔다. 리포트 시점에 아직 안 닫힌 세션의 경과 시간까지 더해야 비율이 성립한다.
+_permit_open = {}
+
+
+def _permit_acquired(owner):
+    with _permit_lock:
+        _permit_open[id(owner)] = time.monotonic()
+
+
+def _permit_released(owner):
+    with _permit_lock:
+        started = _permit_open.pop(id(owner), None)
+        if started is not None:
+            _permit_stats['held_sec'] += time.monotonic() - started
+            _permit_stats['sessions'] += 1
+
+
+def _add_permit_busy(seconds):
+    with _permit_lock:
+        _permit_stats['busy_sec'] += seconds
+
+
+def _add_permit_wait(seconds):
+    """허가증을 기다린 시간. 경합이 없으면 0에 수렴한다(세마포어가 즉시 통과)."""
+    if seconds <= 0.001:      # 즉시 통과 = 경합 없음. 잡음으로 waits를 부풀리지 않는다.
+        return
+    with _permit_lock:
+        _permit_stats['wait_sec'] += seconds
+        _permit_stats['waits'] += 1
+
+
+def permit_stats():
+    """{held_sec, busy_sec, sessions, open_sessions, wait_sec, waits, idle_ratio} —
+    idle_ratio는 허가증을 쥔 채 브라우저를 안 쓴 시간의 비율. 아직 안 닫힌 세션의 경과 시간도
+    held에 포함한다(위 주석). 표본이 없으면 idle_ratio=None.
+
+    ⚠ idle_ratio 하나로 판단하지 말 것 — 허가증이 놀아도 기다리는 워커가 없으면 손해가 0이다.
+    wait_sec(실제로 줄 선 시간)과 같이 봐야 "구조를 바꿔서 회수할 수 있는 양"이 나온다."""
+    with _permit_lock:
+        s = dict(_permit_stats)
+        now = time.monotonic()
+        s['open_sessions'] = len(_permit_open)
+        s['held_sec'] += sum(now - t for t in _permit_open.values())
+        s['sessions'] += len(_permit_open)
+    s['idle_ratio'] = (1 - s['busy_sec'] / s['held_sec']) if s['held_sec'] > 0 else None
+    return s
+
+
 # ── 브라우저 없는 빠른 패스(Tier0) 스위치(2026-08-18, 속도개선 공사 F단계) ──
 # runner.py가 한 프로세스 안에서 두 패스를 순차로(동시 아님) 돌린다: 먼저 이 스위치를 꺼서
 # 브라우저가 필요한 후보를 전부 'needs_browser'로 보류시키는 빠른 패스(링크인바이오 구조화/
@@ -107,9 +175,15 @@ class _BrowserPermits:
     def acquire(self):
         with self._lock:
             self._waiting += 1
+        started = time.monotonic()
         try:
             self._sem.acquire()
         finally:
+            # 허가증을 못 받아 실제로 줄 서 있던 시간(2026-08-20 추가). 유휴율만으로는 판단이
+            # 안 된다 — 허가증이 놀아도 기다리는 워커가 없으면 손해가 0이기 때문이다.
+            # "유휴 65% + 대기 0초"면 지금 구조로 충분하고, "유휴 65% + 대기 수천 초"면 크롤/LLM
+            # 단계 분리가 그만큼을 회수한다는 뜻이다(permit_stats 주석 참고).
+            _add_permit_wait(time.monotonic() - started)
             with self._lock:
                 self._waiting -= 1
 
@@ -264,7 +338,11 @@ def fetch(page, url, wait_extra=1.5, referer=None):
             if not _allow_browser:
                 bump_via('needs_browser')
                 return _needs_browser_rec()
-            rec = _browser_fetch(page, url, wait_extra, referer)
+            started = time.monotonic()   # 허가증 점유 계측(permit_stats 참고)
+            try:
+                rec = _browser_fetch(page, url, wait_extra, referer)
+            finally:
+                _add_permit_busy(time.monotonic() - started)
     # 도메인 게이트 밖에서 uc 재시도 — uc는 자체 락으로 전역 직렬화하므로 게이트를 겹쳐 잡지 않는다.
     final = rec.get('final_url') or ''
     uc_on = os.environ.get('RESOLVE_UC', '0') == '1'
@@ -297,7 +375,13 @@ def fetch_with_browser(page, url, wait_extra=1.5, referer=None):
         bump_via('needs_browser')
         return _needs_browser_rec()
     with domain_gate(url):
-        rec = _browser_fetch(page, url, wait_extra, referer)
+        # domain_gate 대기는 busy에 안 넣는다 — 그건 브라우저가 일한 시간이 아니라 도메인
+        # 몰림 때문에 줄 선 시간이라, 여기 포함하면 "허가증을 알차게 썼다"고 착각하게 된다.
+        started = time.monotonic()
+        try:
+            rec = _browser_fetch(page, url, wait_extra, referer)
+        finally:
+            _add_permit_busy(time.monotonic() - started)
     bump_via(rec.get('via'))
     return rec
 
@@ -405,9 +489,11 @@ class LazyPage:
         self._used_recently = True
         if self._page is None:
             _browser_permits.acquire()
+            _permit_acquired(self)      # 허가증 점유 계측(permit_stats 참고)
             try:
                 self._browser, self._ctx, self._page = new_context_page(self._pw)
             except Exception:
+                _permit_released(self)
                 _browser_permits.release()
                 raise
         return self._page
@@ -461,4 +547,5 @@ class LazyPage:
         # 닫기가 실패하더라도 허가증은 반드시 돌려줘야 한다 — 안 그러면 남은 워커 전체가
         # 그만큼 영구히 굶는다.
         self._browser = self._ctx = self._page = None
+        _permit_released(self)
         _browser_permits.release()
