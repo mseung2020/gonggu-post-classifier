@@ -161,3 +161,59 @@ class TestUcTargetSelection:
         monkeypatch.setattr(ru, 'UC_MAX_ATTEMPTS', 1)
         due, reason = ru.classify_target('로그인월_차단 — 404 오류', 'https://x.kr', {'attempts': 5})
         assert due is False and '은퇴' in reason
+
+
+# ── 시간 예산 / 큐 회계(2026-08-20) ──────────────────────────────────────────
+# 이 단계는 큐를 비우는 단계가 아니라 매일 조금씩 갉는 단계다(유입 하루 약 436건 vs 30분 배수
+# 24~120건). 그래서 "예산을 넘기면 아무 일도 안 하고 정상 종료"와 "유입/배수/잔량 세 숫자를
+# 정확히 센다"가 계약이다 — 이게 틀리면 예산을 언제 늘릴지 판단할 근거가 사라진다.
+
+class TestBudget:
+    def test_no_budget_never_exhausts(self):
+        """기본값(예산 꺼짐)은 예전 그대로 대상 전체를 끝까지 — 손으로 돌리는 실행 동작 불변."""
+        assert ru.budget_exhausted(now=10 ** 9, deadline=None) is False
+
+    def test_not_exhausted_before_deadline(self):
+        assert ru.budget_exhausted(now=100.0, deadline=101.0) is False
+
+    def test_exhausted_at_and_after_deadline(self):
+        assert ru.budget_exhausted(now=101.0, deadline=101.0) is True
+        assert ru.budget_exhausted(now=102.0, deadline=101.0) is True
+
+
+class TestInflowEstimate:
+    def test_no_history_yields_none(self):
+        inflow, why = ru.estimate_inflow(2301, None)
+        assert inflow is None and '첫 기록' in why
+
+    def test_inflow_is_growth_over_previous_remaining(self):
+        """어제 잔량 702 → 오늘 대상 2,301이면 그 사이 유입 1,599건(2026-08-20 실측 그대로)."""
+        inflow, why = ru.estimate_inflow(2301, {'at': '2026-08-19 10:00:00', 'remaining_est': 702})
+        assert inflow == 1599
+        assert '702' in why
+
+    def test_negative_inflow_when_queue_shrinks(self):
+        """배수가 유입을 이긴 날은 음수 — 부호가 그대로 보여야 추세를 읽을 수 있다."""
+        assert ru.estimate_inflow(500, {'remaining_est': 600})[0] == -100
+
+    def test_malformed_history_is_tolerated(self):
+        inflow, why = ru.estimate_inflow(100, {'at': '2026-08-19'})
+        assert inflow is None and '잔량 없음' in why
+
+
+class TestRunLog:
+    def test_reads_last_line(self, tmp_path):
+        p = tmp_path / 'runs.jsonl'
+        p.write_text('{"at": "1", "remaining_est": 10}\n{"at": "2", "remaining_est": 20}\n',
+                     encoding='utf-8')
+        assert ru._last_run_record(p)['remaining_est'] == 20
+
+    def test_missing_file_is_none(self, tmp_path):
+        assert ru._last_run_record(tmp_path / 'nope.jsonl') is None
+
+    def test_blank_and_broken_lines_are_tolerated(self, tmp_path):
+        p = tmp_path / 'runs.jsonl'
+        p.write_text('{"remaining_est": 10}\n\n', encoding='utf-8')
+        assert ru._last_run_record(p)['remaining_est'] == 10
+        p.write_text('{"remaining_est": 10}\nnot json\n', encoding='utf-8')
+        assert ru._last_run_record(p) is None

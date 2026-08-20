@@ -44,6 +44,10 @@ unresolved(note 갱신)로 남아 다음 실행에 다시 잡힌다.
     REVERIFY_CONCURRENCY=1 python3 -m gonggu.resolve_links.reverify_uc
     RESOLVE_UC_HOSTS=naver.,gmarket.co.kr python3 -m gonggu.resolve_links.reverify_uc  # 오픈마켓도
     UC_MAX_ATTEMPTS=5 python3 -m gonggu.resolve_links.reverify_uc   # 은퇴 상한 조정(기본 3)
+    UC_TIME_BUDGET_SEC=1800 python3 -m gonggu.resolve_links.reverify_uc  # 30분만 갉고 정상 종료
+
+⚠ 이 단계는 큐를 비우는 단계가 아니라 **매일 조금씩 갉는 단계**다 — 유입(하루 약 436건)이 배수
+(30분 예산에 24~120건)보다 크다. 근거와 숫자는 아래 UC_TIME_BUDGET_SEC 주석에 있다.
 """
 import os
 
@@ -58,7 +62,10 @@ os.environ.setdefault('RESOLVE_UC', '1')
 os.environ.setdefault('RESOLVE_UC_HOSTS',
                       'naver.,gmarket.co.kr,auction.co.kr,ohou.se,11st.co.kr')
 
+import datetime  # noqa: E402
+import json  # noqa: E402
 import sys  # noqa: E402
+import time  # noqa: E402
 from collections import Counter  # noqa: E402
 
 from gonggu.common import (  # noqa: E402
@@ -93,6 +100,31 @@ UC_ANTIBOT_MARKERS = ('보안', '캡차', '안티봇', '403', '429', '네이버'
 # 하나의 비용이 비교가 안 된다. 3번 열어도 안 되면 캡차 정책이 바뀌기 전엔 안 될 가능성이 높다.
 UC_MAX_ATTEMPTS = int(os.environ.get('UC_MAX_ATTEMPTS', '3'))
 UC_STATE_FILE = ROOT / 'data/output/reverify_uc_state.jsonl'
+
+# ── 시간 예산(2026-08-20) ────────────────────────────────────────────────────
+# ⚠ 이 단계는 **큐를 처리하는 단계가 아니라 매일 조금씩 갉는 단계**다. 착각하면
+# "왜 uc 큐가 안 줄지?"로 헤매게 되니 숫자를 여기 박아둔다(2026-08-20 실측):
+#
+#   유입: resolve 한 번이 만드는 uc 후보가 하루 약 436건
+#         (로그인월_차단 69 + 재검증 중 차단 367 — 후자는 fast resolve가 uc 대상 호스트라
+#          브라우저를 생략하고 넘긴 것이라 정의상 전부 uc 대상이다)
+#   배수: uc는 uc_engine._lock으로 **전역 직렬**이라 REVERIFY_CONCURRENCY를 올려도 uc 페치
+#         구간은 한 번에 하나다. UC_HARD_TIMEOUT=75초 기준 30분 예산의 처리량은
+#            건당 15초 → 120건 / 건당 30초 → 60건 / 건당 75초(타임아웃) → 24건
+#
+# 즉 유입 436 vs 배수 24~120 — 매일 큐가 커진다(어제 확대 직후 702건이던 게 오늘 2,301건).
+# 손익분기는 건당 30초 기준 하루 3.3시간이고, 그건 데일리 한 단계에 넣을 시간이 아니다.
+# 그래서 이 값의 역할은 "큐를 없애는 것"이 아니라 **안전밸브**다 — uc가 죽거나 느려도 데일리가
+# 묶이는 최대치를 이만큼으로 못박는다. 진짜 해법은 병렬화(detail의 UC_PROFILE 샤딩과 같은
+# 패턴을 여기 적용하면 프로필 N개로 N배)이고, 그건 이 단계가 한 사이클 돌아 "건당 실제 몇 초"가
+# 나온 뒤에 검토한다.
+#
+# 기본 0 = 예산 없음(예전 그대로 대상 전체를 끝까지) — 손으로 돌리는 실행의 동작을 안 바꾼다.
+# daily가 이 단계를 돌릴 때만 1800(30분)을 넘긴다.
+UC_TIME_BUDGET_SEC = float(os.environ.get('UC_TIME_BUDGET_SEC', '0'))
+# 실행마다 (대상/시도/승격/잔량)을 한 줄 남긴다 — 다음 실행이 직전 잔량과 비교해 "유입"을
+# 추정한다. 이 세 숫자(대상·배수·유입)가 같이 보여야 예산을 언제 늘릴지 판단이 된다.
+UC_RUNS_FILE = ROOT / 'data/output/reverify_uc_runs.jsonl'
 UPDATE_SQL = {code: product_update_link_sql(p) for code, p in PLATFORMS.items()}
 
 
@@ -121,6 +153,44 @@ def classify_target(note, candidate_url, rec):
     if not _is_uc_addressable(note, candidate_url):
         return False, '제외(uc 비대상)'
     return True, '대상'
+
+
+def budget_exhausted(now, deadline):
+    """시간 예산을 넘겼는지 — 예산이 꺼져 있으면(deadline=None) 항상 False. 순수 함수."""
+    return deadline is not None and now >= deadline
+
+
+def estimate_inflow(due_total, prev_run):
+    """직전 실행 이후 큐에 새로 들어온 건수 추정 — (유입 or None, 근거 설명). 순수 함수.
+
+    정확한 값이 아니라 추정이다: 이번 대상 수에서 직전 실행이 남긴 잔량을 뺀 것. 은퇴로 빠진
+    건이 그 사이에 섞이면 과소추정되지만, "유입이 배수보다 큰가"라는 질문에는 이걸로 충분하다.
+    """
+    if not prev_run:
+        return None, '직전 실행 기록 없음(이번이 첫 기록)'
+    prev_remaining = prev_run.get('remaining_est')
+    if prev_remaining is None:
+        return None, '직전 기록에 잔량 없음'
+    return due_total - prev_remaining, f"직전 실행 {prev_run.get('at', '?')} 잔량 {prev_remaining}건 대비"
+
+
+def _last_run_record(path):
+    """UC_RUNS_FILE의 마지막 줄 하나. load_jsonl은 'key' 필드를 요구하는 key-value 체크포인트용
+    이라 여기(시계열 append 로그)에는 안 맞아서 따로 읽는다."""
+    if not path.exists():
+        return None
+    last = None
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                last = line
+    if not last:
+        return None
+    try:
+        return json.loads(last)
+    except ValueError:
+        return None
 
 
 def _select_sql(p):
@@ -180,21 +250,38 @@ def main():
     limit = int(os.environ.get('LIMIT', '0')) or due_total
     targets = targets[:limit]
     breakdown = ' / '.join(f'{k} {v}' for k, v in reasons.most_common())
+    prev_run = _last_run_record(UC_RUNS_FILE)
+    inflow, inflow_why = estimate_inflow(due_total, prev_run)
     print(f'차단 계열 unresolved 후보 풀 {len(candidates)}건 → 이번 실행 대상 {len(targets)}건'
           f"{f' (LIMIT으로 {due_total - len(targets)}건 보류)' if len(targets) < due_total else ''}")
     print(f'  분류: {breakdown}')
     print(f"  uc 엔진 ON(RESOLVE_UC={os.environ.get('RESOLVE_UC')}, "
           f"대상 호스트 {os.environ.get('RESOLVE_UC_HOSTS', 'naver.')}), 동시 {CONCURRENCY}, "
           f"브라우저 상한 {MAX_BROWSERS}, 은퇴 상한 {UC_MAX_ATTEMPTS}회")
+    # ⚠ uc는 uc_engine._lock으로 전역 직렬 — 위 '동시 N'은 uc 페치 구간에는 안 먹는다(그 앞의
+    # http/Playwright 시도와 LLM 호출에만 효과). 모듈 상단 UC_TIME_BUDGET_SEC 주석 참고.
+    if UC_TIME_BUDGET_SEC > 0:
+        print(f'  ⏱ 시간 예산 {UC_TIME_BUDGET_SEC / 60:.0f}분 — 이 단계는 큐를 비우는 단계가 아니라 '
+              f'매일 조금씩 갉는 단계입니다(유입 > 배수).')
+    if inflow is not None:
+        print(f'  유입 추정 {inflow:+,}건 ({inflow_why})')
     if not targets:
         print('  재검증할 차단 건이 없습니다.')
         return
 
     counters = {}
+    deadline = (time.monotonic() + UC_TIME_BUDGET_SEC) if UC_TIME_BUDGET_SEC > 0 else None
 
     def handle(ctx, target):
         code, parent, product, row_id, key = target
         db = ctx.state  # 워커당 DB 커넥션 1개
+        # 예산을 넘겼으면 아무것도 안 하고 즉시 반환한다 — 큐가 빠르게 비워지면서 이 실행이
+        # 정상 종료(exit 0)로 끝나고, 남은 건은 DB 상태 그대로라 다음 실행이 이어받는다.
+        # 시도를 안 했으니 attempts도 안 올린다(은퇴가 억울하게 앞당겨지면 안 된다).
+        if budget_exhausted(time.monotonic(), deadline):
+            with ctx.lock:
+                counters['_budget_skipped'] = counters.get('_budget_skipped', 0) + 1
+            return
         try:
             res = resolve_product(ctx.page, code, parent, product)
         except Exception as e:
@@ -212,10 +299,16 @@ def main():
                 # 시도 이력 — done이 되면 애초에 다음 실행의 후보 풀(unresolved)에서 빠지므로
                 # attempts는 "uc로 열었는데도 못 풀린 횟수"가 되고, UC_MAX_ATTEMPTS에서 은퇴한다.
                 prev = state.get(key) or {}
-                append_jsonl(UC_STATE_FILE, {'key': key, 'attempts': prev.get('attempts', 0) + 1,
+                attempts = prev.get('attempts', 0) + 1
+                append_jsonl(UC_STATE_FILE, {'key': key, 'attempts': attempts,
                                              'last_status': res['status']})
                 counters[res['status']] = counters.get(res['status'], 0) + 1
                 counters['_n'] = counters.get('_n', 0) + 1
+                # 이번 시도로 은퇴선에 도달한 건 — 다음 실행부터 큐에서 빠진다. 은퇴 정책
+                # (UC_MAX_ATTEMPTS)이 도입 후 한 번도 안 돌아봐서(reverify_uc_state.jsonl 부재)
+                # 실제로 걸리는지 눈으로 확인할 수 있게 따로 센다.
+                if res['status'] != 'done' and attempts >= UC_MAX_ATTEMPTS:
+                    counters['_retired'] = counters.get('_retired', 0) + 1
                 shown = res.get('final_url') or res.get('note', '')
                 print(f"  [{counters['_n']}/{len(targets)}] (w{ctx.worker_id}) row {row_id} -> "
                       f"{res['status']} {str(shown)[:70]}", flush=True)
@@ -232,7 +325,28 @@ def main():
                    warn_hint='REVERIFY_CONCURRENCY')
 
     by = {k: v for k, v in counters.items() if not k.startswith('_')}
-    print(f'2단 재검증 완료 {len(targets)}건 — {by} (done 승격 {counters.get("done", 0)}건)')
+    attempted = sum(by.values())
+    promoted = counters.get('done', 0)
+    skipped = counters.get('_budget_skipped', 0)
+    retired = counters.get('_retired', 0)
+    # 잔량 추정 — done으로 승격된 건과 이번에 은퇴선에 닿은 건이 다음 실행의 대상에서 빠진다.
+    remaining_est = max(0, due_total - promoted - retired)
+
+    print(f'2단 재검증 완료 — 대상 {due_total:,}건 중 {attempted:,}건 시도, done 승격 {promoted:,}건 — {by}')
+    if skipped:
+        print(f'  ⏱ 시간 예산({UC_TIME_BUDGET_SEC / 60:.0f}분) 소진으로 {skipped:,}건 미시도 — '
+              f'다음 실행이 이어받습니다(시도 안 했으므로 은퇴 카운트에 안 들어갑니다).')
+    if retired:
+        print(f'  🚪 이번 시도로 은퇴({UC_MAX_ATTEMPTS}회 실패) 도달 {retired:,}건 — 다음 실행부터 큐에서 빠집니다.')
+    print(f'  큐 잔량 추정 {remaining_est:,}건'
+          + (f' (직전 실행 이후 유입 추정 {inflow:+,}건)' if inflow is not None else ''))
+
+    append_jsonl(UC_RUNS_FILE, {
+        'at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'due_total': due_total, 'attempted': attempted, 'promoted': promoted,
+        'retired': retired, 'budget_skipped': skipped, 'remaining_est': remaining_est,
+        'budget_sec': UC_TIME_BUDGET_SEC,
+    })
 
 
 if __name__ == '__main__':

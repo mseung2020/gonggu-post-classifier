@@ -309,17 +309,45 @@ dev_gongguking DB
   마찬가지로 동시에 두 개(또는 resolve_links와 동시에) 돌리지 말 것.
 - **이 단계는 브라우저 바운드입니다**(실측 2026-08-20: 처리 225건 중 브라우저 없이 끝난 건
   **24%**뿐. resolve 첫 사이클은 74%였습니다). 대상이 "이미 한 번 실패한 건"이라 재검증이
-  몰리기 때문입니다. 그래서 `RESCAN_CONCURRENCY`는 resolve(16)보다 낮은 10입니다.
-  - **`MAX_BROWSERS=14`(2026-08-20 추가)**: 예전엔 이 값을 안 줘서 `config.py`의 RAM 자동계산
-    (16GB÷1.5)이 **10**으로 떨어졌습니다 — 브라우저 바운드인 이 단계가 정작 "14가 자동계산보다
-    7.6% 빠르다"는 실측의 이득을 못 받고 있었습니다. resolve와 같은 값으로 맞췄습니다.
-  - **`CRAWL_RECYCLE_SEC=900` + `DRAIN=180`(2026-08-20 추가)**: 예전엔 재기동이 꺼져 있어 수천
+  몰리기 때문입니다.
+  - **설정 정합(2026-08-20)**: 이 단계는 resolve와 같은 `resolve_product`를 쓰는데 resolve에서
+    튜닝한 값들이 안 옮겨져 있었습니다. `RESCAN_CONCURRENCY` 10→**16**(워커 10개로는 브라우저
+    14개를 채우지도 못했습니다 — 실측: 크롬 프로세스 41개 ≈ 브라우저 10개, 허가증 4개가
+    유휴), `ITEM_DELAY` 3초(기본)→**0**, `LINK_LLM_TIMEOUT` 120초(기본)→**45+재시도1회**.
+    같은 날 같은 큐(2,871건)로 연속 비교: **31.3건/분 → 38~43건/분(+30~37%)**. 차단율은
+    거의 무변화(0.6%→0.8%)라 `ITEM_DELAY=0`의 안티봇 리스크는 실측상 없었습니다. 대신
+    에러율이 0.9%→7.0%로 올랐는데(LLM 타임아웃 단축 + 동시성 증가가 겹친 효과), `error`는
+    다음 날 백오프 무시하고 무조건 재시도되니 손실이 아니라 지연입니다.
+  - **`MAX_BROWSERS=14`**: 예전엔 이 값을 안 줘서 `config.py`의 RAM 자동계산(16GB÷1.5)이
+    **10**으로 떨어졌습니다 — 브라우저 바운드인 이 단계가 정작 "14가 자동계산보다 7.6% 빠르다"는
+    실측의 이득을 못 받고 있었습니다. resolve와 같은 값으로 맞췄습니다.
+  - **`CRAWL_RECYCLE_SEC=900` + `DRAIN=180`**: 예전엔 재기동이 꺼져 있어 수천
     건을 한 프로세스로 쭉 돌았고, "오래 재사용한 브라우저가 느려지는" 문제에 그대로 노출됐습니다.
-    안 켰던 이유는 재기동 한 번에 진행 중인 건을 통째로 버렸기 때문인데, **드레인이 생긴 지금은
-    그 대가가 1건 수준**입니다(실측 2026-08-20 resolve: 재기동 2회, 폐기 1건).
+    ⚠ 다만 이 값은 resolve 기준으로 정한 값이고, resolve는 브라우저 사용 11%인데 rescan은
+    76%라 재기동 한 번의 대가(브라우저 14개를 전부 다시 띄움)가 더 큽니다. 실측 없이 그대로
+    가져온 값이니, 재기동 빈도/폐기 건수를 보고 rescan 전용 값(예: 1800초)이 필요한지 확인할 것.
+  - **uc 패스 소유 물량 제외(2026-08-20)**: resolve가 네이버/오픈마켓을 만나면 브라우저 없이
+    `재검증 중 차단 — uc 패스 대상` 노트로 넘기는데, rescan은 `RESOLVE_UC`를 안 켜므로 같은
+    fast-skip에 또 걸려 **한 글자도 다르지 않은 노트**를 다시 씁니다(실측: 후보 풀의 18.3%,
+    처리 물량의 14.8%). 속도보다 정확성 문제였습니다 — 이 no-op이 백오프 시도 횟수를 태워서,
+    uc만 풀 수 있는 건이 rescan에서 헛시도로 **은퇴**해버렸습니다. 이제 이 노트는 rescan
+    대상에서 빠지고 `reverify_uc`가 전담합니다(`is_uc_owned`). 대상 −642건(−26%), done 비율
+    7.4%→22.7%로 상승(제외한 물량이 원래 done이 될 수 없던 것들이었으므로).
+  - **백오프 `1,2,4,7` → `1,2`로 축소(2026-08-20)**: 회차별 성과를 실측하니(이력 8,570건)
+    3회차부터 절벽이었습니다 — 1회 23.1% / 2회 12.1% / **3회 2.4%** / 4회 1.8%.
+    `backfill_period`에서 본 것과 같은 모양(1회 17.8%→2회 0.8%→3회 0.1%)이라 같은 결론을
+    적용했습니다. 유입이 구조적(공구 시작일 기준 하루 400~600건이 꾸준히 진행중 전환)이라
+    백오프 파이프라인이 다 차면 정상상태 대상이 하루 약 1,850건까지 늘어나는데, `[1,2]`면
+    약 1,210건(−35%)으로 줄어듭니다. 잃는 건 3·4회차 성과(시도 2,747건당 done 65건, 2.4%)뿐.
+    ⚠ backfill의 "소스가 안 바뀌면 재시도 안 함"과는 다릅니다 — 여기는 판매자가 링크를 늦게
+    올릴 수 있어 시간이 지나면 답이 실제로 바뀔 여지가 있고(그 여지가 위 2.4%), 완전히 0은
+    아닙니다. 더 보수적으로 가려면 `RESCAN_BACKOFF_DAYS=1,2,4`(4회)로.
   - Tier0/Tier1 분리(resolve에는 있고 여기엔 없음)는 아직 안 넣었습니다 — 브라우저 없이 끝나는
-    비율이 24%뿐이라 추정 이득이 20~25%로, 코드 변경 규모 대비 우선순위가 낮습니다. 위 두 설정만
-    먼저 재보고 결정하세요.
+    비율이 24%뿐이라 추정 이득이 20~25%로, 코드 변경 규모 대비 우선순위가 낮습니다. 위 설정
+    정합·소유권 정리·백오프 축소를 먼저 실측하고 결정하세요.
+  - **진단 추가(2026-08-20)**: resolve와 같은 `_print_resolution_diagnostics`를 붙여서, 이제
+    이 단계도 실행 끝에 경로 분해(브라우저 실사용 비율)와 허가증 유휴/대기가 찍힙니다. 그전엔
+    이 단계 튜닝이 전부 추정으로 갔었습니다.
 - **`RESCAN_UNKNOWN_STAGE_DAYS`(기본 0=끔) — 판단불가 교착 풀기(2026-08-19)**: 이 단계의 문은
   `gonggu_stage='진행중'`인데, 거기 못 들어오는 고리가 있습니다.
 
@@ -406,9 +434,20 @@ dev_gongguking DB
   `PERIOD_MAX_ATTEMPTS`회 넘으면 영구 스킵). 병합 전에는 인포크 쪽만 "한 번 못 찾으면 영구
   스킵"이라는 별도 정책이었는데, 이제 두 티어가 하나의 체크포인트·정책을 공유합니다.
 - **명령**: `python3 -m gonggu.backfill_period` (`LIMIT=20`으로 소규모 테스트,
-  `PERIOD_INPOCK_CONCURRENCY=40`으로 Tier0 동시성, `BACKFILL_PERIOD_CONCURRENCY=4`로 Tier1
-  동시성 조절 — 두 값이 별도인 이유는 resolve_links의 `RESOLVE_FAST_CONCURRENCY`/
-  `RESOLVE_CONCURRENCY` 구분과 같습니다: Tier0는 브라우저가 없어 훨씬 높게 잡을 수 있습니다)
+  `PERIOD_INPOCK_CONCURRENCY`로 Tier0 동시성(daily 기본값 **150**), `BACKFILL_PERIOD_CONCURRENCY`로
+  Tier1 동시성(daily 기본값 **14**) 조절 — 두 값이 별도인 이유는 resolve_links의
+  `RESOLVE_FAST_CONCURRENCY`/`RESOLVE_CONCURRENCY` 구분과 같습니다: Tier0는 브라우저가 없어
+  훨씬 높게 잡을 수 있습니다)
+  - **동시성 재조정(2026-08-20)**: 예전 값(Tier0 40 / Tier1 8)이 둘 다 너무 낮았습니다.
+    Tier0는 브라우저를 안 쓰는 순수 LLM 호출인데(`use_playwright=False`) 딥시크 동시 상한
+    (flash 2500)에 비하면 40은 한참 아래였습니다 — 같은 실행에서 재시작 전후로 실측:
+    **609건/분 → 1,566건/분(150으로, 2.6배)**, 그동안 크롬 0개·RAM 여유라 병목이 아니었습니다.
+    Tier1은 반대로 걸려 있었습니다 — 워커 8개가 `MAX_BROWSERS` 자동계산(10)도 못 채워서
+    (실측: 크롬 프로세스 33개 ≈ 브라우저 8~9개) 48건/분에 머물렀습니다. `MAX_BROWSERS=14`를
+    명시하고 워커를 resolve/rescan에서 검증된 비율(≈1.14×)로 14로 올렸습니다.
+    ⚠ 예전 경고("`BACKFILL_PERIOD_CONCURRENCY=40` 금지 — 크롬10 초과예약 churn으로 1037에서
+    멈춤")는 지금 처방과 다른 얘기입니다 — 그건 5배 초과예약(40/8)이었고, 지금은 resolve/rescan과
+    같은 소폭 초과예약(14/14, 자동계산이 아니라 명시값)입니다.
 - **알아둘 점**: 대상 자체가 상품 stage='판단불가'(그 상품의 시작일/종료일 둘 다 NULL)뿐이라
   이미 날짜가 있는 상품은 조회조차 안 돼 기존 값을 덮어쓸 여지가 구조적으로 없습니다.
   기간/스테이지가 상품 단위로 이전된 뒤(2026-08-06)로는 상품이 2개 이상인 게시물도
@@ -509,12 +548,60 @@ gonggu_video_product, gonggu_post, gonggu_post_product). 신규 설치용이며 
 
 ### 매일 돌리는 순서 (권장)
 
-**한 번에: `python3 -m gonggu.daily`** (2026-08-05 추가) — 아래 순서 전체를 한 명령으로
-실행합니다. 각 단계의 stdout은 콘솔과 `data/logs/daily_<시각>.log`에 같이 남고, stderr
-(Playwright 노이즈 등)는 로그 파일에만 남습니다. 단계가 실패하면 거기서 중단하고 stderr
-꼬리를 보여주므로, 문제 해결 후 `python3 -m gonggu.daily --from <단계>`로 이어서 실행하면
+**한 번에: `python3 -m gonggu.daily`** (2026-08-05 추가, 2026-08-20 뒷단까지 통합) — 아래 순서
+전체를 한 명령으로 실행합니다. 각 단계의 stdout은 콘솔과 `data/logs/daily_<시각>.log`에 같이
+남고, stderr(Playwright 노이즈 등)는 로그 파일에만 남습니다. 단계가 실패하면 거기서 중단하고
+stderr 꼬리를 보여주므로, 문제 해결 후 `python3 -m gonggu.daily --from <단계>`로 이어서 실행하면
 됩니다(`--only <단계>`로 한 단계만, `--list`로 순서 확인). 동시성 기본값(CONCURRENCY=200 등)은
 환경변수로 덮어쓸 수 있습니다. lockfile로 이중 실행도 막아줍니다.
+
+**2026-08-20 — 뒷단 보강 3단계가 daily 안으로 들어왔습니다.** 예전에는 daily가 끝난 뒤 이 4줄을
+손으로 쳤습니다:
+
+```bash
+python3 -m gonggu.sync_hifen_emails
+rm -rf ~/.gonggu_uc_profile
+python3 -m gonggu.enrich_detail.warmup_naver_uc
+LIMIT=100 UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=10 python3 -m gonggu.resolve_links.reverify_uc
+```
+
+이제 전부 `python3 -m gonggu.daily` 한 줄입니다. 순서는
+`… → backfill_period → sync_emails → uc_gate → reverify_uc → maintenance`
+(`maintenance`는 그날 쓴 파일을 정리하는 단계라 맨 뒤로 옮겼습니다).
+
+- **`rm -rf`가 사라졌습니다.** 예전에는 매일 uc 신뢰를 버리고 다시 쌓았는데 대부분의 날은
+  프로필이 멀쩡해서 낭비였습니다. **uc 게이트**(`gonggu/uc_gate.py`)가 먼저 비대화형으로
+  "지금 uc로 네이버가 뚫리는가"를 확인하고(`uc_healthcheck.probe` — 창이 잠깐 떴다 닫힙니다)
+  살아있으면 그대로 통과, 죽었을 때만 프로필을 초기화하고 워밍업을 띄웁니다.
+- **워밍업을 띄울지는 `sys.stdin.isatty()`로 정합니다.** cron/nohup으로 돌리면 stdin이 TTY가
+  아니라 입력이 영영 안 오므로 기다리지 않고 uc 단계(`reverify_uc`)만 건너뜁니다 — 나머지는 다
+  돕니다. TTY인데 사람이 자리를 비운 경우는 `UC_WARMUP_TIMEOUT_SEC`(기본 600초) 뒤 같은 처리.
+- **실패 정책이 단계별로 나뉩니다.** 본줄기(앞 10개)는 뒤 단계가 앞 결과에 의존하므로 예전처럼
+  즉시 중단합니다. 뒷단 보강 4개(`sync_emails`/`uc_gate`/`reverify_uc`/`maintenance`)는 서로
+  독립이라 실패해도 다음으로 넘어가고, 마지막 요약에 `✗`로 모아 보여줍니다.
+- **`--from`/`--only` 이름은 그대로입니다** — `--from resolve_links` 등 예전 명령이 그대로
+  동작하는 것을 테스트로 못박아 뒀습니다(`tests/test_daily_stages.py`).
+- **`--until <단계>`**(2026-08-20 추가, 그 단계까지 포함) — 하루를 두 번에 나눠 돌 때 씁니다.
+  긴 무인 단계를 오프피크에 먼저 돌려두고, 사람이 붙어야 하는 uc 구간은 자리에 있을 때:
+
+  ```bash
+  python3 -m gonggu.daily --from rescan_inprogress --until backfill_period   # 1차: 무인, 오프피크
+  UC_WARMUP_TIMEOUT_SEC=1800 python3 -m gonggu.daily --from sync_emails      # 2차: uc 게이트가 바로 뜸
+  ```
+
+  `--until`이 `--from`보다 앞이면 조용히 빈 목록을 돌려주는 대신 순서가 뒤집혔다고 알려줍니다.
+
+> ⚠ **`reverify_uc`는 큐를 비우는 단계가 아니라 매일 30분씩 갉는 단계입니다.** 2026-08-20 실측 —
+> 유입은 resolve 한 번당 하루 약 436건(`로그인월_차단` 69 + `재검증 중 차단` 367)인데, uc는
+> `uc_engine._lock`으로 **전역 직렬**이라 동시성을 올려도 페치는 한 번에 하나뿐이고 30분
+> 예산의 배수는 건당 15초 기준 120건, 30초 기준 60건, 75초(타임아웃) 기준 24건입니다. 즉 큐는
+> 계속 자랍니다(8/19 702건 → 8/20 2,301건). `UC_TIME_BUDGET_SEC=1800`의 역할은 큐 감축이 아니라
+> **안전밸브**입니다 — uc가 죽거나 느려도 데일리가 묶이는 최대치를 30분으로 못박습니다(uc는
+> 2026-08-12에 대량 무인 경로 반복 크래시로 데일리에서 뺐던 물건이고, 게이트는 쿠키 신뢰만
+> 책임지지 크래시 내성을 주지는 않습니다). 실행하면 **대상 / 예산 내 시도 / 큐 잔량+유입 추정**
+> 세 숫자를 같이 찍어주니 예산을 언제 늘릴지는 그걸 보고 판단하세요. 진짜 해법은 병렬화입니다 —
+> 상세수집이 이미 쓰는 `UC_PROFILE` 샤딩과 같은 패턴을 적용하면 프로필 N개로 N배가 나옵니다
+> (건당 실제 소요가 실측된 뒤에 검토).
 
 아래는 같은 순서의 단계별 수동 실행 목록 — "모듈 하나씩 뜯어보기" 1~9번을 이 순서 그대로,
 하루에 한 번 실행하면 됩니다. 6번이
@@ -536,12 +623,16 @@ RESOLVE_CONCURRENCY=16 python3 -m gonggu.resolve_links          # 4. 링크 해�
 python3 -m gonggu.load                                         # 5. DB 적재
 RESCAN_CONCURRENCY=40 python3 -m gonggu.rescan_inprogress     # 7. 진행중인데 못 찾은 링크 재탐색
 PERIOD_INPOCK_CONCURRENCY=40 python3 -m gonggu.backfill_period   # 9. 공구기간 백필(인포크 우선 Tier0 → 몰 크롤 Tier1)
-python3 -m gonggu.maintenance                                # 10. 하우스키핑(컴팩션/로테이션)
+python3 -m gonggu.sync_hifen_emails                          # 11. 크리에이터 이메일 → hifen DB
+python3 -m gonggu.uc_healthcheck                             # 12. uc 신뢰 점검(daily는 여기서 필요하면 워밍업까지)
+UC_LOGIN_WAIT=0 python3 -m gonggu.resolve_links.reverify_uc  # 13. 차단 계열 unresolved를 uc로 재시도
+python3 -m gonggu.maintenance                                # 19. 하우스키핑(컴팩션/로테이션)
 ```
 
-> **`daily`는 네이버/오픈마켓을 uc로 뚫지 않습니다**(2026-08-12) — 안정적인 Playwright로만 돌리고,
-> 로그인월/봇확인으로 막힌 것은 사람이 곁에서 돌리는 별도 uc 구제 패스로 따로 처리합니다(아래
-> "네이버/오픈마켓 uc 구제 패스" 참고).
+> **`daily`의 본줄기(4·7번)는 네이버/오픈마켓을 uc로 뚫지 않습니다**(2026-08-12) — 대량 무인
+> 경로에서 uc가 반복 크래시를 내서 뺐고, 안정적인 Playwright로만 돌립니다. 로그인월/봇확인으로
+> 막힌 것은 그 뒤 `reverify_uc` 단계가 uc로 따로 구제합니다(2026-08-20부터 daily 안, 시간 예산
+> 30분 · 실패해도 계속 · 게이트 미통과 시 자동 스킵 — 위 통합 설명 참고).
 
 **한 단계가 끝나야 다음 단계로 넘어갑니다** — 각 스크립트는 그 시점 데이터 전체를 처리하고
 끝나므로, 순서대로 하나씩 실행하세요. `CONCURRENCY`/`RESOLVE_CONCURRENCY` 숫자는 본인 컴퓨터
@@ -549,20 +640,30 @@ python3 -m gonggu.maintenance                                # 10. 하우스키�
 뜯어보기"의 4번 항목 참고). **같은 단계를 두 터미널에서 동시에 실행하지 마세요** — classify.py/
 resolve_links/load.py 모두 동시 실행 시 문제가 생긴 전례가 있습니다.
 
-### 네이버/오픈마켓 uc 구제 패스 (데일리와 별도, 수동)
+### 네이버/오픈마켓 uc 구제 패스 (2026-08-20부터 daily 안, 손으로도 실행 가능)
 
-데일리(4·7번)는 안정적인 **Playwright**로만 돌립니다 — 네이버 스마트스토어/블로그·G마켓·옥션·
-오하우스·11번가 등은 로그인월/봇확인으로 `unresolved`(note에 "로그인월_차단")로 남는데, 이건
-데일리가 끝난 뒤 **사람이 곁에 있을 때** `undetected_chromedriver`(uc) 패스로 따로 구제합니다.
-uc는 실제 크롬 창 하나를 직렬로 쓰는 무거운 방식이라(2026-08-12에 대량 무인 경로에서 반복
-크래시가 확인돼 데일리에서 뺐습니다) 저동시성 수동 실행에만 씁니다 — **데일리(resolve/rescan)와
-절대 동시에 돌리지 마세요.**
+데일리의 링크 해석(4·7번)은 안정적인 **Playwright**로만 돌립니다 — 네이버 스마트스토어/블로그·
+G마켓·옥션·오하우스·11번가 등은 로그인월/봇확인으로 `unresolved`(note에 "로그인월_차단")로
+남는데, 이건 그 뒤 `undetected_chromedriver`(uc) 패스로 따로 구제합니다. uc는 실제 크롬 창
+하나를 직렬로 쓰는 무거운 방식이라(2026-08-12에 대량 무인 경로에서 반복 크래시가 확인돼 본
+resolve/rescan에서는 뺐습니다) 저동시성 + 시간 예산으로만 씁니다 — **resolve/rescan과 절대
+동시에 돌리지 마세요**(daily 안에서는 순차 실행이라 자동으로 지켜집니다).
+
+`python3 -m gonggu.daily`가 `uc_gate` → `reverify_uc` 순서로 이걸 알아서 합니다. 손으로 돌리는
+경우:
 
 ```bash
-python3 -m gonggu.enrich_detail.warmup_naver_uc                                     # 1회 워밍업 — 뜨는 크롬 창에서 로그인/보안확인을 직접 통과(쿠키가 프로필에 남음)
-UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=6 python3 -m gonggu.resolve_links.reverify_uc  # 차단 계열 unresolved를 uc로 재시도
+python3 -m gonggu.uc_healthcheck                                                    # 지금 뚫리는지 비대화형 점검(항상 exit 0)
+python3 -m gonggu.enrich_detail.warmup_naver_uc                                     # 신뢰가 죽었을 때만 — 뜨는 크롬 창에서 로그인/보안확인을 직접 통과(쿠키가 프로필에 남음)
+UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=6 python3 -m gonggu.resolve_links.reverify_uc  # 차단 계열 unresolved를 uc로 재시도(예산 없이 큐 전체)
+UC_TIME_BUDGET_SEC=1800 UC_LOGIN_WAIT=0 python3 -m gonggu.resolve_links.reverify_uc # 30분만(daily가 쓰는 방식)
 LIMIT=100 UC_LOGIN_WAIT=0 REVERIFY_CONCURRENCY=6 python3 -m gonggu.resolve_links.reverify_uc  # 100건씩 나눠서
 ```
+
+`UC_TIME_BUDGET_SEC`의 기본값은 0(예산 없음)이라 손으로 돌리는 위 명령들의 동작은 예전 그대로
+입니다 — daily만 1800을 넘깁니다. 예산을 넘기면 남은 건은 **시도하지 않고**(따라서 은퇴
+카운트도 안 올라갑니다) 정상 종료하고 다음 실행이 이어받습니다. 큐가 왜 안 줄어드는지는 위
+"매일 돌리는 순서"의 유입/배수 설명을 보세요.
 
 - **대상 선정(2026-08-19 확대)** — 예전엔 note에 `재검증 중 차단`이 있는 건만 골랐는데, 그건 fast
   resolve가 브라우저를 아예 생략하고 넘긴 소수(실측 4건)뿐이었고 정작 uc가 뚫으라고 만들어진
