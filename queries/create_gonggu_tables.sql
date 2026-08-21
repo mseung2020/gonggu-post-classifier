@@ -51,6 +51,7 @@
 --   9. add_detail_blocked_status.sql       (detail_status ENUM에 gone/blocked 추가)
 --  10. add_description.sql                 (부모에 원문 캡션 description)
 --  11. add_creator_names.sql               (부모에 username / channel_name)
+--  12. change_period_to_datetime.sql       (상품 기간 DATE -> DATETIME + 종료일 23:59:59 보정)
 --
 -- 이 순서를 여기에 적어두지 않았던 탓에 3번(link_status/external_url)이 오랫동안 어떤 SQL
 -- 파일에도 기록되지 않은 채 운영 DB에만 존재했다. 앞으로 컬럼을 추가할 때는 (a) 마이그레이션

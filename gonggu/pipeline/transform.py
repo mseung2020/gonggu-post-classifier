@@ -44,23 +44,86 @@ def _today_iso():
     return os.environ.get('GONGGU_TODAY') or datetime.date.today().isoformat()
 
 
-def _compute_stage(start, end):
-    """gonggu_start_date/end_date(구조화된 날짜)를 오늘 날짜와 직접 비교해서 계산한다.
-    ⚠ LLM#1이 캡션 문구만 보고 주는 gonggu_stage(예고/진행중/마감)는 "포스트 작성 시점의
-    오늘"을 기준으로 판단한 힌트라 실제 지금 날짜와 어긋날 수 있어(다이파이 프롬프트에도
-    이 경고가 있음) 여기서는 안 쓰고, 날짜 자체를 비교해서 결정론적으로 계산한다."""
-    today = _today_iso()
-    if start and start > today:
-        return '시작전'
-    if end and end < today:
-        return '종료'
-    if start or end:
-        return '진행중'
-    return '판단불가'
+def _now_iso():
+    """'지금'의 단일 정의 — 'YYYY-MM-DD HH:MM:SS' 문자열(2026-08-21, 기간 DATETIME 확장).
+
+    기간이 DATE에서 DATETIME으로 넓어지면서 stage 판정 기준도 "오늘(날짜)"이 아니라 "지금
+    (시각)"이어야 한다. 예: 오늘 20시에 시작하는 공구는 19시에 계산하면 '시작전', 21시에 다시
+    계산하면 '진행중'이어야 한다 — 날짜 단위로 뭉개면 하루 종일 진행중으로 보인다. 그래서
+    update_gonggu_stage를 자주 돌릴수록 갭이 촘촘히 메워진다.
+
+    결정론 훅은 두 개다:
+      · GONGGU_NOW  ('YYYY-MM-DD HH:MM:SS') — 시각까지 고정. 새 테스트가 쓴다.
+      · GONGGU_TODAY('YYYY-MM-DD')          — 날짜만 고정. 기존 골든/테스트가 쓰던 훅이며 그
+        날짜의 00:00:00으로 해석한다. 이 폴백이 있어야 기존 테스트가 그대로 통과하고, 골든
+        diff에도 "기간 값의 형식이 넓어진 것"만 남는다."""
+    now = os.environ.get('GONGGU_NOW')
+    if now:
+        return _norm_dt_str(now) or now
+    today = os.environ.get('GONGGU_TODAY')
+    if today:
+        return f'{today} 00:00:00'
+    return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _norm_dt_str(s):
+    """'YYYY-MM-DD[ (T)HH:MM[:SS]]' -> 'YYYY-MM-DD HH:MM:SS'. 날짜가 안 읽히면 None.
+    시각이 없으면 날짜 10자만 돌려준다(기본 시각은 _valid_dt가 결정).
+
+    구분자 'T'도 받아 공백으로 통일한다 — 이 값들은 datetime 객체로 파싱하지 않고 **문자열
+    그대로 사전식 비교**하므로(그래야 비교 로직이 DATE 시절과 동일하게 유지된다) 'T'(0x54)와
+    ' '(0x20)가 섞이면 비교가 조용히 뒤집힌다. pymysql이 준 DATETIME에 .isoformat()을 쓰면
+    'T'가 나오므로 실제로 발생할 수 있는 사고다."""
+    if not s:
+        return None
+    s = str(s).strip().replace('T', ' ')
+    date_part, _, time_part = s.partition(' ')
+    try:
+        y, m, d = map(int, date_part.split('-'))
+        assert 1 <= m <= 12 and 1 <= d <= 31 and 1000 <= y <= 9999
+    except Exception:
+        return None
+    date_part = f'{y:04d}-{m:02d}-{d:02d}'
+    time_part = time_part.strip()
+    if not time_part:
+        return date_part
+    bits = time_part.split(':')
+    try:
+        hh, mm = int(bits[0]), int(bits[1])
+        ss = int(bits[2]) if len(bits) > 2 else 0
+        assert 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59
+    except Exception:
+        return date_part          # 시각이 깨졌으면 날짜만 신뢰(추측 금지)
+    return f'{date_part} {hh:02d}:{mm:02d}:{ss:02d}'
+
+
+def _valid_dt(s, *, is_end=False):
+    """기간 값을 'YYYY-MM-DD HH:MM:SS'로 정규화한다(2026-08-21). 날짜가 없으면 None.
+
+    ⚠ 시작/종료의 기본값이 **비대칭**이다:
+      · 시작에 시각 힌트 없음 -> 00:00:00
+      · 종료에 시각 힌트 없음 -> 23:59:59 — 그날 자정에 끝나는 게 아니라 그날 "끝까지"
+        진행되는 것이므로. 00:00:00으로 두면 "오늘 마감" 공구가 그날 0시 1초부터 종료로
+        뒤집힌다(queries/change_period_to_datetime.sql의 같은 규칙과 반드시 일치시킬 것).
+      · 시각만 있고 날짜가 없으면 통째로 None — 날짜를 추측해서 채우지 않는다.
+
+    이미 정규화된 값을 다시 넣어도 결과가 같다(멱등) — 그래서 _compute_stage가 입력을 무조건
+    한 번 통과시켜도 안전하다."""
+    norm = _norm_dt_str(s)
+    if not norm:
+        return None
+    if len(norm) == 10:           # 날짜만 — 시작/종료에 맞는 기본 시각을 붙인다
+        return f'{norm} 23:59:59' if is_end else f'{norm} 00:00:00'
+    return norm
 
 
 def _valid_date(s):
-    """YYYY-MM-DD 형식만 신뢰. LLM이 null/이상한 값을 주면 None."""
+    """YYYY-MM-DD 형식만 신뢰. LLM이 null/이상한 값을 주면 None.
+
+    ⚠ 기간 컬럼은 2026-08-21부터 DATETIME이라 파이프라인 본류는 _valid_dt를 쓴다. 이 함수는
+    "날짜만" 계약이 필요한 곳(scripts/_migrate_multiproduct_periods.py 같은 옛 일회성
+    스크립트와 그 테스트)을 위해 **의미를 바꾸지 않고** 남겨둔다 — 여기에 시각 처리를
+    끼워넣으면 그쪽 산출물이 조용히 달라진다."""
     if not s:
         return None
     s = str(s)[:10]
@@ -72,6 +135,30 @@ def _valid_date(s):
         return None
 
 
+def _compute_stage(start, end):
+    """기간(시작/종료 시각)을 **지금 시각**과 비교해서 상품의 진행 단계를 계산한다.
+
+    ⚠ LLM#1이 캡션 문구만 보고 주는 gonggu_stage(예고/진행중/마감)는 "포스트 작성 시점의
+    오늘"을 기준으로 판단한 힌트라 실제 지금과 어긋날 수 있어(프롬프트에도 이 경고가 있음)
+    여기서는 안 쓰고, 기간 값 자체를 비교해서 결정론적으로 계산한다.
+
+    입력을 _valid_dt로 한 번 정규화하는 이유: 이 함수는 (a) transform이 만든 정규화된 값,
+    (b) DB에서 읽어온 DATETIME의 문자열, (c) 날짜만 있는 옛 값/테스트 입력을 모두 받는다.
+    한 곳에서 정규화하면 종료의 23:59:59 규칙이 호출자마다 흩어지지 않는다.
+    문자열 사전식 비교를 유지하는 것도 의도다 — 형식이 'YYYY-MM-DD HH:MM:SS'로 고정이면
+    사전식 순서와 시간 순서가 일치하므로 datetime 파싱 없이 DATE 시절 로직을 그대로 쓴다."""
+    now = _now_iso()
+    start = _valid_dt(start)
+    end = _valid_dt(end, is_end=True)
+    if start and start > now:
+        return '시작전'
+    if end and end < now:
+        return '종료'
+    if start or end:
+        return '진행중'
+    return '판단불가'
+
+
 def _product_row(p, sort_order, fallback_start=None, fallback_end=None):
     loc = p.get('link_location')
     if loc not in VALID_LINK_LOCATIONS:
@@ -80,8 +167,10 @@ def _product_row(p, sort_order, fallback_start=None, fallback_end=None):
     # 공구기간/스테이지는 상품(product) 단위로 이전됨(대공사 2026-08-06). 상품별 기간(신 스키마)을
     # 우선 읽고, 없으면 포스트 전체 기간(구 스키마 classification.period_*)을 폴백으로 각 상품에
     # 적용한다 — 단일상품은 정확하고, 기존 02_classified를 --full로 재계산할 때도 호환된다.
-    start = _valid_date(p.get('period_start')) or fallback_start
-    end = _valid_date(p.get('period_end')) or fallback_end
+    # 기간은 DATETIME이다(2026-08-21) — 종료는 시각 힌트가 없을 때 23:59:59가 붙으므로
+    # is_end=True를 반드시 넘겨야 한다(_valid_dt의 비대칭 기본값 주석 참고).
+    start = _valid_dt(p.get('period_start')) or fallback_start
+    end = _valid_dt(p.get('period_end'), is_end=True) or fallback_end
     return {
         'product_name': (p.get('name') or '').strip()[:300],
         'link_location': loc,
@@ -112,8 +201,8 @@ def transform_one(post):
         return None, None, '제휴 광고성 다중 링크(TOP N 리뷰)'
 
     # 상품별 기간(신 스키마) 우선, 포스트 전체 기간(구 스키마)은 폴백으로 각 상품에 적용.
-    fb_start = _valid_date(lc.get('period_start'))
-    fb_end = _valid_date(lc.get('period_end'))
+    fb_start = _valid_dt(lc.get('period_start'))
+    fb_end = _valid_dt(lc.get('period_end'), is_end=True)
     product_rows = [_product_row(p, i, fb_start, fb_end) for i, p in enumerate(raw_products)]
 
     # 기간/스테이지는 parent가 아니라 product에 있다(완전 이전). parent에는 이 게시물이 여러

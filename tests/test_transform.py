@@ -1,7 +1,8 @@
 """transform.py 순수 함수 단위 테스트 — 게이트 규칙의 경계 사례들을 박제한다."""
 import pytest
 
-from gonggu.transform import _compute_stage, _product_row, _valid_date, transform_one
+from gonggu.transform import (_compute_stage, _norm_dt_str, _now_iso, _product_row,
+                              _valid_date, _valid_dt, transform_one)
 
 
 @pytest.fixture(autouse=True)
@@ -108,8 +109,9 @@ class TestTransformOneGates:
         assert parent['is_calendar_feed'] == 0
         assert 'gonggu_stage' not in parent          # parent엔 더 이상 기간/스테이지 없음
         assert products[0]['gonggu_stage'] == '진행중'
-        assert products[0]['gonggu_start_date'] == '2026-08-01'
-        assert products[0]['gonggu_end_date'] == '2026-08-07'
+        # 기간은 DATETIME이다(2026-08-21) — 시각 힌트가 없으면 시작 00:00:00 / 종료 23:59:59.
+        assert products[0]['gonggu_start_date'] == '2026-08-01 00:00:00'
+        assert products[0]['gonggu_end_date'] == '2026-08-07 23:59:59'
         assert products[0]['candidate_url'] == 'https://litt.ly/x'
 
     def test_calendar_feed_products_have_own_periods(self):
@@ -122,8 +124,8 @@ class TestTransformOneGates:
         parent, products, reject = transform_one(post)
         assert reject is None
         assert parent['is_calendar_feed'] == 1
-        assert products[0]['gonggu_end_date'] == '2026-08-15'
-        assert products[1]['gonggu_start_date'] == '2026-08-04'
+        assert products[0]['gonggu_end_date'] == '2026-08-15 23:59:59'
+        assert products[1]['gonggu_start_date'] == '2026-08-04 00:00:00'
         assert products[0]['gonggu_stage'] == '진행중' and products[1]['gonggu_stage'] == '진행중'
 
     def test_caption_raw_becomes_parent_description(self):
@@ -149,7 +151,7 @@ class TestTransformOneGates:
 
     def test_description_none_when_caption_raw_missing(self):
         """caption_raw 도입 전에 만들어진 옛 02 레코드 — 키가 없어도 죽지 않고 None으로 두고,
-        소급은 gonggu/tools/_backfill_description.py가 hifen에서 다시 읽어 채운다."""
+        소급은 gonggu/tools/_backfill_parent_fields.py가 hifen에서 다시 읽어 채운다."""
         post = self._post(is_gonggu=True,
                           products=[{'name': '냄비', 'link_location': '설명_직접링크', 'urls': []}])
         assert 'caption_raw' not in post
@@ -188,5 +190,95 @@ class TestTransformOneGates:
                                      'url_type': '없음', 'urls': []}])
         _, products, reject = transform_one(post)
         assert reject is None
-        assert products[0]['gonggu_start_date'] == '2026-08-01'
+        assert products[0]['gonggu_start_date'] == '2026-08-01 00:00:00'
         assert products[0]['gonggu_stage'] == '진행중'
+
+
+class TestValidDt:
+    """기간 DATETIME 확장(2026-08-21). 핵심은 시작/종료 기본값이 비대칭이라는 것."""
+
+    def test_date_only_start_is_midnight(self):
+        assert _valid_dt('2026-08-01') == '2026-08-01 00:00:00'
+
+    def test_date_only_end_is_end_of_day(self):
+        """종료는 23:59:59 — 그날 자정에 끝나는 게 아니라 그날 끝까지 진행되는 것이므로."""
+        assert _valid_dt('2026-08-01', is_end=True) == '2026-08-01 23:59:59'
+
+    def test_explicit_time_kept_on_both_sides(self):
+        assert _valid_dt('2026-08-01 20:00') == '2026-08-01 20:00:00'
+        assert _valid_dt('2026-08-01 23:00', is_end=True) == '2026-08-01 23:00:00'
+
+    def test_explicit_midnight_end_not_overridden(self):
+        """'자정 마감'이 실제 힌트로 들어온 경우엔 23:59:59로 바꾸지 않는다."""
+        assert _valid_dt('2026-08-01 00:00:00', is_end=True) == '2026-08-01 00:00:00'
+
+    def test_idempotent(self):
+        once = _valid_dt('2026-08-01', is_end=True)
+        assert _valid_dt(once, is_end=True) == once
+        assert _valid_dt(_valid_dt('2026-08-01')) == '2026-08-01 00:00:00'
+
+    def test_t_separator_normalized_to_space(self):
+        """pymysql datetime의 .isoformat()이 내는 'T'를 공백으로 통일 — 안 하면 사전식 비교가
+        뒤집힌다('T'=0x54 > ' '=0x20)."""
+        assert _valid_dt('2026-08-01T20:00:00') == '2026-08-01 20:00:00'
+
+    def test_time_without_date_is_none(self):
+        """시각만 있고 날짜가 없으면 통째로 NULL — 날짜를 추측해서 채우지 않는다."""
+        assert _valid_dt('20:00') is None
+        assert _valid_dt('20:00', is_end=True) is None
+
+    def test_garbage_and_null(self):
+        assert _valid_dt(None) is None and _valid_dt('') is None
+        assert _valid_dt('미정') is None
+        assert _valid_dt('2026-13-01') is None
+
+    def test_broken_time_falls_back_to_date_default(self):
+        """시각 부분이 깨졌으면 날짜만 신뢰하고 기본 시각을 붙인다(추측 금지)."""
+        assert _valid_dt('2026-08-01 99:99', is_end=True) == '2026-08-01 23:59:59'
+
+    def test_valid_date_legacy_contract_unchanged(self):
+        """옛 일회성 스크립트(scripts/_migrate_multiproduct_periods)가 쓰는 계약은 그대로."""
+        assert _valid_date('2026-08-01 20:00:00') == '2026-08-01'
+        assert _valid_date('2026-08-01') == '2026-08-01'
+
+
+class TestComputeStageTimeAware:
+    """stage 판정이 '오늘(날짜)'이 아니라 '지금(시각)' 기준이어야 한다 — 저장 정밀도만 올리는 게
+    아니라 판정 로직 자체가 바뀐 부분."""
+
+    def test_same_day_start_flips_at_the_hour(self, monkeypatch):
+        """오늘 20시 오픈 공구: 19시엔 '시작전', 21시엔 '진행중'. 날짜 단위로 뭉개면 안 된다."""
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-05 19:00:00')
+        assert _compute_stage('2026-08-05 20:00', None) == '시작전'
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-05 21:00:00')
+        assert _compute_stage('2026-08-05 20:00', None) == '진행중'
+
+    def test_same_day_end_flips_at_the_hour(self, monkeypatch):
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-05 22:00:00')
+        assert _compute_stage(None, '2026-08-05 23:00') == '진행중'
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-05 23:30:00')
+        assert _compute_stage(None, '2026-08-05 23:00') == '종료'
+
+    def test_date_only_end_survives_the_whole_day(self, monkeypatch):
+        """시각 힌트 없는 종료일은 그날 23:59:59까지 진행중 — 00:00:00이면 그날 내내 종료로
+        뒤집혔을 것이다(이 자산이 change_period_to_datetime.sql의 보정 UPDATE와 짝이다)."""
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-05 23:59:58')
+        assert _compute_stage(None, '2026-08-05') == '진행중'
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-06 00:00:00')
+        assert _compute_stage(None, '2026-08-05') == '종료'
+
+    def test_gonggu_today_hook_still_means_midnight(self, monkeypatch):
+        """옛 결정론 훅(GONGGU_TODAY)은 그 날짜의 00:00:00으로 해석 — 골든/기존 테스트 호환."""
+        monkeypatch.delenv('GONGGU_NOW', raising=False)
+        monkeypatch.setenv('GONGGU_TODAY', '2026-08-05')
+        assert _now_iso() == '2026-08-05 00:00:00'
+
+    def test_db_style_t_separator_input(self, monkeypatch):
+        """DB에서 'T' 구분자로 직렬화된 값이 흘러와도 판정이 뒤집히지 않는다."""
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-05 21:00:00')
+        assert _compute_stage('2026-08-05T20:00:00', None) == '진행중'
+        assert _norm_dt_str('2026-08-05T20:00:00') == '2026-08-05 20:00:00'

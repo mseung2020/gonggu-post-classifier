@@ -114,7 +114,7 @@ python3 -m gonggu.daily --from load --until load        # (= --only load)
 # 2026-08-18부터 고정 루틴 — fast는 항상 단일실행, uc는 항상 3단계 분리(크롤링→LLM→DB).
 
 # (15) fast 자사몰 대량 처리 — 동시성 기본 4, 올려도 ≤10 (브라우저 상한 10, 100 절대 금지)
-DETAIL_CONCURRENCY=10 python3 -m gonggu.enrich_detail
+DETAIL_CONCURRENCY=30 python3 -m gonggu.enrich_detail
 
 # (16) uc 워밍업 — ⚠ 신뢰가 깨졌을 때만. daily가 방금 끝났으면 12(uc_gate)가 이미 확인/갱신해
 #      뒀으니 보통 생략한다. 확인만 하려면: python3 -m gonggu.uc_healthcheck (비대화형)
@@ -123,7 +123,7 @@ python3 -m gonggu.enrich_detail.warmup_naver_uc          # 신뢰가 깨졌을 �
 
 # (17) uc 크롤링만 — 3단계 분리 1단계. 크롤링 결과(detail_crawled*.jsonl)는 LLM 결과와 별도
 #      파일로 영구 보존 — 나중에 프롬프트 고쳐 LLM만 다시 돌려도(FORCE_RELLM=1) 재크롤링 불필요.
-UC_LOGIN_WAIT=0 DETAIL_MODE=uc python3 -m gonggu.enrich_detail.crawl_stage
+UC_LOGIN_WAIT=0 DETAIL_MODE=uc UC_SHARD_COUNT=3 python3 -m gonggu.enrich_detail.crawl_stage
 
 # (18) LLM만 — 브라우저와 무관, 고동시성(기본 60)으로 크롤링 결과를 몰아서 처리
 LLM_STAGE_CONCURRENCY=60 python3 -m gonggu.enrich_detail.llm_stage

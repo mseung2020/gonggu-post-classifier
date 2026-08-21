@@ -76,3 +76,47 @@ class TestNullStageNormalization:
     def test_null_dates_normalize_to_undetermined(self):
         """NULL stage + 날짜 없음 → '판단불가'. 이 값이 backfill_period의 입구다."""
         assert stage_with_forced_end(None, None) == ('판단불가', False)
+
+
+class TestTimeAwareStage:
+    """기간 DATETIME 확장(2026-08-21) — 이 스크립트를 "실제로 돌리는 시각" 기준으로 판정한다.
+    하루 한 번이 아니라 자주 돌릴수록 갭이 촘촘히 메워지는 것이 취지."""
+
+    def test_same_day_open_flips_between_runs(self, monkeypatch):
+        """오늘 20시 오픈 공구: 19시 실행 '시작전' -> 21시 실행 '진행중'."""
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-16 19:00:00')
+        assert stage_with_forced_end('2026-08-16 20:00:00', None) == ('시작전', False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-16 21:00:00')
+        assert stage_with_forced_end('2026-08-16 20:00:00', None) == ('진행중', False)
+
+    def test_forced_end_counts_whole_days_only(self, monkeypatch):
+        """강제 종료는 어림짐작 규칙이라 날짜 단위로 센다 — 같은 날 안에서 시각이 달라도
+        경과 일수는 같아야 한다(DATE 시절과 동일한 결과)."""
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        for now in ('2026-08-16 00:00:01', '2026-08-16 23:59:59'):
+            monkeypatch.setenv('GONGGU_NOW', now)
+            assert stage_with_forced_end('2026-08-06 09:00:00', None) == ('종료', True)
+            assert stage_with_forced_end('2026-08-07 09:00:00', None) == ('진행중', False)
+
+    def test_end_of_day_default_not_forced_to_midnight(self, monkeypatch):
+        """시각 힌트 없는 종료일은 그날 끝까지 진행중 — 그날 23시에 돌려도 종료가 아니다."""
+        monkeypatch.delenv('GONGGU_TODAY', raising=False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-16 23:00:00')
+        assert stage_with_forced_end('2026-08-10', '2026-08-16') == ('진행중', False)
+        monkeypatch.setenv('GONGGU_NOW', '2026-08-17 00:00:00')
+        assert stage_with_forced_end('2026-08-10', '2026-08-16') == ('종료', False)
+
+
+class TestDbDatetimeSerialization:
+    """DB에서 읽은 DATETIME을 문자열로 만들 때 'T' 구분자가 새면 사전식 비교가 뒤집힌다."""
+
+    def test_fmt_dt_uses_space_separator(self):
+        import datetime as dt
+        assert us._fmt_dt(dt.datetime(2026, 8, 1, 20, 0, 0)) == '2026-08-01 20:00:00'
+        assert 'T' not in us._fmt_dt(dt.datetime(2026, 8, 1, 20, 0, 0))
+
+    def test_fmt_dt_keeps_legacy_date_and_none(self):
+        import datetime as dt
+        assert us._fmt_dt(dt.date(2026, 8, 1)) == '2026-08-01'   # DATETIME 확장 전 데이터
+        assert us._fmt_dt(None) is None

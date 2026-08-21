@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""gonggu_post_product/gonggu_video_product의 gonggu_start_date/gonggu_end_date를 오늘 날짜와
+"""gonggu_post_product/gonggu_video_product의 gonggu_start_date/gonggu_end_date를 **지금 시각**과
 비교해서 상품별 gonggu_stage를 갱신한다(기간/스테이지 상품 이전, 2026-08-06). LLM 재호출 없이
-순수 날짜 비교 + UPDATE만 하는 정적 배치라, 서비스처럼 계속 도는 게 아니라 필요할 때
+순수 비교 + UPDATE만 하는 정적 배치라, 서비스처럼 계속 도는 게 아니라 필요할 때
 (매일 퀘스트의 첫 단계) 실행하고 끝나면 된다.
+
+기간이 DATETIME으로 확장되면서(2026-08-21) 판정 기준이 "오늘(날짜)"에서 "이 스크립트를 실제로
+돌리는 시각"으로 바뀌었다. 그래서 하루 한 번이 아니라 더 자주 돌릴수록 갭이 촘촘히 메워진다 —
+예: "오늘 20시 오픈" 공구는 19시 실행에선 '시작전', 21시 실행에서 '진행중'으로 넘어간다.
 
 '종료'는 다시 열릴 일이 없는 종결 상태라 조회 대상에서 아예 제외한다. 날짜 비교 로직은
 transform.py의 _compute_stage를 그대로 재사용해서 적재 시점 계산과 어긋나지 않게 한다.
@@ -30,11 +34,24 @@ import os
 
 from gonggu.common import connect_dst
 from gonggu.platforms import PLATFORMS
-from gonggu.transform import _compute_stage, _today_iso
+from gonggu.transform import _compute_stage, _now_iso
 
 # 기간/스테이지가 상품 단위로 이전됨 — 상품 테이블을 본다. PK는 두 테이블 모두 `id`.
 TABLES = [p.product_table for p in PLATFORMS.values()]
 FORCE_END_AFTER_DAYS = int(os.environ.get('FORCE_END_AFTER_DAYS', '10'))
+
+
+def _fmt_dt(v):
+    """DB가 준 DATE/DATETIME을 'YYYY-MM-DD HH:MM:SS'(또는 날짜만)로 직렬화한다.
+    DATETIME 확장 전(DATE) 데이터나 이미 문자열인 값도 그대로 받아 넘긴다 — 최종 정규화는
+    transform._valid_dt가 하므로 여기서는 구분자만 확실히 공백으로 맞춘다."""
+    if not v:
+        return None
+    if isinstance(v, datetime.datetime):
+        return v.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(v, datetime.date):
+        return v.isoformat()
+    return str(v)
 
 
 def stage_with_forced_end(start, end):
@@ -44,7 +61,10 @@ def stage_with_forced_end(start, end):
     (미래 시작일)도 대상이 아니다."""
     stage = _compute_stage(start, end)
     if FORCE_END_AFTER_DAYS > 0 and stage == '진행중' and start and not end:
-        today = datetime.date.fromisoformat(_today_iso())
+        # 경과 일수는 **날짜 단위**로 센다 — 기간이 DATETIME이 되었지만(2026-08-21) 이 규칙은
+        # "시작 후 N일쯤 지났으면 사실상 끝났다고 본다"는 어림짐작이라 초 단위 정밀도가
+        # 의미가 없다. 날짜만 잘라 비교하면 DATE 시절과 결과가 정확히 같다(회귀 없음).
+        today = datetime.date.fromisoformat(_now_iso()[:10])
         started = datetime.date.fromisoformat(str(start)[:10])
         if (today - started).days >= FORCE_END_AFTER_DAYS:
             return '종료', True
@@ -83,8 +103,12 @@ def _update_table(conn, table):
     forced = 0
     with conn.cursor() as cur:
         for r in rows:
-            start = r['gonggu_start_date'].isoformat() if r['gonggu_start_date'] else None
-            end = r['gonggu_end_date'].isoformat() if r['gonggu_end_date'] else None
+            # ⚠ .isoformat()을 쓰지 않는다 — 컬럼이 DATETIME이 된 뒤(2026-08-21) pymysql은
+            # datetime 객체를 주고 그 .isoformat()은 'T' 구분자('2026-08-01T20:00:00')를 낸다.
+            # _compute_stage는 문자열을 사전식으로 비교하므로 'T'(0x54)가 섞이면 공백(0x20)
+            # 기준 값들과의 비교가 조용히 뒤집힌다. 항상 공백 구분자로 직렬화한다.
+            start = _fmt_dt(r['gonggu_start_date'])
+            end = _fmt_dt(r['gonggu_end_date'])
             new_stage, was_forced = stage_with_forced_end(start, end)
             if new_stage != r['gonggu_stage']:
                 cur.execute(f'UPDATE {table} SET gonggu_stage = %s WHERE id = %s',

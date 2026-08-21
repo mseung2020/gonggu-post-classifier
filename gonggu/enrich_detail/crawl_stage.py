@@ -13,11 +13,22 @@ jsonl에는 성공(크롤링 완료)한 건만 남긴다.
     DETAIL_MODE=uc python3 -m gonggu.enrich_detail.crawl_stage   # uc 모드
     LIMIT=10 python3 -m gonggu.enrich_detail.crawl_stage
     SHARD_COUNT=5 SHARD_INDEX=0 UC_PROFILE=... python3 -m gonggu.enrich_detail.crawl_stage
-        (runner.py와 동일한 SHARD_COUNT/SHARD_INDEX/DETAIL_SKIP_HOSTS 지원 — 출력 파일도
+        (수동으로 터미널을 직접 여러 개 열어 각자 SHARD_INDEX를 다르게 줄 때. 출력 파일도
          샤드별로 나뉜다: detail_crawled_shard{N}.jsonl)
+    DETAIL_MODE=uc UC_SHARD_COUNT=3 python3 -m gonggu.enrich_detail.crawl_stage
+        (2026-08-21 — 터미널 한 줄로 uc 샤딩까지 끝내는 한방 실행. uc_engine의 드라이버/락이
+         프로세스 전역이라 한 프로세스 안에서 동시성을 올려도 줄서기만 할 뿐 처리량이 그대로다
+         — 진짜 병렬은 이렇게 프로세스를 N개 띄우는 것뿐이다. 내부적으로 자기 자신을 SHARD_COUNT/
+         SHARD_INDEX가 다른 자식 프로세스 N개로 띄우고 끝날 때까지 기다린다. 샤드 0은 기존
+         UC_PROFILE(또는 DEFAULT_PROFILE)을 그대로 쓰고, 나머지는 처음 실행될 때만 그 프로필을
+         복제해 자기 몫을 새로 만든다(캡차를 N번 다시 통과할 필요 없이 이미 쌓인 신뢰를 물려받음).
+         눈에는 크롬 창이 N개 뜬다 — uc는 UC_HEADLESS=0이 기본이라 각 프로세스마다 실제 창을 연다.)
 """
 import os
+import shutil
+import subprocess
 import sys
+import threading
 
 from gonggu.common import DEEPSEEK_KEY, ROOT, acquire_lock, append_jsonl, connect_dst, load_jsonl
 from gonggu.crawl_pool import run_crawl_pool
@@ -25,6 +36,7 @@ from gonggu.resolve_links.config import ITEM_DELAY, ITEM_DELAY_SMART, MAX_BROWSE
 from gonggu.resolve_links.urlutil import host_of
 
 from .config import DETAIL_CONCURRENCY, DETAIL_MODE, MAX_ERROR_LEN
+from .naver_uc import DEFAULT_PROFILE
 from .runner import crawl_one
 from .targets import fetch_captions, fetch_targets
 from .writeback import write_status
@@ -52,9 +64,70 @@ def _all_crawled_keys():
     return keys
 
 
+def _clone_uc_profile(base, dst):
+    """base 프로필을 dst로 복제 — 새 uc 샤드가 이미 쌓인 네이버 신뢰 쿠키를 그대로 물려받게
+    한다(처음부터 새 프로필로 캡차를 다시 통과해야 하는 걸 피함). Singleton*는 크롬이 실행
+    중에만 쓰는 잠금 파일이라 그대로 복사하면 새 프로필이 "이미 열려있다"고 오판할 수 있어
+    제외한다."""
+    def _ignore(_dir, names):
+        return [n for n in names if n.startswith('Singleton')]
+    shutil.copytree(base, dst, ignore=_ignore)
+
+
+def _run_uc_sharded(shard_count):
+    """uc crawl_stage를 shard_count개의 독립 프로세스(=독립 크롬 드라이버)로 동시에 돌린다
+    (2026-08-21). 자기 자신을 SHARD_COUNT/SHARD_INDEX가 다른 자식으로 N번 재실행해 끝날 때까지
+    기다린다 — 파티션(product_row_id % shard_count)과 체크포인트 병합은 기존 로직을 그대로
+    탄다. 반환: 0(전 샤드 성공) / 1(하나라도 실패)."""
+    base = os.environ.get('UC_PROFILE') or DEFAULT_PROFILE
+    profiles = [base] + [f'{base}_{i}' for i in range(1, shard_count)]
+    for i, p in enumerate(profiles):
+        if i == 0 or os.path.exists(p):
+            continue
+        if os.path.exists(base):
+            print(f'  [샤드{i}] 프로필 없음 — 기존 신뢰 쿠키를 복제합니다: {base} -> {p}')
+            _clone_uc_profile(base, p)
+        else:
+            print(f'  [샤드{i}] 기존 프로필도 없어 새로 시작합니다(캡차가 뜰 수 있음): {p}')
+
+    log_lock = threading.Lock()
+    results = [None] * shard_count
+
+    def _run_one(i):
+        env = {**os.environ, 'DETAIL_MODE': 'uc', 'SHARD_COUNT': str(shard_count),
+               'SHARD_INDEX': str(i), 'UC_PROFILE': profiles[i], 'PYTHONUNBUFFERED': '1'}
+        tag = f'[샤드{i}] '
+        proc = subprocess.Popen([sys.executable, '-m', 'gonggu.enrich_detail.crawl_stage'],
+                                 cwd=ROOT, env=env, text=True, encoding='utf-8', errors='replace',
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for line in proc.stdout:
+            with log_lock:
+                sys.stdout.write(f'{tag}{line}')
+                sys.stdout.flush()
+        results[i] = proc.wait()
+
+    threads = [threading.Thread(target=_run_one, args=(i,)) for i in range(shard_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    failed = [i for i, code in enumerate(results) if code != 0]
+    if failed:
+        print(f'uc 샤딩 {shard_count}-way — 샤드 {failed} 실패(위 로그의 [샤드N] 태그로 원인 확인)')
+        return 1
+    print(f'uc 샤딩 {shard_count}-way 전체 완료')
+    return 0
+
+
 def main():
     shard_count = int(os.environ.get('SHARD_COUNT', '1'))
     shard_index = int(os.environ.get('SHARD_INDEX', '0'))
+
+    uc_shard_count = int(os.environ.get('UC_SHARD_COUNT', '1'))
+    if DETAIL_MODE == 'uc' and uc_shard_count > 1 and 'SHARD_INDEX' not in os.environ:
+        sys.exit(_run_uc_sharded(uc_shard_count))
+
     lock_name = f'enrich_detail_crawl_shard{shard_index}' if shard_count > 1 else 'enrich_detail_crawl'
     acquire_lock(lock_name)
     if not DEEPSEEK_KEY:
