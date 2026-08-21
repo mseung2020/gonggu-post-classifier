@@ -22,6 +22,10 @@ class Platform:
     date_col: str        # publish_date | publishDate  (원본 컬럼명 컨벤션 그대로)
     # 부모 INSERT에 들어가는 컬럼(원본 hifen 컬럼명 순서 유지). 유튜브의 external_url은
     # 채널 정보란 링크(resolve 단계에서 채워질 수 있음)로 인스타에는 없는 컬럼이다.
+    # description은 LLM#1에 넘긴 원문 캡션(2026-08-21 추가) — 양 플랫폼 공통 컬럼명이다.
+    # username(인스타 핸들) / channel_name(유튜브 채널명)은 같은 날 추가된 크리에이터 이름으로,
+    # 컬럼명이 플랫폼별로 다른 건 원본(instagram_user.username / youtuber_info.title)을 따르되
+    # 유튜브는 title이 이미 영상 제목이라 channel_name으로 비켜 쓴 결과다.
     parent_insert_cols: tuple
     # rescan/backfill이 "이 부모가 누구인지" 들고 다니는 식별/컨텍스트 컬럼(classification_note 제외).
     parent_ctx_cols: tuple
@@ -34,8 +38,8 @@ PLATFORMS = {
         product_table='gonggu_post_product',
         id_col='post_id',
         date_col='publish_date',
-        parent_insert_cols=('post_id', 'user_id', 'url', 'publish_date',
-                            'is_calendar_feed', 'classification_note'),
+        parent_insert_cols=('post_id', 'user_id', 'username', 'url', 'description',
+                            'publish_date', 'is_calendar_feed', 'classification_note'),
         parent_ctx_cols=('post_id', 'user_id', 'url', 'publish_date'),
     ),
     'yt': Platform(
@@ -44,8 +48,9 @@ PLATFORMS = {
         product_table='gonggu_video_product',
         id_col='video_id',
         date_col='publishDate',
-        parent_insert_cols=('video_id', 'channel_id', 'title', 'video_url', 'external_url',
-                            'publishDate', 'is_calendar_feed', 'classification_note'),
+        parent_insert_cols=('video_id', 'channel_id', 'channel_name', 'title', 'description',
+                            'video_url', 'external_url', 'publishDate', 'is_calendar_feed',
+                            'classification_note'),
         parent_ctx_cols=('video_id', 'channel_id', 'video_url', 'publishDate'),
     ),
 }

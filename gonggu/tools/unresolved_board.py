@@ -142,7 +142,10 @@ def fetch_rows(conn, statuses=DEFAULT_STATUSES, stages=DEFAULT_STAGES, limit=0):
         for code in PLATFORMS:
             cur.execute(_select_sql(code, statuses, stages) + _order_by())
             rows.extend(cur.fetchall())
-    rows.sort(key=lambda r: (r['ed'] is None, r['ed'] or datetime.date.max,
+    # ⚠ ed는 DATETIME이 된 뒤(2026-08-21) pymysql이 datetime 객체를 준다. 예전처럼
+    # datetime.date.max를 기본값으로 쓰면 datetime과 date를 비교하게 되어 TypeError로 죽는다
+    # ("can't compare datetime.datetime to datetime.date"). 종류를 하나로 맞춰서 정렬한다.
+    rows.sort(key=lambda r: (r['ed'] is None, _sort_dt(r['ed']),
                              -(r['publish_dt'].toordinal() if hasattr(r['publish_dt'], 'toordinal') else 0)))
     return rows[:limit] if limit else rows
 
@@ -218,6 +221,19 @@ def host_of(url):
     """도메인만 뽑는다(한 줄에 500자 URL을 다 보여줄 수 없으므로 요약용). 파싱 실패하면 빈 문자열."""
     m = re.match(r'^\s*(?:https?:)?//([^/?#\s]+)', url or '', re.I)
     return (m.group(1) if m else '').lower().replace('www.', '')
+
+
+def _sort_dt(v):
+    """정렬 전용 — DATE/DATETIME/None을 전부 datetime.datetime으로 통일한다(비교 타입 혼합 방지).
+    None은 맨 뒤로 보내야 하므로 datetime.max를 쓴다(정렬 키의 첫 항목이 이미 None 여부를
+    분리하지만, 두 번째 항목의 타입도 일관돼야 비교 자체가 성립한다)."""
+    if v is None:
+        return datetime.datetime.max
+    if isinstance(v, datetime.datetime):
+        return v
+    if isinstance(v, datetime.date):
+        return datetime.datetime.combine(v, datetime.time.min)
+    return datetime.datetime.max
 
 
 def dday_of(ed, today):

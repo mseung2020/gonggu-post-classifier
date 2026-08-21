@@ -66,7 +66,7 @@ from gonggu.platforms import PLATFORMS, product_update_period_sql
 from gonggu.prompts import PERIOD_BACKFILL_SYSTEM, build_period_backfill_user
 from gonggu.resolve_links.browser import fetch
 from gonggu.resolve_links.config import BLOCKED_STATUS_CODES, BLOCKED_TEXT_MARKERS, MAX_BROWSERS
-from gonggu.transform import _compute_stage, _valid_date
+from gonggu.transform import _compute_stage, _valid_dt
 
 # Tier1(몰 크롤, 브라우저 필요) 동시성 — 기존 backfill_period.py와 동일 이름/기본값 유지.
 CONCURRENCY = int(os.environ.get('BACKFILL_PERIOD_CONCURRENCY', '4'))
@@ -233,7 +233,11 @@ def _ask_llm(text, product_name, classification_note, publish_date):
         build_period_backfill_user(product_name, classification_note, publish_date, text)))
     if err or not parsed:
         return None, None, (err or 'LLM 실패')
-    return (_valid_date(parsed.get('period_start')), _valid_date(parsed.get('period_end')),
+    # 기간은 DATETIME이다(2026-08-21) — 종료는 시각 힌트가 없으면 23:59:59가 붙는다.
+    # transform과 같은 헬퍼를 쓰는 게 중요하다: 규칙이 두 곳으로 갈리면 적재 경로와 백필
+    # 경로가 같은 캡션에서 다른 값을 만든다.
+    return (_valid_dt(parsed.get('period_start')),
+            _valid_dt(parsed.get('period_end'), is_end=True),
             parsed.get('reason') or '')
 
 

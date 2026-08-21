@@ -36,6 +36,28 @@
 -- 다시 만들어야 하는 경우에만, 위험을 인지한 상태로 별도 파일 reset_gonggu_tables.sql을 실행할 것
 -- (그 파일은 DROP 전 반드시 백업하라는 경고와 DROP 문만 담고 있음).
 
+-- ⚠⚠ 중요 — 이 파일 하나로는 현재 스키마가 되지 않는다(2026-08-21 명시).
+-- 이 파일은 "최초 베이스라인"이고, 이후 추가된 컬럼은 각자의 마이그레이션 파일에만 있다.
+-- 즉 신규 설치는 **이 파일 실행 후 아래 순서대로 전부 적용**해야 운영 DB와 같아진다:
+--
+--   1. create_gonggu_tables.sql            (이 파일 — 부모/상품 4개 테이블 베이스라인)
+--   2. migrate_gonggu_id_to_natural_key.sql (gonggu_id 대리키 → post_id/video_id 자연키)
+--   3. add_link_status_external_url.sql    (link_status, external_url — 소급 기록본)
+--   4. create_period_columns.sql           (상품별 기간/스테이지 + is_calendar_feed)
+--   5. migrate_period_to_product.sql       (부모 기간 → 상품으로 복사)
+--   6. drop_parent_period_columns.sql      (부모의 기간/스테이지 컬럼 DROP — 되돌릴 수 없음)
+--   7. add_link_note.sql                   (link_note)
+--   8. create_detail_tables.sql            (상세/이미지 테이블)
+--   9. add_detail_blocked_status.sql       (detail_status ENUM에 gone/blocked 추가)
+--  10. add_description.sql                 (부모에 원문 캡션 description)
+--  11. add_creator_names.sql               (부모에 username / channel_name)
+--  12. change_period_to_datetime.sql       (상품 기간 DATE -> DATETIME + 종료일 23:59:59 보정)
+--
+-- 이 순서를 여기에 적어두지 않았던 탓에 3번(link_status/external_url)이 오랫동안 어떤 SQL
+-- 파일에도 기록되지 않은 채 운영 DB에만 존재했다. 앞으로 컬럼을 추가할 때는 (a) 마이그레이션
+-- 파일을 만들고 (b) 반드시 이 목록에 한 줄 추가할 것. 베이스라인인 이 파일에는 컬럼을 직접
+-- 끼워넣지 않는다 — 그러면 이미 적용된 환경과 신규 설치 환경의 이력이 갈린다.
+
 -- ============================================================
 -- 1) gonggu_video — 공구가 "확실한"(최대한 보수적으로 필터링된) 유튜브 영상 1건당 1행
 -- ============================================================

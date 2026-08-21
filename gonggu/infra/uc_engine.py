@@ -227,6 +227,10 @@ def fetch_sync(url):
             _scroll_all(d)
             result = (d.current_url, d.page_source)
         except Exception:
+            try:
+                d.quit()   # 2026-08-21: 여기 quit()이 없어서 타임아웃마다 크롬 창이 하나씩 방치되고
+            except Exception:  # 있었다(워치독 강제종료는 quit()하는데 이 경로만 안 함) — 다음 호출은
+                pass            # 새 창을 또 띄우니 누적됨. 워치독이 이미 quit()했어도 중복 호출은 무해.
             _driver = None   # 죽었을 수 있으니 다음 호출에서 새로 띄운다
             raise
         finally:
