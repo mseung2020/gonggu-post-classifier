@@ -121,11 +121,23 @@ def transform_one(post):
     is_calendar = 1 if lc.get('is_calendar_feed') else 0
     note = (lc.get('pattern_note') or '').strip()[:500] or None
 
+    # 원문 캡션은 fetch 단계가 넣어준 caption_raw만 신뢰한다(2026-08-21) — post['description']은
+    # 유튜브에서 "[제목] ...\n\n" 접두사가 붙은 LLM 입력용 가공값이라 DB에 넣으면 제목이
+    # 중복된다. caption_raw 도입 전에 만들어진 옛 01/02 레코드에는 이 키가 없으므로 None이
+    # 되고, 그 건들은 gonggu/tools/_backfill_description.py가 hifen에서 소급해 채운다.
+    # (접두사를 문자열로 벗겨내는 폴백은 일부러 넣지 않는다 — 캡션 본문에 같은 문자열이
+    #  들어있으면 원문을 훼손하므로, 정확한 원본을 다시 읽는 백필이 정답이다.)
+    description = post.get('caption_raw')
+    # username/channel_name도 같은 성질이다 — fetch가 넣어준 키가 없으면(도입 전 옛 레코드)
+    # None으로 두고 _backfill_parent_fields.py가 hifen에서 소급한다.
+
     if post['platform'] == 'ig':
         parent = {
             'post_id': post['post_id'],
             'user_id': post['user_id'],
+            'username': post.get('username'),
             'url': post.get('url'),
+            'description': description,
             'publish_date': post['publish_date'],
             'is_calendar_feed': is_calendar,
             'classification_note': note,
@@ -134,7 +146,9 @@ def transform_one(post):
         parent = {
             'video_id': post['video_id'],
             'channel_id': post['channel_id'],
+            'channel_name': post.get('channel_name'),
             'title': post.get('title'),
+            'description': description,
             'video_url': post.get('video_url'),
             'publishDate': post['publishDate'],
             'is_calendar_feed': is_calendar,

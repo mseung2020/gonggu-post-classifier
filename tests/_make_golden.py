@@ -9,6 +9,13 @@ transform_one에 태운 결과를 tests/fixtures/golden_transform.jsonl로 박�
 
 사용법(저장소 루트에서):
     python3 tests/_make_golden.py data/02_classified/2026-08-03.jsonl [추가파일...]
+    python3 tests/_make_golden.py --regold      # 입력 샘플은 그대로 두고 골든만 다시 계산
+
+--regold을 쓰는 이유(2026-08-21 추가): 판정 규칙이 아니라 **출력 스키마**만 바뀌는 변경
+(예: parent에 description 컬럼 추가)에서도 골든은 당연히 깨진다. 이때 인자 없는 모드로
+전체 재생성하면 입력 샘플까지 최신 02 데이터로 갈려서, 커밋 diff에 "스키마 변경분"과
+"샘플이 바뀐 분"이 섞여 리뷰가 불가능해진다. --regold은 classified_sample.jsonl을 건드리지
+않으므로 diff가 딱 스키마 변경분만 남는다 — 규칙/스키마 변경 시의 기본 경로로 쓸 것.
 """
 import json
 import pathlib
@@ -24,6 +31,23 @@ from gonggu.transform import transform_one  # noqa: E402
 FIXTURES = pathlib.Path(__file__).resolve().parent / 'fixtures'
 SAMPLE_N = 400
 SEED = 20260805
+
+
+def _write_golden(sample):
+    with open(FIXTURES / 'golden_transform.jsonl', 'w', encoding='utf-8') as f:
+        for r in sample:
+            parent, products, reject = transform_one(r)
+            f.write(json.dumps({'parent': parent, 'products': products, 'reject': reject},
+                               ensure_ascii=False) + '\n')
+
+
+def regold():
+    """입력 샘플은 그대로 두고 골든만 현재 코드로 다시 계산한다(위 docstring 참고)."""
+    path = FIXTURES / 'classified_sample.jsonl'
+    with open(path, encoding='utf-8') as f:
+        sample = [json.loads(line) for line in f if line.strip()]
+    _write_golden(sample)
+    print(f'--regold: {path.name} {len(sample)}건 그대로 두고 golden_transform.jsonl만 재계산')
 
 
 def main(paths):
@@ -54,15 +78,14 @@ def main(paths):
         for r in sample:
             f.write(json.dumps(r, ensure_ascii=False) + '\n')
 
-    with open(FIXTURES / 'golden_transform.jsonl', 'w', encoding='utf-8') as f:
-        for r in sample:
-            parent, products, reject = transform_one(r)
-            f.write(json.dumps({'parent': parent, 'products': products, 'reject': reject},
-                               ensure_ascii=False) + '\n')
+    _write_golden(sample)
 
     from collections import Counter
     print(f'샘플 {len(sample)}건 저장 — 버킷 분포: {Counter(_bucket(r) for r in sample)}')
 
 
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    if '--regold' in sys.argv:
+        regold()
+    else:
+        main(sys.argv[1:])

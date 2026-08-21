@@ -126,6 +126,61 @@ class TestTransformOneGates:
         assert products[1]['gonggu_start_date'] == '2026-08-04'
         assert products[0]['gonggu_stage'] == '진행중' and products[1]['gonggu_stage'] == '진행중'
 
+    def test_caption_raw_becomes_parent_description(self):
+        """원문 캡션은 caption_raw에서만 온다(2026-08-21). 유튜브의 description은 LLM 입력용으로
+        "[제목] ..." 접두사가 붙은 가공값이라 그걸 그대로 쓰면 제목이 중복 저장된다."""
+        prods = [{'name': '냄비', 'link_location': '설명_직접링크', 'urls': []}]
+        ig = self._post(is_gonggu=True, products=prods)
+        ig['caption_raw'] = '공구 오픈합니다\n링크는 프로필에'
+        parent, _, reject = transform_one(ig)
+        assert reject is None
+        assert parent['description'] == '공구 오픈합니다\n링크는 프로필에'
+
+        yt = {'platform': 'yt', 'video_id': 'V1', 'channel_id': 'c1',
+              'video_url': 'https://youtu.be/V1', 'publishDate': '2026-08-01',
+              'title': '역대급 공구',
+              'description': '[제목] 역대급 공구\n\n본문 캡션',   # LLM 입력용 가공값
+              'caption_raw': '본문 캡션',
+              'classification': {'is_gonggu': True, 'products': prods}}
+        parent, _, reject = transform_one(yt)
+        assert reject is None
+        assert parent['title'] == '역대급 공구'
+        assert parent['description'] == '본문 캡션'   # 제목 접두사가 섞이지 않는다
+
+    def test_description_none_when_caption_raw_missing(self):
+        """caption_raw 도입 전에 만들어진 옛 02 레코드 — 키가 없어도 죽지 않고 None으로 두고,
+        소급은 gonggu/tools/_backfill_description.py가 hifen에서 다시 읽어 채운다."""
+        post = self._post(is_gonggu=True,
+                          products=[{'name': '냄비', 'link_location': '설명_직접링크', 'urls': []}])
+        assert 'caption_raw' not in post
+        parent, _, reject = transform_one(post)
+        assert reject is None
+        assert parent['description'] is None
+        assert parent['username'] is None          # 크리에이터 이름도 같은 취급
+
+    def test_creator_name_carried_per_platform(self):
+        """크리에이터 이름은 플랫폼별로 다른 컬럼에 담긴다 — 인스타 username(instagram_user.username),
+        유튜브 channel_name(youtuber_info.title). 유튜브에서 title은 여전히 '영상' 제목이고
+        채널명이 그 자리를 침범하지 않는지가 이 테스트의 핵심이다(2026-08-21)."""
+        prods = [{'name': '냄비', 'link_location': '설명_직접링크', 'urls': []}]
+        ig = self._post(is_gonggu=True, products=prods)
+        ig['username'] = 'callmeyeal'
+        parent, _, reject = transform_one(ig)
+        assert reject is None
+        assert parent['username'] == 'callmeyeal'
+        assert 'channel_name' not in parent       # 인스타 parent에는 유튜브 컬럼이 없다
+
+        yt = {'platform': 'yt', 'video_id': 'V1', 'channel_id': 'UC123',
+              'channel_name': '슈카월드', 'title': '역대급 공구',
+              'video_url': 'https://youtu.be/V1', 'publishDate': '2026-08-01',
+              'caption_raw': '본문 캡션',
+              'classification': {'is_gonggu': True, 'products': prods}}
+        parent, _, reject = transform_one(yt)
+        assert reject is None
+        assert parent['channel_name'] == '슈카월드'
+        assert parent['title'] == '역대급 공구'    # 영상 제목이 채널명으로 덮이지 않는다
+        assert 'username' not in parent
+
     def test_product_period_falls_back_to_post_level(self):
         # 구 스키마(포스트 전체 period, 상품에 period 없음)도 폴백으로 각 상품에 적용.
         post = self._post(is_gonggu=True, period_start='2026-08-01', period_end='2026-08-07',

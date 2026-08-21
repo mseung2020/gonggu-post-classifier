@@ -104,7 +104,13 @@ def load_item(cur, code, parent, products, known=None):
     # 유튜브: 캡션에 링크가 있던 영상은 채널 정보란까지 긁어볼 필요가 없어서 external_url이
     # 없을 수 있어 기본값 None을 깔아준다(인스타 INSERT에는 이 컬럼이 없어 그냥 무시됨).
     # is_calendar_feed도 스키마 개편 전(2026-08-06)에 만들어진 옛 03 파일엔 없을 수 있어 기본 0.
-    cur.execute(parent_insert_sql(p), {'external_url': None, 'is_calendar_feed': 0, **parent})
+    # description(원문 캡션)/username/channel_name도 도입(2026-08-21) 전 03 파일엔 없어 기본
+    # None — 그렇게 NULL로 들어간 건은 gonggu/tools/_backfill_parent_fields.py가 hifen에서
+    # 소급해 채운다. (인스타 INSERT에 없는 channel_name, 유튜브에 없는 username은 각 플랫폼의
+    #  parent_insert_cols에 안 들어 있으므로 그냥 무시된다 — external_url과 같은 방식.)
+    cur.execute(parent_insert_sql(p),
+                {'external_url': None, 'is_calendar_feed': 0, 'description': None,
+                 'username': None, 'channel_name': None, **parent})
     for prod in products:
         # resolve_links를 안 거친 03_load_ready로 돌아가는 경우 link_status 키가 없을 수 있고,
         # 스키마 개편 전 옛 03 파일엔 상품별 기간 필드가 없을 수 있어 기본값 None을 깔아준다.

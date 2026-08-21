@@ -19,13 +19,21 @@ from gonggu.common import ROOT, connect_src, dump_jsonl_sharded, post_date_key
 DAYS_BACK = int(os.environ.get('DAYS_BACK', '7'))
 RAW_DIR_YT_PPL = ROOT / 'data/01_raw_yt_ppl'
 
+# youtuber_info 조인으로 채널명을 가져온다(2026-08-21) — fetch_source.py의 키워드 경로와
+# **같은 출처**를 쓰는 게 핵심이다. brand 테이블에도 channel_title이 있지만 그건 PPL 영상에만
+# 있어서, 그걸 쓰면 PPL로 들어온 영상만 채널명이 채워지는 절반짜리 컬럼이 된다.
+# ⚠ 조인이 생기면서 title이 모호해졌다(brand.title = 영상 제목, youtuber_info.title = 채널명).
+#   그래서 brand를 b로 alias하고 모든 컬럼을 명시적으로 한정한다 — 한정 안 하면 MySQL이
+#   "Column 'title' in field list is ambiguous"로 즉시 실패한다.
 YT_PPL_QUERY = """
-SELECT video_id, channel_id, title, video_url, video_description AS caption,
-       brand1, sponsored_type, publishDate
-FROM brand
-WHERE publishDate >= %s
-  AND COALESCE(video_description, '') NOT LIKE '%%공구%%'
-  AND COALESCE(video_description, '') NOT LIKE '%%공동구매%%'
+SELECT b.video_id, b.channel_id, yi.title AS channel_name, b.title AS title,
+       b.video_url, b.video_description AS caption,
+       b.brand1, b.sponsored_type, b.publishDate
+FROM brand b
+LEFT JOIN youtuber_info yi ON yi.channel_id = b.channel_id
+WHERE b.publishDate >= %s
+  AND COALESCE(b.video_description, '') NOT LIKE '%%공구%%'
+  AND COALESCE(b.video_description, '') NOT LIKE '%%공동구매%%'
 """
 
 
@@ -39,10 +47,15 @@ def fetch_yt_ppl(conn, since):
             'platform': 'yt',
             'video_id': r['video_id'],
             'channel_id': r['channel_id'],
+            'channel_name': r['channel_name'] or None,   # 수집 시점 스냅샷(add_creator_names.sql)
             'video_url': r['video_url'],
             'publishDate': str(r['publishDate']),
             'title': r['title'] or '',
+            # description은 LLM 입력용 가공값(제목을 앞에 붙임). DB 적재용 원문은 caption_raw —
+            # fetch_source.py와 같은 키를 쓰므로 transform은 두 경로를 구분하지 않아도 된다
+            # (2026-08-21, gonggu_video.description 추가).
             'description': f"[제목] {r['title'] or ''}\n\n{r['caption'] or ''}",
+            'caption_raw': r['caption'] or '',
             'brand_name': r['brand1'] or '',
             'sponsored_type': r['sponsored_type'],
         })

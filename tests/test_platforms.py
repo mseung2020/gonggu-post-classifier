@@ -16,17 +16,24 @@ def norm(sql):
 # 기간/스테이지를 포스트→상품 단위로 이전(대공사 2026-08-06): parent INSERT에서 gonggu_start/
 # end/stage 빠지고 is_calendar_feed 추가, product INSERT에 gonggu_start/end/stage 추가.
 # link_note(링크 판단 이유) product INSERT/UPDATE에 추가(2026-08-07).
+# description(LLM#1에 넘긴 원문 캡션) parent INSERT에 추가(2026-08-21) — 양 플랫폼 공통 컬럼명,
+# 인스타는 url 뒤 / 유튜브는 title 뒤(DDL 컬럼 순서와 동일하게).
+# 같은 날 크리에이터 이름도 추가: 인스타 username(user_id 뒤) / 유튜브 channel_name(channel_id 뒤).
+# 컬럼 순서를 DDL의 AFTER 절과 일치시키는 게 이 상수의 목적이다 — SQL 자체는 순서와 무관하게
+# 동작하지만, 여기서 어긋나면 "DDL과 코드가 같은 그림을 보고 있다"는 보증이 사라진다.
 LEGACY_INSERT_VIDEO = """
 INSERT INTO gonggu_video
-    (video_id, channel_id, title, video_url, external_url, publishDate, is_calendar_feed,
-     classification_note)
-VALUES (%(video_id)s, %(channel_id)s, %(title)s, %(video_url)s, %(external_url)s, %(publishDate)s,
-        %(is_calendar_feed)s, %(classification_note)s)
+    (video_id, channel_id, channel_name, title, description, video_url, external_url,
+     publishDate, is_calendar_feed, classification_note)
+VALUES (%(video_id)s, %(channel_id)s, %(channel_name)s, %(title)s, %(description)s,
+        %(video_url)s, %(external_url)s, %(publishDate)s, %(is_calendar_feed)s,
+        %(classification_note)s)
 """
 LEGACY_INSERT_POST = """
 INSERT INTO gonggu_post
-    (post_id, user_id, url, publish_date, is_calendar_feed, classification_note)
-VALUES (%(post_id)s, %(user_id)s, %(url)s, %(publish_date)s,
+    (post_id, user_id, username, url, description, publish_date, is_calendar_feed,
+     classification_note)
+VALUES (%(post_id)s, %(user_id)s, %(username)s, %(url)s, %(description)s, %(publish_date)s,
         %(is_calendar_feed)s, %(classification_note)s)
 """
 LEGACY_INSERT_VIDEO_PRODUCT = """
